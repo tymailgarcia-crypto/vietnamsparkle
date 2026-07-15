@@ -616,13 +616,48 @@ Third-party review flagged nine correctness/security issues + four scale bottlen
 - **On #5 (transactions vs batches)**: original called it a source of drift. Real, but the window is small for a one-owner shop. Medium priority.
 - **On #8 (role handling)**: original framed this as impact-heavy. It's UX-only — rules enforce security. Medium priority.
 
+## From Ty's notes (triaged 2026-07-15)
+
+Notes taken 2026-07-07 → 2026-07-15. Most were already shipped — listed so they stop resurfacing. The rest are new, sized, and placed.
+
+### Already shipped (each verified against code on 2026-07-15)
+
+- Optional cancellation reason; maps shortcut on order cards → Admin dashboard workflow.
+- Contact channels pointed at from the public form → Payment collection gate (part 4).
+- Small product photos in order history → `renderOrderThumbs` + `productImageUrl`.
+- Map of approved orders, filterable by driver → Delivery map. It already zooms to the filter range (`fitBounds`, `mapApp.js`).
+- Double-submit prevention, order button locking with the order id → `withSubmitLock` + the `success-locked` state in `publicApp.js`.
+- "No orders" showing on a slow connection despite real history → `paintLoadingPlaceholders` in `accountApp.js`.
+- Deposit not deducted when the driver doesn't collect → the "Owner will decide later" branch in the delivery dialog.
+- Phone field accepting letters → both forms carry `pattern="(?=.*\d)[+0-9 ()\-]{6,40}"` and `submitPublicOrder` re-validates server-side.
+- Admin sign-out button removed; sticky bottom toast in its place → `#admin-toast`.
+
+### New — worth doing
+
+- **Invoice delivery.** "Invoice should be sent per mail preferably… WhatsApp returns text without the actual PDF." Correct, and `mailto:` cannot attach either — [invoice.js](firebase/web/assets/invoice.js) documents today's workaround in a comment: the owner downloads the PDF and attaches it by hand. Two ways out: **(a)** upload the PDF to Firebase Storage on generate and put the link in the WhatsApp/mail body — cheap, no new service; **(b)** Cloud Function + a mail provider (Resend / SendGrid) that attaches it properly — costs a little, wants a domain. Recommend (a) first; it makes the existing share buttons actually carry the invoice.
+- **Photos as proof of payment.** The hook already exists — `proofDocumentId` is on the payments schema and the `documents` collection is defined — but every writer passes `null` (`adminApp.js`, `receivablesApp.js`). Needs Firebase Storage (not used anywhere in this project yet), a capture/upload control in the delivery + record-payment dialogs, and a thumbnail on the order card. Pairs with invoice delivery — both need Storage, so do them together.
+- **Finance dashboard.** The hero shows cash / transfer / unpaid for the selected date only. No week or month view, no trend, no margin (margin is blocked on `costPrice` — see Inventory). Smallest useful version: a date-range summary over `payments` + `orders` showing revenue, collected, outstanding, and deposits held.
+- **Owner notifications for new orders / cancellations.** Promoted out of the parking lot — asked for twice. Cheapest real version: an `onSnapshot` listener on `orders where status == 'pending_approval'` while the dashboard is open → toast + tab-title badge. FCM push for when the tab is closed is a much bigger lift; don't start there.
+- **Right-handed mobile layout.** "The reorder button should be on the right and not left aligned." Thumb reach on a phone. Cheap, and applies across the whole customer surface.
+- **Quick-call bubble while out for delivery.** Floating call button on `out_for_delivery` cards so the driver isn't hunting for the number mid-round.
+- **Preferred contact method per customer.** `tel:` links are everywhere, but there's no per-customer "call vs Zalo vs WhatsApp" preference. `preferredChannel` exists only on the inquiries schema, not on customers. Small field, plus a chip on the profile and a matching default on the call/chase actions.
+- **Inquiry cards carry unnecessary fields.** Trim to what the owner actually acts on.
+
+### In progress
+
+- **Customer profiles show their generated values** — being built now (`loadCustomerInsights` in `customerApp.js`, uncommitted at time of writing).
+
+### Skipped, and why
+
+- "Learn about unification due to text and text box flexibility by looking at established design" — no action available without a concrete target. Point at a specific page that looks wrong and it becomes workable.
+- Two bare links (`mr-pogo.web.app`, a Facebook share) with no note attached. Say what they're examples of and they can be filed.
+
 ## Parking lot
 
 Ideas not yet triaged. Move up into the right section when they mature.
 
 - Driver mobile app / driver-scoped view (already partially enabled by role rules — no UI yet; see also the "Driver-side view of their own route" open item under Delivery map).
 - Multi-language: Vietnamese + English toggle on public form.
-- Push notifications for owner (new order arrived, payment overdue).
 - Inventory tracking (real stock counts, not just purchase log).
 - Supplier reorder reminders (when purchased qty over a period drops below threshold).
 - SMS / Zalo / WhatsApp auto-messages on order confirmed and out-for-delivery.

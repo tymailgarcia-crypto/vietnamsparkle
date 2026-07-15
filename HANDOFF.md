@@ -33,6 +33,7 @@ The previous version of this file briefed a route-planning session. That work sh
 ## Sensible next milestones
 
 Unblocked:
+- **Invoice delivery + payment-proof photos** — do these as one piece of work. Both need Firebase Storage, which this project does not use anywhere yet, so whoever does the first one pays the setup cost (bucket, rules, upload helper) and the second becomes cheap. Both are on Ty's list; see "From Ty's notes" in ROADMAP.
 - **Reconciliation report viewer** — owner-only page over `reconciliationReports/{runId}` + its `drifts` subcollection. The data has been accumulating nightly since 2026-07-14 with no way to see it outside the Firestore console.
 - **App Check on `inquiries`** — the one open security item with a real abuse path (unauthenticated public writes → billing).
 - **Delete `audit/`** — recoverable from git; keeps producing phantom findings while it exists.
