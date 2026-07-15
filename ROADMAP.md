@@ -88,10 +88,10 @@ Manual order creation has moved off the dashboard entirely — it's now customer
 
 Owner-created customer accounts (no `authUid`) now claim cleanly when the customer signs in.
 
-- **Auto-link by email**: on first sign-in, `accountApp.js` looks for an unclaimed customer doc with matching `email`. If found, `authUid` and `email` are written to that doc — Firestore rules verify `request.resource.data.email == request.auth.token.email` on the transition from `authUid: null → myUid`.
-- **Phone claim**: if no email match, the customer sees a "Link my existing account" panel where they enter the phone the owner has on file. Client normalizes both sides to E.164, finds the unclaimed match, and writes the link.
-- **Order backfill**: after a link (either path), a `writeBatch` sets `authUid` on every order where `customerId == linked.id` and `authUid` was null. Firestore rule uses `get()` on the parent customer to verify the caller owns it before allowing each order update. Only `authUid` and `updatedAt` are affected — no other order fields can be tampered with via this path.
-- **Fresh doc fallback**: if neither auto-link matches, we create a fresh customer doc as before, and *also* show the claim panel so the customer can retroactively link an owner-created account. When they do, the fresh doc gets marked superseded (its `authUid` is cleared) so it doesn't compete with the real one.
+- **Auto-link by email**: on first sign-in, `accountApp.js` looks for an unclaimed customer doc with matching `email`. If found, `authUid` and `email` are written to that doc — Firestore rules verify `request.resource.data.email == request.auth.token.email` on the transition from `authUid: null → myUid`. Since 2026-07-15 the rule also requires `email_verified == true`; see "Security hardening" below.
+- ~~**Phone claim**~~ — **never existed as described.** There is no panel where the customer types a phone. `findUnclaimedByPhone` in `accountApp.js` reads `user.phoneNumber`, which is null for both Google and email-link sign-ins, so this path is dormant until phone auth exists. The claim panel is explanatory text only. A customer-typed phone could not be honoured anyway: it is an unverified claim, and trusting it is the same takeover described under "Audit follow-ups → Critical".
+- **Order backfill**: after a link, a `writeBatch` sets `authUid` on every order where `customerId == linked.id` and `authUid` was null. Firestore rule uses `get()` on the parent customer to verify the caller owns it before allowing each order update. Only `authUid` and `updatedAt` are affected — no other order fields can be tampered with via this path.
+- **Fresh doc fallback**: if no auto-link matches, `createFreshCustomer` mints a `CUS-<uid>` stub and the claim panel appears. The stub does *not* get "marked superseded" — that was never implemented. It is now collapsed by `foldSelfServeStubInto` on the first approved order, or by an owner merge.
 
 Security tightening 2026-07-08 (in same-day follow-up):
 - **Customer claim now requires the doc's pre-write email to already match the caller's token email.** Owner must have set `email` on the customer doc for claim to succeed. Prevents a signed-in customer from hijacking any unclaimed doc by overwriting its email during the same write. Rule diff now `hasOnly(['authUid', 'updatedAt'])` — email cannot be changed via this path.
@@ -99,9 +99,54 @@ Security tightening 2026-07-08 (in same-day follow-up):
 - **Phone-claim client flow** now double-checks that the doc's email matches the caller's sign-in email before attempting the update. If not, the user sees an explanatory message ("ask the owner to add your email to your account") instead of a permission-error.
 
 Still open:
-- **Owner-side merge tool** for the leftover superseded/duplicate customer docs.
-- **Deleting the superseded fresh doc** entirely (rules currently only allow owner to delete customer docs).
-- **Cloud Function or claimRequests collection** for phone-claim without email — so an owner-created customer without email can still claim via owner-approved review instead of being locked out.
+- ~~**Owner-side merge tool**~~ Shipped 2026-07-15 — see "Customer identity, merge, and auth" below.
+- ~~**Deleting the superseded fresh doc**~~ Resolved 2026-07-15, but by archiving rather than deleting: retention rules forbid hard-deleting a customer doc, so `mergeCustomers` archives the stub with `archived: true` + `mergedInto`.
+- **Cloud Function or claimRequests collection** for phone-claim without email — so an owner-created customer without email can still claim via owner-approved review instead of being locked out. Still the right shape, and the only safe one: an owner-approved review supplies the ownership proof that a customer-typed phone number does not. Today those customers are handled by an owner merge.
+
+## Customer identity, merge, and auth (shipped 2026-07-15)
+
+Closes the duplicate-customer problem the 2026-07-14 work left open, and replaces the mechanism that was quietly holding it together.
+
+**The shape of the problem.** Two independent paths mint customer identity and they key on different things. The order path always assigns `customerId = CUS-<phone>` (phone is validated as required in `submitPublicOrder`, so its `|| CUS-<uid>` fallback is unreachable). The identity path mints `CUS-<uid>` only when `findOrAutoLinkCustomer` strikes out on all three lookups. Sign in first, then order, and both fire — two docs, one `authUid`. `findByAuthUid` does `snap.docs[0]` on an unordered query, so **which profile the customer sees is arbitrary and can differ between page loads**. That non-determinism is the visible symptom of a duplicate.
+
+Shipped:
+- **`mergeCustomers` callable** in [firebase/functions/index.js](firebase/functions/index.js) — owner-only. Re-keys `orders` / `payments` / `depositEvents` / `returns` / `inquiries` from `fromId` → `toId`, stamps `authUid` on child records that lack one, stamps `orderItems` (keyed by `orderId`, not `customerId`, so they ride along with their parent), then archives the source. Refuses when both sides carry different `authUid`s rather than silently dropping one. Idempotent.
+- **Merge UI** on `/customer.html` — searchable target picker, preview showing archive-vs-keep, warnings when both records have history or conflicting uids. Archived records open read-only with a banner pointing at the survivor.
+- **`foldSelfServeStubInto`** in `adminApp.js` — the automatic path. The `CUS-<uid>` stub is **unavoidable**: at Google/magic-link sign-in `user.phoneNumber` is null, and the customers create rule deliberately forbids a customer from minting a phone-keyed doc (that is id squatting). So the first approved order is the earliest moment both halves of the identity are known, and approval folds the stub in then. **Gated on the phone doc having been created fresh for that same uid** — folding into a pre-existing doc would re-open the takeover, because `mergeCustomers` copies the source `authUid` onto a target that lacks one. That gate is the entire safety argument; do not relax it.
+- **Passwordless email link** replaces email + password on `/account.html`. `sendSignInLinkToEmail` + `signInWithEmailLink`, email stashed in `localStorage` under `vs.magicLinkEmail` for the return hop, `prompt()` fallback when the link is opened in a different browser (a Firebase anti-hijack requirement, not suppressible). Completion runs before the auth observer is wired so the page doesn't flash signed-out, and the spent `oobCode` is stripped from the URL. Requires **Email link (passwordless sign-in)** enabled on the Email/Password provider in the console.
+- **Claim panel copy fixed.** It previously promised order history would link "automatically" on next sign-in. That was false: the panel only renders *after* a stub exists, so `findByAuthUid` matches the stub on every later sign-in and the email lookup never runs. It now tells the customer their new orders work regardless and to ask us to link old history.
+
+Net effect: duplicates stop forming on the common path without anyone doing anything. Manual merge remains for records that already diverged, and for owner-added customers with no email on file.
+
+Still open:
+- **`findByAuthUid` picks arbitrarily** when duplicates already exist in production. Not worth an `orderBy` — the merge tool is the actual fix — but worth knowing while cleaning up historical data.
+- **Backfill of existing duplicates.** Nothing sweeps up `CUS-<uid>` stubs already in the database from earlier signups; they get folded on the customer's next approved order, or by hand.
+
+## Security hardening (2026-07-15)
+
+Prompted by a third-party audit plus a second-opinion review. Both were useful and both were wrong about the most urgent item — see "Points where the reviews were wrong" below.
+
+Shipped:
+- **Verified email is now required to read or claim an unclaimed profile.** `hasVerifiedEmail()` in [firebase/firestore.rules](firebase/firestore.rules) gates both unclaimed-by-email branches. Without it, Firebase's public `identitytoolkit` REST signUp endpoint — which needs only the web API key that ships in the browser bundle — lets anyone mint a token carrying an arbitrary `email` with `email_verified: false` and walk straight into a stranger's profile. **Removing the signup button from the UI does not close this**; the attack never goes through our client. The rules check is the whole fix.
+- **Customer doc ids pinned to `CUS-<uid>` on create.** Stops id squatting: without it a customer could create `customers/CUS-<someone-elses-phone>` carrying their own `authUid`, and `upsertCustomerFromOrder` correctly refuses to overwrite a non-null `authUid` — so the squatter would hold that phone's canonical doc permanently and the real customer could never claim it.
+- **Email pinned to the verified token on customer writes**, and merge tombstone fields (`archived` / `mergedInto` / `testFixture`) locked to the owner. Prevents a customer stamping a victim's address onto their own record to bait an owner into merging.
+- **Approval-time `authUid` stamping onto pre-existing unclaimed docs removed** — see "Audit follow-ups → Critical" for the full account-takeover write-up. This is the most important entry in this section.
+- **WhatsApp webhook + order-link resolver deleted from production.** Their `defineSecret()` bindings had been swapped for `process.env` shims falling back to `""`, Secret Manager was never enabled, and there was no `.env` — so both secrets resolved to the empty string. The GET verify branch compared `hub.verify_token === ""` (a request with an empty token passed; confirmed against the live endpoint, which echoed the challenge back with HTTP 200), and the POST branch computed its HMAC keyed with `""`, which anyone can reproduce. `timingSafeEqual` was doing its job perfectly against a key that wasn't secret. Source and the conditions for restoring it are parked in [firebase/functions/whatsapp.parked.js](firebase/functions/whatsapp.parked.js) — including a mandatory fail-closed guard on empty secrets.
+- **Rules helpers made error-safe.** `isOwner()` / `isDriver()` / `myDriverId()` used bare `request.auth.token.role`, which **raises an evaluation error on every customer request** (customer tokens omit the claim). Masked today because `||` falls through, but it meant the helpers threw on the app's most common request. Now `.get(key, default)`. `isCustomer()` already carried a comment about this exact hazard — someone hit it before and fixed only that one helper.
+- **First tests in the codebase.** [firebase/rules-tests/customers.rules.test.mjs](firebase/rules-tests/customers.rules.test.mjs) — 19 cases against the emulator, covering the attacks and the legitimate flows they must not break. [firebase/rules-tests/authuid-linking.test.mjs](firebase/rules-tests/authuid-linking.test.mjs) — 8 cases pinning the `canLinkAuthUidToCustomer` truth table, which rules cannot protect because the owner performs that write.
+  - Run: `cd firebase && export JAVA_HOME="/c/Program Files/Eclipse Adoptium/jre-21.0.11.10-hotspot" && export FIRESTORE_EMULATOR_HOST="127.0.0.1:8080" && node rules-tests/customers.rules.test.mjs`. Java is installed but not on `PATH`.
+  - Both latent rules bugs above were found by writing these, not by reading the rules. The emulator's stderr reports evaluation errors that passing assertions otherwise hide — **read the stderr, not just the pass count**.
+
+Still open (deliberately deferred — no evidence they matter yet at one-owner scale):
+- **Public `inquiries` create is unauthenticated and shape-validated only.** Real spam/billing risk. The audit's fix (require `isSignedIn()`) is wrong — it defeats a public contact form. App Check is the cheap correct answer; a callable with rate limiting is the thorough one.
+- **Driver financial inputs unbounded** (`amount >= 0`, `qty >= 0`). Ranked lower than both reviews did: the nightly reconciler already recomputes money from `payments` within a day, and the threat model is a compromised account belonging to one of two known drivers. Hard caps in rules are a magic number that will reject a legitimate bulk order in eighteen months.
+- **Maps API key referrer restriction.** The key is public by design (it ships in the bundle) — the referrer restriction in Cloud Console is the only thing protecting it. Now also in a GitHub repo; harmless while private, a scrape target within hours if it ever goes public.
+
+### Points where the reviews were wrong
+
+- **On the WhatsApp webhook**: the audit filed it under "verified architectural strengths" for its `timingSafeEqual` HMAC check. The second opinion said it was "not deployed or credential-bound". Both wrong, in opposite directions — it was deployed *and* fully bypassable. Correct code, defeated by configuration. It was the single most urgent item and neither review ranked it at all.
+- **On the audit reviewing stale code**: it reported `createUserWithEmailAndPassword` in `accountApp.js` after that had been removed. Cause found 2026-07-15: the `audit/` directory at the repo root is a **frozen partial copy** of the app, still carrying password signup and pre-`email_verified` rules. The auditor was accurate about what it was reading. **Delete `audit/` or expect it to keep producing phantom findings** — it is recoverable from git.
+- **On verification UX**: both reviews recommended adding verification-email flows to the client. Largely moot — Google and email-link sign-in both set `email_verified: true` on their own, so the rules check costs legitimate users nothing.
 
 ## Delivery map (shipped 2026-07-09)
 
@@ -168,15 +213,20 @@ Shipped 2026-07-07:
   - The owner dashboard shows a red "Customer requested cancellation" banner on the card + two buttons: **Approve cancellation** (does the full cancel, using the customer's stored reason, sets `cancelledBy: 'owner_via_request'`, clears the request flags) or **Dismiss request** (clears the request flags, order stays active).
   - Cancelled and delivered orders can never be cancel-requested — rule blocks it.
 
-## Current status (as of 2026-07-07)
+## Current status (as of 2026-07-15)
 
 - Firebase Firestore is the source of truth.
-- Rules deployed with owner + driver role split; public order/inquiry creation shape-validated.
+- Rules deployed with owner + driver role split. Public *order* creation now flows through the `submitPublicOrder` Cloud Function (browser-write path closed); public `inquiries` creation is still a direct shape-validated write.
 - Composite index for `deliveryDate + status` on orders is deployed.
 - Admin dashboard scoped to the selected date only (no full-collection scans).
 - Sheets JSON dump imported into Firestore with date + phone normalization.
-- Local `firebase serve` verified end-to-end (auth → owner claim → data render).
 - Hosting: on the free `.web.app` URL until handover.
+- **Deployed functions**: `submitPublicOrder`, `nightlyReconcileOrderMath`, `mergeCustomers`. Project is on Blaze (callables require it).
+- **Customer auth**: Google popup or passwordless email link. Owner still signs in with email + password on `/admin.html`.
+- **Version control since 2026-07-15.** There was none before — `.git` existed but was an empty directory, so everything up to that point survived in exactly one copy on one disk. Now `git init` + initial commit `be580bb`, pushed to the **private** repo `github.com/tymailgarcia-crypto/vietnamsparkle`. Keep it private, or restrict the Maps key first.
+  - The project lives under `OneDrive\Desktop`. OneDrive and git contend over `.git` internals, which is a plausible account of how the repo got emptied. If it recurs, move the working copy outside the synced folder.
+- **Tests**: `firebase/rules-tests/` — the only automated tests in the codebase. Run them before touching `firestore.rules` or `canLinkAuthUidToCustomer`.
+- **Known stale artifacts**: `audit/` is a frozen partial copy of the app with pre-fix rules; [HANDOFF.md](HANDOFF.md) still reads as a pre-work brief for route planning that has since shipped. Both are recoverable from git if deleted.
 
 ## Compliance & audit
 
@@ -201,9 +251,9 @@ Open questions:
 
 ### Retention & deletion policy (shipped 2026-07-08)
 
-- **Customers cannot be hard-deleted.** Firestore rule `allow delete: if false` on `/customers/{id}`. Rationale: customer records tied to past transactions must be retained under Vietnamese commercial-record retention (5–10 years for tax review). PDPD right-to-erasure requests are honoured by anonymizing personal fields (name / phone / address / notes → placeholders) via an admin update, not by deleting the doc.
-- **Orders cannot be hard-deleted.** Firestore rule `allow delete: if false` on `/orders/{id}`. Rationale: orders are financial records. Voiding an order is always done via `status: cancelled` + `cancellationReason` (already wired). Hard delete would break the money ledger and violate audit retention.
-- **Field to add later**: `archived: boolean` on customer docs for hiding an inactive customer from directory search without touching the data.
+- **Customers cannot be hard-deleted.** Firestore rule is `allow delete: if isOwner() && resource.data.testFixture == true` on `/customers/{id}` — not the blanket `if false` this entry originally claimed. The exception exists so fixtures seeded from `/settings.html` can be cleaned up in bulk; they carry `testFixture: true` and never represent a real customer. Rationale for the rule otherwise unchanged: customer records tied to past transactions must be retained under Vietnamese commercial-record retention (5–10 years for tax review). PDPD right-to-erasure requests are honoured by anonymizing personal fields (name / phone / address / notes → placeholders) via an admin update, not by deleting the doc.
+- **Orders cannot be hard-deleted.** Same shape: `allow delete: if isOwner() && resource.data.testFixture == true` on `/orders/{id}`. Rationale: orders are financial records. Voiding an order is always done via `status: cancelled` + `cancellationReason` (already wired). Hard delete would break the money ledger and violate audit retention.
+- ~~**Field to add later**: `archived: boolean` on customer docs~~ Shipped 2026-07-15 as the merge tombstone. `mergeCustomers` sets `archived: true` + `mergedInto` + `mergedAt` + `mergedBy` on the source doc; `customersApp.js` filters archived docs out of the directory, and `customerApp.js` shows a banner linking to the survivor when one is opened by URL. Retention is satisfied because the archived doc is kept — only its `authUid` / `email` / `phone` are cleared (originals preserved as `preMerge*`) so it can never be re-claimed or re-matched.
 
 ### Invoice creation (deferred — 2026-07-08)
 
@@ -251,7 +301,7 @@ Shipped 2026-07-09:
   - Edit-order dialog + delivery-payment dialog on `/admin.html` (`adminApp.js` — `saveEditedOrder`, `saveDeliveryPayment`). The delivery-payment dialog is the highest-risk one: a double-submit would create two `payments` docs, double-count `amountPaid`, and flip `balanceDue` negative — exactly the overpayment shape we saw in imported data.
   - Record-payment dialog on `/receivables.html` (`receivablesApp.js` — `saveRecordPayment`).
   - Forfeit dialog on `/deposits.html` (`depositsApp.js` — `saveForfeit`).
-  - Account page on `/account.html` (`accountApp.js`): email sign-in form, email sign-up button, Google sign-in button, password-reset button, profile-save form, and the phone-claim form. Non-form buttons (sign-up / reset / Google) pass the button element directly; forms pass the event.
+  - Account page on `/account.html` (`accountApp.js`): Google sign-in button, profile-save form, and the add-address form. Non-form buttons pass the button element directly; forms pass the event. (The email sign-in / sign-up / password-reset / phone-claim handlers this originally listed were removed on 2026-07-15 with the move to email-link sign-in; the magic-link form is wrapped in their place.)
   - Settings save on `/settings.html` (`settingsApp.js` — replaces the file-local hand-rolled disable/label swap that was already there).
 - Owner-side action buttons that fire via `prompt()` / `confirm()` (approve order, cancel order, assign driver, approve/dismiss cancellation request) are NOT wrapped: the modal blocks the UI thread so a second click cannot land before the write starts. Same for customer-side cancel / request-cancel buttons on `/account.html`.
 
@@ -456,13 +506,13 @@ Shipped 2026-07-07 (part 2):
 
 Goal: returning customers sign in once, then reorder with prefilled fields.
 
-- Login model: **Google one-tap** OR **email + password** — customer's choice. Both produce the same Firebase Auth `uid`, so downstream code and rules don't care which method was used.
-- Password reset flow available via `sendPasswordResetEmail` (Firebase handles the email + reset page).
+- Login model (since 2026-07-15): **Google popup** OR **passwordless email link**. Email + password was removed from the customer surface — the owner still uses it on `/admin.html`, so the Email/Password provider stays enabled in the console. Both customer methods produce the same Firebase Auth `uid`, so downstream code and rules don't care which was used.
+- Both methods set `email_verified: true` automatically, which is what makes the verified-email requirement in the customers rules free of friction. Any future sign-in method must preserve that, or legacy-profile claiming breaks.
 - Customer identity is the Firebase Auth `uid`; each customer doc stores `authUid` and is looked up by that field.
 - Firestore rules carry a `customer` tier that lets a signed-in user read/write only the customer doc where `authUid == request.auth.uid` and read only orders where `authUid == request.auth.uid`.
 
 Shipped 2026-07-07:
-- `/account.html` with Google + email-password sign-in, "create account", and password reset.
+- `/account.html` with Google + email-password sign-in, "create account", and password reset. **Superseded 2026-07-15** — password sign-in, sign-up, and reset were removed from the customer page in favour of the email link.
 - Editable profile (name, phone, address, area, notes).
 - Order history with per-order status pill AND payment status pill (paid / partial / unpaid).
 - One-tap reorder: `/account.html` order card → **Reorder** → `/index.html?reorder=<orderId>` → items preselected with original quantities so the customer only has to confirm and submit.
@@ -472,7 +522,7 @@ Shipped 2026-07-07:
 
 Still open:
 - Active subscriptions view.
-- Legacy customer docs from the Sheets import have no `authUid`, so a Google sign-in creates a fresh customer doc even if a legacy record exists for that person. A small admin merge tool ("attach this legacy customer to that signed-in user") would fix this without a bulk migration.
+- ~~Legacy customer docs from the Sheets import have no `authUid`… A small admin merge tool would fix this without a bulk migration.~~ Shipped 2026-07-15 — the merge tool exists, and the email path auto-links legacy docs that carry the customer's email. Legacy docs with **no** email still need a manual merge.
 - **Customer-facing status vocabulary.** Shipped 2026-07-07: `humanizeOrderStatus` in `accountApp.js` maps `pending_approval` → "Waiting for confirmation", `new` → "Confirmed — being prepared", `assigned` → "Being prepared", `out_for_delivery` → "On the way", `delivered` → "Delivered", `cancelled` → "Cancelled". Owner dashboard still uses the internal names for precision.
 - **Optional cancellation reason from the customer side.** If we let customers cancel their own pending order (not built yet), the cancel action should prompt for a reason. Owner-side cancellation reason is tracked separately under Admin dashboard workflow.
 
@@ -519,7 +569,11 @@ Third-party review flagged nine correctness/security issues + four scale bottlen
 
 ### Critical — fix in the next work session
 
-- ~~**Duplicate customer identity across entry points.**~~ Shipped 2026-07-14. Canonical `resolveCustomerId({ uid, phone })` in [firebase/web/assets/shared.js](firebase/web/assets/shared.js) — always prefers phone-based `CUS-<E164 digits>`, falls back to `CUS-<uid>` only when the caller has no phone. Wired into `buildOrderPayload` in [firebase/web/assets/publicApp.js:137](firebase/web/assets/publicApp.js:137) so a signed-in customer whose account was minted as `CUS-<uid>` still routes new orders onto the phone-keyed canonical doc. `upsertCustomerFromOrder` in [firebase/web/assets/adminApp.js:112](firebase/web/assets/adminApp.js:112) now also merges `email` and conditionally links `authUid` (only when the phone-keyed doc is unclaimed OR already claimed by the same uid) so signed-in orders auto-attach the account on approval, and a duplicate is never introduced by an owner-side approval. `findOrAutoLinkCustomer` in [firebase/web/assets/accountApp.js](firebase/web/assets/accountApp.js) grows a third `findUnclaimedByPhone` path so a `user.phoneNumber` sign-in (future phone-auth) collapses into the canonical doc instead of minting `CUS-<uid>`. Follow-ups still open: owner-side merge tool for the leftover `CUS-<uid>` stubs already created by earlier signups; phone-only claim UI for customers whose owner-added doc has no email.
+- ~~**Duplicate customer identity across entry points.**~~ Shipped 2026-07-14, **partially reverted 2026-07-15 — read this before touching `upsertCustomerFromOrder`.** Canonical `resolveCustomerId({ uid, phone })` in [firebase/web/assets/shared.js](firebase/web/assets/shared.js) — always prefers phone-based `CUS-<E164 digits>`, falls back to `CUS-<uid>` only when the caller has no phone. Wired into `buildOrderPayload` in [firebase/web/assets/publicApp.js](firebase/web/assets/publicApp.js) so a signed-in customer whose account was minted as `CUS-<uid>` still routes new orders onto the phone-keyed canonical doc. `findOrAutoLinkCustomer` in [firebase/web/assets/accountApp.js](firebase/web/assets/accountApp.js) grows a third `findUnclaimedByPhone` path so a `user.phoneNumber` sign-in (future phone-auth) collapses into the canonical doc instead of minting `CUS-<uid>`.
+
+  **The part that was reverted, and why it must not come back.** This entry originally shipped `upsertCustomerFromOrder` linking `authUid` on approval "**only when the phone-keyed doc is unclaimed** OR already claimed by the same uid". That unclaimed branch was an account takeover, removed 2026-07-15. Nothing proves the person typing a phone number into the public order form owns that number. An attacker signs in with any account, places an order quoting a stranger's phone, and the owner's routine approve stamps the attacker's `authUid` onto the stranger's record — handing over the profile and, through the orders claim rule, the full order history. Every customer who has never signed in was a target, and the ones with the most history were the most valuable. Firestore rules cannot catch it: the owner performs the write, and owners may write anything.
+
+  It was not an accident — auto-attaching on approval is precisely what kept duplicates from forming, which is what this roadmap entry set out to fix. Removing it brought the duplicate problem back, so `foldSelfServeStubInto` replaced it (see "Customer identity, merge, and auth" below). The guard now lives in `canLinkAuthUidToCustomer` in [firebase/web/assets/adminApp.js](firebase/web/assets/adminApp.js), pinned by a truth-table test at [firebase/rules-tests/authuid-linking.test.mjs](firebase/rules-tests/authuid-linking.test.mjs). **If a future change makes that test fail, the takeover is back. Do not "fix" the test.**
 
 - ~~**Customer claim-from-browser is broken by rules.**~~ MVP fix already in place. `findUnclaimedByPhone` was removed; rules were later widened to `allow read: if isCustomer() && resource.data.authUid == null && resource.data.email == request.auth.token.email` so `findUnclaimedByEmail` in [firebase/web/assets/accountApp.js:88](firebase/web/assets/accountApp.js:88) succeeds against unclaimed docs whose email matches the caller's Firebase Auth email. Production Cloud Function version still worth doing for the phone-only path (owner-created customer without email) but no longer critical — email path covers the common case.
 
