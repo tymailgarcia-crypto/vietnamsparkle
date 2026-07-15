@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Delivery map · Vietnam Sparkle</title>
+    <link rel="stylesheet" href="./assets/styles.css">
+    <style>
+      #map-canvas {
+        width: 100%;
+        height: 60vh;
+        min-height: 420px;
+        border-radius: 12px;
+        background: rgba(120, 120, 120, 0.08);
+      }
+      .map-legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-top: 8px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .map-legend .swatch {
+        display: inline-block;
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        margin-right: 6px;
+        vertical-align: middle;
+      }
+      .map-missing-banner {
+        margin-top: 12px;
+        padding: 10px 12px;
+        border-radius: 10px;
+        background: rgba(178, 109, 0, 0.12);
+        color: rgb(122, 76, 0);
+        font-size: 14px;
+      }
+      .map-config-banner {
+        padding: 16px;
+        border-radius: 12px;
+        background: rgba(179, 38, 30, 0.08);
+        color: rgb(122, 32, 22);
+      }
+      .loadout-chips { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+      .loadout-chip {
+        display: inline-flex; align-items: center; gap: 6px;
+        padding: 6px 12px; border-radius: 999px;
+        background: rgba(27, 104, 233, 0.08);
+        color: var(--ink); font-size: 13px;
+      }
+      .loadout-chip strong { font-weight: 700; }
+      .capacity-warning {
+        margin-top: 10px; padding: 10px 12px; border-radius: 10px;
+        background: rgba(178, 38, 30, 0.08);
+        color: rgb(122, 32, 22);
+        font-size: 13px; display: none;
+      }
+      .route-preview-svg {
+        width: 100%; height: auto; max-height: 260px;
+        display: block; margin-top: 14px;
+        background: rgba(27, 104, 233, 0.05);
+        border-radius: 12px;
+      }
+      .trip-legend { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 8px; color: var(--muted); font-size: 12px; }
+      .trip-legend-item { display: inline-flex; align-items: center; gap: 6px; }
+      .trip-legend-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 50%; }
+      .trip-block {
+        margin-top: 10px; padding: 10px 12px;
+        border-radius: 10px;
+        background: rgba(0, 0, 0, 0.02);
+        border: 1px solid rgba(0, 0, 0, 0.05);
+      }
+      .trip-header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+      .trip-header .button-link { margin-left: auto; }
+      .trip-color-dot { display: inline-block; width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
+      .route-stop-list { color: var(--ink); }
+      .route-stop-list li { margin: 2px 0; }
+      .planner-hint { font-size: 13px; color: var(--muted); margin-top: 8px; }
+    </style>
+  </head>
+  <body>
+    <main class="page has-admin-dock">
+      <section id="auth-view" class="auth-shell hidden">
+        <div class="auth-card">
+          <span class="pill">Owner sign-in required</span>
+          <h2>Sign in to view the delivery map</h2>
+          <div class="button-row">
+            <a class="button-link primary" href="./admin.html">Go to sign in</a>
+          </div>
+        </div>
+      </section>
+
+      <div id="app-view" class="hidden">
+        <a class="cog-button floating-settings" href="./settings.html" title="Settings" aria-label="Settings">⚙</a>
+        <section class="hero admin-dock">
+          <h1>Map</h1>
+          <div class="button-row">
+            <a class="button-link secondary" href="./admin.html">Dashboard</a>
+            <a class="button-link secondary" href="./customers.html">Customers</a>
+            <a class="button-link secondary" href="./orders.html">Orders</a>
+            <a class="button-link secondary" href="./map.html">Map</a>
+            <a class="button-link secondary" href="./receivables.html">Receivables</a>
+            <a class="button-link secondary" href="./deposits.html">Deposits</a>
+          </div>
+          <span id="auth-email" class="hidden"></span>
+        </section>
+
+        <section class="panel">
+          <div class="toolbar">
+            <div></div>
+            <div class="button-row" style="flex-wrap:wrap;gap:8px">
+              <select id="driver-filter" title="Filter by driver">
+                <option value="">All drivers</option>
+                <option value="__unassigned__">Unassigned</option>
+              </select>
+              <select id="status-filter" title="Filter by status">
+                <option value="approved">Approved (new · assigned · out for delivery)</option>
+                <option value="new">Approved only</option>
+                <option value="assigned">Assigned only</option>
+                <option value="out_for_delivery">Out for delivery only</option>
+                <option value="delivered">Delivered</option>
+              </select>
+              <label class="muted">Date <input id="map-date" type="date" required></label>
+              <button class="secondary" id="refresh-button" type="button">Refresh</button>
+              <button class="primary" id="plan-trips-button" type="button" disabled>Plan trips</button>
+            </div>
+          </div>
+
+          <p class="muted" id="list-status" style="margin-top:12px"></p>
+          <div id="missing-banner" class="map-missing-banner" style="display:none"></div>
+
+          <div id="map-config-needed" class="map-config-banner" style="display:none">
+            <strong>Google Maps API key not configured.</strong>
+            <div style="margin-top:6px">
+              Set <code>mapsApiKey</code> in <code>assets/firebaseWebConfig.js</code> to a Google Maps JavaScript API key with both <em>Maps JavaScript API</em> and <em>Geocoding API</em> enabled. Restrict the key to your hosting domain before shipping.
+            </div>
+          </div>
+
+          <div id="map-canvas" style="margin-top:12px"></div>
+          <div class="map-legend" id="map-legend"></div>
+
+          <div class="customer-table-wrap" style="margin-top:16px">
+            <table class="customer-table map-order-table">
+              <colgroup>
+                <col>
+                <col class="map-products-col">
+                <col>
+                <col class="map-address-col">
+                <col class="map-order-id-col">
+                <col>
+              </colgroup>
+              <thead>
+                <tr>
+                  <th>Customer</th>
+                  <th>Products</th>
+                  <th>Phone</th>
+                  <th>Address</th>
+                  <th>Order ID</th>
+                  <th>Driver</th>
+                </tr>
+              </thead>
+              <tbody id="order-rows"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel" id="trip-planner-panel">
+          <h2>Trip planner</h2>
+          <p class="muted planner-hint" id="planner-hint">Pick a single driver above (not "All drivers") and a single day to plan trips.</p>
+          <div id="planner-capacity"></div>
+          <div id="planner-results" class="stack" style="margin-top:12px"></div>
+        </section>
+      </div>
+    </main>
+
+    <script type="module" src="./assets/mapApp.js"></script>
+  </body>
+</html>

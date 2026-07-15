@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <base target="_top">
+    <script>
+      window.__APP_CONFIG__ = <?!= appConfig ?>;
+      window.__ADMIN_INITIAL_DATA__ = <?!= initialAdminData ?>;
+    </script>
+    <?!= include('AdminStyles'); ?>
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar">
+        <div class="sidebar-head">
+          <p class="eyebrow">Owner Dispatch</p>
+          <h1 id="business-name">Water Delivery Owner</h1>
+          <p class="muted">Phone-first control for today’s routes, customers, money, and deposits.</p>
+        </div>
+
+        <div class="panel compact">
+          <label for="dashboard-date">Working date</label>
+          <input id="dashboard-date" type="date">
+          <button class="secondary" id="refresh-dashboard" type="button">Refresh</button>
+          <button class="secondary" id="seed-test-data" type="button">Seed Test Data</button>
+        </div>
+
+        <nav class="nav">
+          <button data-tab-target="today" class="tab-link active" type="button">Today<span class="nav-badge" id="today-tab-badge" data-count="0"></span></button>
+          <button data-tab-target="new-order" class="tab-link" type="button">Manual Order</button>
+          <button data-tab-target="customers" class="tab-link" type="button">Customers</button>
+          <button data-tab-target="money" class="tab-link" type="button">Money</button>
+        </nav>
+      </aside>
+
+      <main class="content">
+        <section class="hero">
+          <div>
+            <p class="eyebrow">Single Operator Workflow</p>
+            <h2>Run dispatch, collect payments, and track deposits without leaving the owner dashboard.</h2>
+          </div>
+          <div class="hero-card" id="hero-totals">
+            <span>Loading dashboard...</span>
+          </div>
+        </section>
+
+        <section id="tab-today" class="tab-panel active">
+          <div class="notice danger" id="pending-approval-banner" hidden>
+            <span id="pending-approval-banner-text">Orders awaiting approval</span>
+            <button type="button" id="pending-approval-jump">Review pending</button>
+          </div>
+          <div class="panel">
+            <div class="panel-heading">
+              <div>
+                <h3>Today board</h3>
+                <p class="muted">Saved orders appear here immediately. Use status changes to move them through dispatch.</p>
+              </div>
+              <div class="filters">
+                <select id="filter-status">
+                  <option value="">All statuses</option>
+                </select>
+                <select id="filter-helper">
+                  <option value="">All drivers</option>
+                </select>
+              </div>
+            </div>
+            <div id="today-summary" class="totals-grid compact"></div>
+            <div id="today-board" class="board-grid top-gap"></div>
+          </div>
+        </section>
+
+        <section id="tab-new-order" class="tab-panel">
+          <div class="panel">
+            <div class="panel-heading">
+              <div>
+                <h3>Manual order</h3>
+                <p class="muted">Look up the customer by phone first, then tap quantities from the real product catalog.</p>
+              </div>
+            </div>
+
+            <div class="lookup-strip">
+              <label>
+                Customer phone
+                <input id="quick-phone" type="tel" placeholder="0900 000 001">
+              </label>
+              <button id="lookup-customer" type="button">Lookup customer</button>
+            </div>
+            <div id="lookup-feedback" class="muted top-gap"></div>
+
+            <form id="order-form" class="form-grid top-gap">
+              <label>
+                Assign driver
+                <select name="assignedHelperId" id="order-helper"></select>
+              </label>
+              <label>
+                Customer name
+                <input name="customerName" required type="text" placeholder="Tran Minh">
+              </label>
+              <label>
+                Phone
+                <input name="phone" required type="tel" placeholder="0900 000 001">
+              </label>
+              <label>
+                Area
+                <input name="area" type="text" placeholder="Hai Chau">
+              </label>
+              <label>
+                Delivery date
+                <input name="deliveryDate" id="order-delivery-date" required type="date">
+              </label>
+              <label class="span-2">
+                Address
+                <input name="address" required type="text" placeholder="12 Nguyen Hue">
+              </label>
+              <label class="span-2">
+                Delivery window
+                <input name="deliveryWindow" type="text" placeholder="Morning / 13:00-15:00">
+              </label>
+              <label class="span-2">
+                Order notes
+                <textarea name="notes" rows="2" placeholder="Stairs, call before arrival, empty pickup, reception instructions, etc."></textarea>
+              </label>
+            </form>
+
+            <div class="catalog-stack top-gap">
+              <div class="panel nested-panel">
+                <div class="panel-heading">
+                  <div>
+                    <h3>Glass bottle water</h3>
+                    <p class="muted">Choose how many crates the customer wants.</p>
+                  </div>
+                </div>
+                <div id="catalog-glass" class="catalog-list"></div>
+              </div>
+
+              <div class="panel nested-panel">
+                <div class="panel-heading">
+                  <div>
+                    <h3>Large water jugs</h3>
+                    <p class="muted">Choose how many jugs to deliver.</p>
+                  </div>
+                </div>
+                <div id="catalog-jug" class="catalog-list"></div>
+              </div>
+
+              <div class="panel nested-panel">
+                <div class="panel-heading">
+                  <div>
+                    <h3>Extra items</h3>
+                    <p class="muted">Optional extras such as filters, straws, tests, or coconuts.</p>
+                  </div>
+                </div>
+                <div id="catalog-addon" class="catalog-list"></div>
+              </div>
+            </div>
+
+            <div class="panel nested-panel top-gap">
+              <div class="panel-heading">
+                <div>
+                  <h3>Payment summary</h3>
+                  <p class="muted">Subtotal, deposit amount, and remaining due update automatically.</p>
+                </div>
+              </div>
+              <div id="order-totals" class="totals-grid compact"></div>
+            </div>
+
+            <div class="audit-grid top-gap">
+              <div class="panel form-card">
+                <h3>Initial payment</h3>
+                <div class="form-grid compact-grid">
+                  <label>
+                    Amount
+                    <input id="initial-payment-amount" type="number" min="0" step="1000" placeholder="0">
+                  </label>
+                  <label>
+                    Method
+                    <select id="initial-payment-method"></select>
+                  </label>
+                  <label>
+                    Reference
+                    <input id="initial-payment-reference" type="text" placeholder="Transfer code or note">
+                  </label>
+                  <label>
+                    Received by
+                    <input id="initial-payment-received-by" type="text" placeholder="Owner">
+                  </label>
+                  <label class="span-2">
+                    Proof link
+                    <input id="initial-payment-proof-link" type="url" placeholder="Google Drive link">
+                  </label>
+                </div>
+              </div>
+
+              <div class="panel form-card">
+                <h3>Deposit suggestion</h3>
+                <div class="form-grid compact-grid">
+                  <label>
+                    Container type
+                    <input id="deposit-container-type" type="text" placeholder="Auto from selected items">
+                  </label>
+                  <label>
+                    Qty
+                    <input id="deposit-qty" type="number" min="0" step="1" placeholder="0">
+                  </label>
+                  <label>
+                    Amount
+                    <input id="deposit-amount" type="number" min="0" step="1000" placeholder="0">
+                  </label>
+                  <label class="span-2">
+                    Proof link
+                    <input id="deposit-proof-link" type="url" placeholder="Optional evidence link">
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            <div class="form-actions top-gap">
+              <button id="save-order" type="button">Save order</button>
+              <span id="form-feedback" class="muted"></span>
+            </div>
+          </div>
+        </section>
+
+        <section id="tab-customers" class="tab-panel">
+          <div class="panel">
+            <div class="panel-heading">
+              <div>
+                <h3>Customers</h3>
+                <p class="muted">Look up balances, repeat orders, and the last delivery details fast.</p>
+              </div>
+            </div>
+            <div class="lookup-strip">
+              <input id="history-phone" type="tel" placeholder="Search by phone number">
+              <button id="load-history" type="button">Load history</button>
+            </div>
+            <div id="customer-history" class="history-list top-gap"></div>
+            <div id="customers-list" class="history-list top-gap"></div>
+          </div>
+        </section>
+
+        <section id="tab-money" class="tab-panel">
+          <nav class="sub-nav" role="tablist" aria-label="Money sub-sections">
+            <button type="button" class="active" data-money-target="payments">Payments</button>
+            <button type="button" data-money-target="deposits">Deposits &amp; Returns</button>
+            <button type="button" data-money-target="purchases">Purchases</button>
+            <button type="button" data-money-target="expenses">Expenses</button>
+            <button type="button" data-money-target="documents">Documents</button>
+          </nav>
+
+          <section class="money-panel active" data-money-panel="payments">
+            <div id="audit-summary-grid" class="totals-grid"></div>
+
+            <div class="panel top-gap">
+              <div class="panel-heading">
+                <div>
+                  <h3>Unpaid orders</h3>
+                  <p class="muted">Orders that still need collection follow-up today.</p>
+                </div>
+              </div>
+              <div id="unpaid-orders-list" class="history-list"></div>
+            </div>
+
+            <div class="audit-grid top-gap">
+              <div class="panel form-card">
+                <h3>Record payment</h3>
+                <p class="muted">This is the main daily action for normal customers.</p>
+                <div class="form-grid compact-grid">
+                  <label>
+                    Order
+                    <select id="payment-order-id"></select>
+                  </label>
+                  <label>
+                    Date
+                    <input id="payment-date" type="date">
+                  </label>
+                  <label>
+                    Method
+                    <select id="payment-method"></select>
+                  </label>
+                  <label>
+                    Amount
+                    <input id="payment-amount" type="number" min="0" step="1000">
+                  </label>
+                  <label>
+                    Reference
+                    <input id="payment-reference" type="text">
+                  </label>
+                  <label>
+                    Received by
+                    <input id="payment-received-by" type="text" placeholder="Owner">
+                  </label>
+                  <label class="span-2">
+                    Proof link
+                    <input id="payment-proof-link" type="url" placeholder="Google Drive link">
+                  </label>
+                </div>
+                <button id="record-payment" type="button">Save payment</button>
+              </div>
+            </div>
+
+            <div class="panel top-gap">
+              <h3>Recent payments</h3>
+              <div id="payments-list" class="history-list"></div>
+            </div>
+          </section>
+
+          <section class="money-panel" data-money-panel="deposits">
+            <div class="audit-grid">
+              <div class="panel form-card">
+                <h3>Record return / deposit release</h3>
+                <div class="form-grid compact-grid">
+                  <label>
+                    Customer
+                    <select id="return-customer-id"></select>
+                  </label>
+                  <label>
+                    Related order
+                    <select id="return-order-id"></select>
+                  </label>
+                  <label>
+                    Container type
+                    <input id="return-container-type" type="text" placeholder="glass_crate / 19l_jug">
+                  </label>
+                  <label>
+                    Qty returned
+                    <input id="return-qty" type="number" min="0" step="1">
+                  </label>
+                  <label>
+                    Date
+                    <input id="return-date" type="date">
+                  </label>
+                  <label>
+                    Condition
+                    <select id="return-condition"></select>
+                  </label>
+                  <label>
+                    Refund action
+                    <select id="return-action">
+                      <option value="">No money movement</option>
+                      <option value="refunded">Refunded</option>
+                      <option value="credited">Credited</option>
+                    </select>
+                  </label>
+                  <label>
+                    Refund / credit amount
+                    <input id="return-amount" type="number" min="0" step="1000">
+                  </label>
+                  <label class="span-2">
+                    Proof link
+                    <input id="return-proof-link" type="url" placeholder="Google Drive link">
+                  </label>
+                </div>
+                <button id="record-return" type="button">Save return</button>
+              </div>
+            </div>
+
+            <div class="panel top-gap">
+              <h3>Recent deposit activity</h3>
+              <div id="deposits-list" class="history-list"></div>
+            </div>
+          </section>
+
+          <section class="money-panel" data-money-panel="purchases">
+            <div class="audit-grid">
+              <div class="panel form-card">
+                <h3>Record purchase</h3>
+                <div class="form-grid compact-grid">
+                  <label>
+                    Supplier
+                    <input id="purchase-supplier" type="text">
+                  </label>
+                  <label>
+                    Date
+                    <input id="purchase-date" type="date">
+                  </label>
+                  <label class="span-2">
+                    Item
+                    <input id="purchase-item" type="text">
+                  </label>
+                  <label>
+                    Qty
+                    <input id="purchase-qty" type="number" min="0" step="1">
+                  </label>
+                  <label>
+                    Unit cost
+                    <input id="purchase-unit-cost" type="number" min="0" step="1000">
+                  </label>
+                  <label>
+                    Invoice number
+                    <input id="purchase-invoice-number" type="text">
+                  </label>
+                  <label>
+                    Payment status
+                    <select id="purchase-payment-status">
+                      <option value="unpaid">Unpaid</option>
+                      <option value="partial">Partial</option>
+                      <option value="paid">Paid</option>
+                    </select>
+                  </label>
+                  <label class="span-2">
+                    Proof link
+                    <input id="purchase-proof-link" type="url" placeholder="Google Drive link">
+                  </label>
+                </div>
+                <button id="record-purchase" type="button">Save purchase</button>
+              </div>
+            </div>
+
+            <div class="panel top-gap">
+              <h3>Recent purchases</h3>
+              <div id="purchases-list" class="history-list"></div>
+            </div>
+          </section>
+
+          <section class="money-panel" data-money-panel="expenses">
+            <div class="audit-grid">
+              <div class="panel form-card">
+                <h3>Record expense</h3>
+                <div class="form-grid compact-grid">
+                  <label>
+                    Date
+                    <input id="expense-date" type="date">
+                  </label>
+                  <label>
+                    Category
+                    <select id="expense-category"></select>
+                  </label>
+                  <label class="span-2">
+                    Description
+                    <input id="expense-description" type="text">
+                  </label>
+                  <label>
+                    Amount
+                    <input id="expense-amount" type="number" min="0" step="1000">
+                  </label>
+                  <label>
+                    Payment method
+                    <select id="expense-payment-method"></select>
+                  </label>
+                  <label>
+                    Paid to
+                    <input id="expense-paid-to" type="text">
+                  </label>
+                  <label class="span-2">
+                    Proof link
+                    <input id="expense-proof-link" type="url" placeholder="Google Drive link">
+                  </label>
+                </div>
+                <button id="record-expense" type="button">Save expense</button>
+              </div>
+            </div>
+
+            <div class="panel top-gap">
+              <h3>Recent expenses</h3>
+              <div id="expenses-list" class="history-list"></div>
+            </div>
+          </section>
+
+          <section class="money-panel" data-money-panel="documents">
+            <div class="audit-grid">
+              <div class="panel form-card">
+                <h3>Attach document</h3>
+                <div class="form-grid compact-grid">
+                  <label>
+                    Entity type
+                    <select id="document-entity-type">
+                      <option value="order">Order</option>
+                      <option value="payment">Payment</option>
+                      <option value="purchase">Purchase</option>
+                      <option value="expense">Expense</option>
+                      <option value="return">Return</option>
+                      <option value="customer">Customer</option>
+                    </select>
+                  </label>
+                  <label>
+                    Entity ID
+                    <input id="document-entity-id" type="text" placeholder="ORD-..., PAY-..., PUR-...">
+                  </label>
+                  <label>
+                    Document type
+                    <select id="document-type"></select>
+                  </label>
+                  <label class="span-2">
+                    Drive link
+                    <input id="document-drive-link" type="url" placeholder="https://drive.google.com/...">
+                  </label>
+                  <label class="span-2">
+                    Notes
+                    <input id="document-notes" type="text" placeholder="Why this file matters for audit">
+                  </label>
+                </div>
+                <button id="record-document" type="button">Save document link</button>
+              </div>
+            </div>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <?!= include('AdminScripts'); ?>
+  </body>
+</html>

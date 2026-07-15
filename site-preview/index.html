@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Da Nang Water</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+      :root {
+        --ink: #0f2139;
+        --body: rgba(60, 72, 84, 0.85);
+        --brand: #1b68e9;
+        --brand-dark: #0c3870;
+        --sky-tint: rgba(46, 134, 246, 0.10);
+        --sky-tint-strong: rgba(46, 134, 246, 0.17);
+        --surface: #ffffff;
+        --canvas: #f5f8ff;
+        --line: rgba(15, 33, 57, 0.08);
+      }
+
+      body {
+        margin: 0;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        background: var(--canvas);
+        color: var(--body);
+        -webkit-font-smoothing: antialiased;
+      }
+
+      main {
+        max-width: 1080px;
+        margin: 32px auto;
+        padding: 40px;
+        border-radius: 20px;
+        background: var(--surface);
+        border: 1px solid var(--line);
+        box-shadow: 0 24px 60px rgba(15, 33, 57, 0.06);
+      }
+
+      h1 {
+        margin: 8px 0 20px;
+        font-size: 44px;
+        line-height: 1.05;
+        color: var(--ink);
+        letter-spacing: -0.02em;
+      }
+
+      h2 {
+        margin: 0 0 8px;
+        color: var(--ink);
+        font-size: 18px;
+      }
+
+      p { line-height: 1.6; }
+
+      .actions,
+      .cards {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+
+      .actions {
+        margin: 22px 0 28px;
+      }
+
+      a {
+        display: inline-block;
+        text-decoration: none;
+        border-radius: 12px;
+        padding: 13px 20px;
+        font-weight: 600;
+      }
+
+      .primary {
+        background: var(--brand);
+        color: #ffffff;
+        box-shadow: 0 6px 20px rgba(27, 104, 233, 0.28);
+      }
+
+      .secondary {
+        background: var(--sky-tint);
+        color: var(--brand-dark);
+      }
+
+      article {
+        flex: 1 1 220px;
+        padding: 18px;
+        border-radius: 14px;
+        border: 1px solid var(--line);
+        background: #fbfcff;
+      }
+
+      article p {
+        margin: 8px 0 0;
+        font-size: 14px;
+      }
+
+      .note {
+        margin-top: 20px;
+        padding: 16px;
+        border-radius: 12px;
+        background: var(--sky-tint);
+        border: 1px solid var(--sky-tint-strong);
+        color: var(--ink);
+        font-size: 14px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <p>Static preview for the revised landing page.</p>
+      <h1>Get your mineral water delivered in Da Nang.</h1>
+      <p>The public site is now form-first. Customers are pushed through one structured order form so their contact details, address, requested products, delivery slot, and notes land safely in Google Sheets before any WhatsApp or Facebook follow-up happens.</p>
+      <div class="actions">
+        <a class="primary" href="#order-form">Start order form</a>
+        <a class="secondary" href="#products">Products</a>
+        <a class="secondary" href="#support">Chat after form</a>
+      </div>
+      <div class="cards" id="products">
+        <article>
+          <h2>Glass bottles</h2>
+          <p>Danh Thanh, Thach Bich, Vikoda, and purified glass options are presented as reusable, deposit-backed products.</p>
+        </article>
+        <article>
+          <h2>Big jugs</h2>
+          <p>Thach Bich, Vikoda, and Uni by Sunrise jug options are positioned for home and office use with delivery thresholds.</p>
+        </article>
+        <article>
+          <h2>Structured intake</h2>
+          <p>The Apps Script version now renders every public menu item from one catalog and gives each item its own quantity input, then stores the request in separate sheet columns.</p>
+        </article>
+      </div>
+      <div class="note" id="order-form">Primary customer action: complete the order form first. After that, staff can confirm details over WhatsApp, Facebook, Zalo, phone, or email.</div>
+      <div class="note" id="support">Before publishing, replace the placeholder WhatsApp, Facebook, and Zalo links in <code>00_Config.gs</code> and deploy the Apps Script web app again.</div>
+    </main>
+  </body>
+</html>

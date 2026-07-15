@@ -1,0 +1,295 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    // Customer tokens omit `role` entirely, so a bare request.auth.token.role
+    // raises "Property role is undefined on object" on every customer request.
+    // Today that error is masked — it just makes this operand deny and the ||
+    // falls through to a customer branch — but it means these helpers throw on
+    // the most common request in the app, and any future rule that puts them
+    // somewhere an error isn't swallowed would break. .get() returns the
+    // default cleanly instead. Same reasoning as isCustomer() below, which
+    // already guards for this.
+    function isOwner() {
+      return isSignedIn() && request.auth.token.get('role', null) == 'owner';
+    }
+    function isDriver() {
+      return isSignedIn() && request.auth.token.get('role', null) == 'driver';
+    }
+    function myDriverId() {
+      return request.auth.token.get('driverId', null);
+    }
+    function isCustomer() {
+      // A signed-in user with no owner/driver role. Custom-claim tokens omit
+      // the `role` key entirely for customer accounts, so we test both
+      // "key absent" and "key explicitly null" — v2 rules don't treat those
+      // as equivalent, and `role == null` alone silently denies every read
+      // for tokens that never had the claim set.
+      return isSignedIn()
+        && (!('role' in request.auth.token) || request.auth.token.role == null);
+    }
+    function myUid() {
+      return request.auth.uid;
+    }
+
+    // Email ownership must be PROVEN, not merely asserted. Firebase's
+    // identitytoolkit REST signUp endpoint is public and only needs the web
+    // API key (which ships in the client bundle by design), so anyone can mint
+    // a token carrying an arbitrary `email` with `email_verified: false`.
+    // Every rule that grants access based on an email string matching MUST
+    // also require this, or it grants that access to anyone who can type the
+    // victim's address.
+    //
+    // Both live customer sign-in paths (Google popup, and the passwordless
+    // email link on /account.html) set email_verified: true automatically, so
+    // this costs legitimate users nothing. Legacy password accounts created
+    // before 2026-07-15 may carry false — those users re-verify simply by
+    // signing in once via the email-link flow.
+    // .get() rather than bare field access: a token minted without an
+    // `email_verified` claim at all (custom token, anonymous auth) would make
+    // `request.auth.token.email_verified` raise an evaluation error instead of
+    // cleanly returning false.
+    function hasVerifiedEmail() {
+      return isSignedIn()
+        && request.auth.token.get('email_verified', false) == true
+        && request.auth.token.get('email', null) is string;
+    }
+
+    function orderMathValid() {
+      let d = request.resource.data;
+      return d.subtotal is number && d.subtotal >= 0
+        && d.depositTotal is number && d.depositTotal >= 0
+        && d.amountPaid is number && d.amountPaid >= 0
+        && d.balanceDue is number
+        && d.balanceDue == d.subtotal + d.depositTotal - d.amountPaid
+        && d.paymentStatus in ['unpaid', 'partial', 'paid']
+        && (d.paymentStatus != 'paid' || d.balanceDue <= 0)
+        && (d.paymentStatus != 'unpaid' || d.amountPaid == 0);
+    }
+
+    function touchesMoneyFields() {
+      return request.resource.data.diff(resource.data).affectedKeys()
+        .hasAny(['subtotal', 'depositTotal', 'amountPaid', 'balanceDue', 'paymentStatus']);
+    }
+
+    function isDeliveryTransition() {
+      return request.resource.data.status == 'delivered'
+        && resource.data.status != 'delivered';
+    }
+
+    function hasValidDeliveryPayment() {
+      // NOTE: cannot use exists() here — the payments doc is created in the
+      // same writeBatch as this order update, and Firestore rules evaluate
+      // exists() against the pre-batch state, so it always returns false
+      // and blocks the transition. We require the id to be a string; the
+      // client always writes the payments doc in the same batch, and a
+      // nightly reconciliation should catch any orphan ids.
+      return request.resource.data.deliveryPaymentEventId is string
+        && request.resource.data.deliveryPaymentEventId.size() > 0;
+    }
+
+    // Public orders now flow through the `submitPublicOrder` Cloud Function
+    // (see firebase/functions/index.js), which reads canonical product prices
+    // server-side and writes via the Admin SDK (bypasses rules). The
+    // browser-write path is closed — only owners can create orders directly.
+
+    match /orders/{orderId} {
+      allow read: if isOwner()
+        || (isDriver() && resource.data.assignedDriverId == myDriverId())
+        || (isCustomer() && resource.data.authUid == myUid());
+      allow create: if isOwner() && orderMathValid();
+      allow update: if (isOwner()
+            && (!touchesMoneyFields() || orderMathValid())
+            && (!isDeliveryTransition() || hasValidDeliveryPayment()))
+        || (isDriver()
+            && resource.data.assignedDriverId == myDriverId()
+            && (
+              (!isDeliveryTransition()
+                && request.resource.data.diff(resource.data).affectedKeys()
+                     .hasOnly(['status', 'updatedAt', 'notes']))
+              ||
+              (isDeliveryTransition()
+                && hasValidDeliveryPayment()
+                && request.resource.data.diff(resource.data).affectedKeys()
+                     .hasOnly(['status', 'updatedAt', 'notes', 'deliveryPaymentEventId',
+                               'amountPaid', 'balanceDue', 'paymentStatus', 'followUpBy'])
+                && (!touchesMoneyFields() || orderMathValid()))
+            ))
+        || (isCustomer()
+            && resource.data.authUid == myUid()
+            && (
+              (resource.data.status == 'pending_approval'
+               && request.resource.data.status == 'cancelled'
+               && request.resource.data.diff(resource.data).affectedKeys()
+                    .hasOnly(['status', 'cancellationReason', 'cancelledAt', 'cancelledBy', 'updatedAt']))
+              ||
+              (request.resource.data.status == resource.data.status
+               && resource.data.status != 'delivered'
+               && resource.data.status != 'cancelled'
+               && request.resource.data.diff(resource.data).affectedKeys()
+                    .hasOnly(['cancellationRequested', 'cancellationRequestReason', 'cancellationRequestedAt', 'updatedAt']))
+            ))
+        || (isCustomer()
+            && resource.data.authUid == null
+            && request.resource.data.authUid == myUid()
+            && request.resource.data.diff(resource.data).affectedKeys()
+                 .hasOnly(['authUid', 'updatedAt'])
+            && resource.data.customerId is string
+            && get(/databases/$(database)/documents/customers/$(resource.data.customerId)).data.authUid == myUid());
+      // Compliance: orders are financial records. Never hard-delete real orders.
+      // The one exception is docs the owner explicitly seeded as test fixtures
+      // from /settings.html — they carry testFixture: true and can be cleaned
+      // up in bulk without piling up cancelled rows on the today board.
+      allow delete: if isOwner() && resource.data.testFixture == true;
+    }
+
+    match /orderItems/{itemId} {
+      allow read: if isOwner() || isDriver()
+        || (isCustomer() && resource.data.authUid == myUid());
+      allow create: if isOwner();
+      allow update: if isOwner();
+      allow delete: if isOwner();
+    }
+
+    match /customers/{customerId} {
+      // Signed-in customer can read their own doc (authUid match) OR an
+      // unclaimed doc whose email matches their VERIFIED Firebase Auth email
+      // — this is what unblocks accountApp.js's auto-link on first sign-in.
+      // Without this, the query for unclaimed-by-email silently returns empty
+      // and the customer can never claim their legacy owner-created profile.
+      // hasVerifiedEmail() is load-bearing: without it this branch hands the
+      // profile to anyone who registers with the victim's address.
+      allow read: if isOwner() || isDriver()
+        || (isCustomer() && resource.data.authUid == myUid())
+        || (isCustomer()
+            && hasVerifiedEmail()
+            && resource.data.authUid == null
+            && resource.data.email is string
+            && resource.data.email == request.auth.token.email);
+      // A customer may only create their OWN uid-keyed stub. Two constraints
+      // matter here:
+      //   - Pinning the doc id to CUS-<uid> stops id squatting: without it a
+      //     customer could create customers/CUS-<someone-elses-phone> with
+      //     their own authUid, and upsertCustomerFromOrder (adminApp.js)
+      //     refuses to overwrite a non-null authUid — so the squatter would
+      //     hold that phone's canonical doc permanently and the real customer
+      //     could never claim it.
+      //   - Pinning email to the verified token email stops a customer from
+      //     seeding a doc with a victim's address to catch a later merge.
+      // The owner keeps an unconstrained create for phone-keyed docs.
+      // NOTE: every optional field below is read via .get(key, default).
+      // Bare `request.resource.data.email` raises an evaluation error when the
+      // key is absent, which denies the write — so a customer whose doc simply
+      // omits `email` would be locked out rather than allowed through.
+      allow create: if isOwner()
+        || (isCustomer()
+            && request.resource.data.authUid == myUid()
+            && customerId == 'CUS-' + myUid()
+            && (request.resource.data.get('email', null) == null
+                || (hasVerifiedEmail()
+                    && request.resource.data.get('email', null) == request.auth.token.email))
+            && !request.resource.data.keys().hasAny(['archived', 'mergedInto', 'testFixture']));
+      allow update: if isOwner()
+        || (isCustomer()
+            && resource.data.authUid == myUid()
+            && request.resource.data.authUid == resource.data.authUid
+            // Merge tombstones are owner-managed state; a customer must not be
+            // able to set or clear them on a doc they happen to own.
+            && !request.resource.data.diff(resource.data).affectedKeys()
+                 .hasAny(['archived', 'mergedInto', 'testFixture'])
+            // Email stays either untouched or pinned to the verified token.
+            // Otherwise a customer could stamp a victim's address onto their
+            // own doc, producing a convincing duplicate that baits the owner
+            // into merging the victim's history into the attacker's record.
+            && (request.resource.data.get('email', null) == resource.data.get('email', null)
+                || (hasVerifiedEmail()
+                    && request.resource.data.get('email', null) == request.auth.token.email)))
+        || (isCustomer()
+            && hasVerifiedEmail()
+            && resource.data.authUid == null
+            && resource.data.email is string
+            && resource.data.email == request.auth.token.email
+            && request.resource.data.authUid == myUid()
+            && request.resource.data.diff(resource.data).affectedKeys()
+                 .hasOnly(['authUid', 'updatedAt']));
+      // Compliance: customer records tied to past transactions must be retained.
+      // Use archived: true (or anonymize personal fields) instead of hard-delete.
+      // Exception: fixtures seeded from /settings.html carry testFixture: true
+      // and are safe to remove — they never represent a real customer.
+      allow delete: if isOwner() && resource.data.testFixture == true;
+    }
+
+    match /products/{productId} {
+      allow read: if true;
+      allow write: if isOwner();
+    }
+
+    match /drivers/{driverId} {
+      allow read: if isSignedIn();
+      allow write: if isOwner();
+    }
+
+    match /payments/{paymentId} {
+      allow read: if isOwner()
+        || (isCustomer() && resource.data.authUid == myUid());
+      allow create: if isOwner()
+        || (isDriver()
+            && request.resource.data.orderId is string
+            && get(/databases/$(database)/documents/orders/$(request.resource.data.orderId)).data.assignedDriverId == myDriverId()
+            && request.resource.data.amount is number
+            && request.resource.data.amount >= 0);
+      allow update, delete: if isOwner();
+    }
+    match /depositEvents/{eventId} {
+      allow read: if isOwner()
+        || (isCustomer() && resource.data.authUid == myUid());
+      allow create: if isOwner()
+        || (isDriver()
+            && request.resource.data.orderId is string
+            && get(/databases/$(database)/documents/orders/$(request.resource.data.orderId)).data.assignedDriverId == myDriverId()
+            && request.resource.data.qty is number
+            && request.resource.data.qty >= 0
+            && request.resource.data.amount is number
+            && request.resource.data.amount >= 0);
+      allow update, delete: if isOwner();
+    }
+    match /returns/{returnId} {
+      allow read: if isOwner()
+        || (isCustomer() && resource.data.authUid == myUid());
+      allow write: if isOwner();
+    }
+    match /purchases/{purchaseId}    { allow read, write: if isOwner(); }
+    match /expenses/{expenseId}      { allow read, write: if isOwner(); }
+    match /documents/{documentId}    { allow read, write: if isOwner(); }
+    match /dailySummaries/{summaryId} { allow read, write: if isOwner(); }
+
+    match /settings/{settingId} {
+      allow read: if true;
+      allow write: if isOwner();
+    }
+
+    // Audit trail written by the nightly reconciliation Cloud Function
+    // (firebase/functions/index.js::nightlyReconcileOrderMath). Admin SDK
+    // bypasses these rules on write; clients get owner-only read and no
+    // write path at all.
+    match /reconciliationReports/{runId} {
+      allow read: if isOwner();
+      allow write: if false;
+      match /drifts/{orderId} {
+        allow read: if isOwner();
+        allow write: if false;
+      }
+    }
+
+    match /inquiries/{inquiryId} {
+      allow read, update, delete: if isOwner();
+      allow create: if request.resource.data.name is string
+        && request.resource.data.name.size() > 0
+        && request.resource.data.name.size() < 200
+        && request.resource.data.phone is string
+        && request.resource.data.phone.size() < 40;
+    }
+  }
+}

@@ -1,0 +1,1265 @@
+<script>
+  function createEmptyAuditState() {
+    return {
+      summary: {},
+      recentPayments: [],
+      recentDeposits: [],
+      recentReturns: [],
+      recentPurchases: [],
+      recentExpenses: [],
+      recentDocuments: [],
+      unpaidOrders: [],
+      customerBalances: []
+    };
+  }
+
+  function cloneData(value) {
+    return JSON.parse(JSON.stringify(value));
+  }
+
+  const state = {
+    config: window.__APP_CONFIG__ || {},
+    initialData: window.__ADMIN_INITIAL_DATA__ || null,
+    products: [],
+    helpers: [],
+    orders: [],
+    customers: [],
+    customersLoaded: false,
+    totals: null,
+    effectiveDate: null,
+    currentHistory: null,
+    auditDate: null,
+    audit: createEmptyAuditState()
+  };
+
+  document.addEventListener('DOMContentLoaded', () => {
+    try {
+      wireTabs();
+      bindActions();
+      initializeDates();
+      loadDashboard();
+    } catch (error) {
+      showLoadError(error);
+    }
+  });
+
+  function wireTabs() {
+    document.querySelectorAll('.tab-link').forEach((button) => {
+      button.addEventListener('click', () => activateTab(button.dataset.tabTarget));
+    });
+  }
+
+  function activateTab(tabId) {
+    document.querySelectorAll('.tab-link').forEach((item) => item.classList.toggle('active', item.dataset.tabTarget === tabId));
+    document.querySelectorAll('.tab-panel').forEach((panel) => panel.classList.toggle('active', panel.id === `tab-${tabId}`));
+    if (tabId === 'customers' || tabId === 'money') {
+      loadCustomerDirectory();
+    }
+    if (tabId === 'money') {
+      loadMoneyData();
+    }
+  }
+
+  function bindActions() {
+    document.getElementById('refresh-dashboard').addEventListener('click', () => loadDashboard());
+    document.getElementById('seed-test-data').addEventListener('click', seedTestData);
+    document.getElementById('save-order').addEventListener('click', saveOrderFromForm);
+    document.getElementById('load-history').addEventListener('click', () => loadCustomerHistory());
+    document.getElementById('lookup-customer').addEventListener('click', lookupCustomerForForm);
+    document.getElementById('filter-status').addEventListener('change', renderTodayBoard);
+    document.getElementById('filter-helper').addEventListener('change', renderTodayBoard);
+    document.getElementById('record-payment').addEventListener('click', savePayment);
+    document.getElementById('record-return').addEventListener('click', saveReturn);
+    document.getElementById('record-purchase').addEventListener('click', savePurchase);
+    document.getElementById('record-expense').addEventListener('click', saveExpense);
+    document.getElementById('record-document').addEventListener('click', saveDocument);
+    document.getElementById('initial-payment-amount').addEventListener('input', updateOrderComposer);
+
+    // Delegated: hero pending-approval tile jumps into filtered board
+    document.getElementById('hero-totals').addEventListener('click', (event) => {
+      const tile = event.target.closest('.tile[data-hero-action="review-pending"]');
+      if (tile) jumpToPendingApprovals();
+    });
+
+    // Banner "Review pending" button
+    const banner = document.getElementById('pending-approval-jump');
+    if (banner) banner.addEventListener('click', jumpToPendingApprovals);
+
+    wireMoneySubTabs();
+
+    document.addEventListener('input', (event) => {
+      if (event.target.matches('.catalog-qty')) {
+        updateOrderComposer();
+      }
+    });
+  }
+
+  function initializeDates() {
+    const today = new Date().toISOString().slice(0, 10);
+    ['payment-date', 'return-date', 'purchase-date', 'expense-date'].forEach((id) => {
+      const element = document.getElementById(id);
+      if (element && !element.value) {
+        element.value = today;
+      }
+    });
+    document.getElementById('business-name').textContent = `${state.config.businessName || 'Water Delivery'} Owner`;
+  }
+
+  function runServer(method, payload) {
+    return new Promise((resolve, reject) => {
+      if (!window.google || !google.script || !google.script.run) {
+        reject(new Error('This dashboard must be opened from the Apps Script web app URL.'));
+        return;
+      }
+      google.script.run
+        .withSuccessHandler(resolve)
+        .withFailureHandler((error) => reject(new Error(error.message || error)))
+        [method](payload);
+    });
+  }
+
+  async function loadDashboard() {
+    try {
+      const date = document.getElementById('dashboard-date').value;
+      if ((!date || date === normalizeDateString(state.initialData?.board?.effectiveDate)) && state.initialData) {
+        hydrateDashboardFromPayload_(state.initialData.bootstrap, state.initialData.board);
+        state.initialData = null;
+        return;
+      }
+      const bootstrap = await runServer('getAdminCatalogBootstrap');
+      if (!bootstrap || !bootstrap.config) {
+        throw new Error('Empty catalog bootstrap response from server.');
+      }
+      if (bootstrap.ok === false) {
+        throw new Error(bootstrap.error || 'Catalog bootstrap failed.');
+      }
+      const board = await runServer('getTodayBoardMobile', date);
+      if (!board) {
+        throw new Error('Empty today board response from server.');
+      }
+      if (board.ok === false) {
+        throw new Error(board.error || 'Today board failed.');
+      }
+      state.config = bootstrap.config;
+      state.products = Array.isArray(bootstrap.products) ? bootstrap.products : [];
+      state.helpers = Array.isArray(bootstrap.helpers) ? bootstrap.helpers : [];
+      state.orders = Array.isArray(board.orders) ? board.orders : [];
+      state.customers = [];
+      state.customersLoaded = false;
+      state.totals = board.totals || {};
+      state.effectiveDate = board.effectiveDate || date;
+      state.auditDate = null;
+      state.audit = createEmptyAuditState();
+      syncBusinessDateFields();
+      hydrateSelects();
+      renderHeroTotals();
+      renderCatalogPickers();
+      renderTodayBoard();
+      renderCustomerCards(true);
+      renderMoneyScreen(true);
+      updateOrderComposer();
+      const activeTab = document.querySelector('.tab-link.active')?.dataset.tabTarget;
+      if (activeTab === 'customers' || activeTab === 'money') {
+        await loadCustomerDirectory(true);
+      }
+      if (activeTab === 'money') {
+        await loadMoneyData(true);
+      }
+    } catch (error) {
+      showLoadError(error);
+    }
+  }
+
+  function hydrateDashboardFromPayload_(bootstrap, board) {
+    if (!bootstrap || !bootstrap.config) {
+      throw new Error('Empty catalog bootstrap response from server.');
+    }
+    if (bootstrap.ok === false) {
+      throw new Error(bootstrap.error || 'Catalog bootstrap failed.');
+    }
+    if (!board) {
+      throw new Error('Empty today board response from server.');
+    }
+    if (board.ok === false) {
+      throw new Error(board.error || 'Today board failed.');
+    }
+    state.config = bootstrap.config;
+    state.products = Array.isArray(bootstrap.products) ? bootstrap.products : [];
+    state.helpers = Array.isArray(bootstrap.helpers) ? bootstrap.helpers : [];
+    state.orders = Array.isArray(board.orders) ? board.orders : [];
+    state.customers = [];
+    state.customersLoaded = false;
+    state.totals = board.totals || {};
+    state.effectiveDate = board.effectiveDate || new Date().toISOString().slice(0, 10);
+    state.auditDate = null;
+    state.audit = createEmptyAuditState();
+    syncBusinessDateFields();
+    hydrateSelects();
+    renderHeroTotals();
+    renderCatalogPickers();
+    renderTodayBoard();
+    renderCustomerCards(true);
+    renderMoneyScreen(true);
+    updateOrderComposer();
+    const activeTab = document.querySelector('.tab-link.active')?.dataset.tabTarget;
+    if (activeTab === 'customers' || activeTab === 'money') {
+      loadCustomerDirectory(true);
+    }
+    if (activeTab === 'money') {
+      loadMoneyData(true);
+    }
+  }
+
+  async function loadCustomerDirectory(force = false) {
+    if (!force && state.customersLoaded) {
+      renderCustomerCards(false);
+      hydrateCustomerSelect();
+      return;
+    }
+
+    renderCustomerCards(true);
+    try {
+      const customers = await runServer('getAdminCustomerDirectory');
+      state.customers = Array.isArray(customers) ? customers : [];
+      state.customersLoaded = true;
+      hydrateCustomerSelect();
+      renderCustomerCards(false);
+    } catch (error) {
+      state.customers = [];
+      state.customersLoaded = false;
+      const message = error && error.message ? error.message : String(error);
+      document.getElementById('customers-list').innerHTML = `
+        <div class="history-card"><strong>Customer load error</strong><div class="muted top-gap">${escapeHtml(message)}</div></div>
+      `;
+    }
+  }
+
+  async function loadMoneyData(force = false) {
+    const targetDate = state.effectiveDate || document.getElementById('dashboard-date').value;
+    if (!targetDate) return;
+    if (!force && state.auditDate === targetDate && state.audit && state.audit.summary) {
+      renderMoneyScreen(false);
+      return;
+    }
+    renderMoneyScreen(true);
+    try {
+      state.audit = await runServer('getAdminMoneySnapshot', targetDate) || createEmptyAuditState();
+      state.auditDate = targetDate;
+      renderMoneyScreen(false);
+    } catch (error) {
+      const message = error && error.message ? error.message : String(error);
+      document.getElementById('audit-summary-grid').innerHTML = `
+        <div class="history-card"><strong>Money screen error</strong><div class="muted top-gap">${escapeHtml(message)}</div></div>
+      `;
+    }
+  }
+
+  async function seedTestData() {
+    const hero = document.getElementById('hero-totals');
+    if (hero) {
+      hero.innerHTML = '<div class="history-card">Creating test customers and orders...</div>';
+    }
+    try {
+      const result = await runServer('seedTestDataForOwner');
+      await loadDashboard();
+      const created = result && result.createdOrders ? result.createdOrders.length : 0;
+      const dateLabel = result && result.effectiveDate ? result.effectiveDate : '';
+      document.getElementById('hero-totals').innerHTML += `<div class="top-gap muted">Seeded ${created} test orders${dateLabel ? ` for ${escapeHtml(dateLabel)}` : ''}.</div>`;
+    } catch (error) {
+      showLoadError(error);
+    }
+  }
+
+  function showLoadError(error) {
+    const message = error && error.message ? error.message : String(error);
+    const title = message.includes('catalog bootstrap') ? 'Catalog load error'
+      : message.includes('today board') ? 'Today board load error'
+      : 'Dashboard error';
+    const hero = document.getElementById('hero-totals');
+    if (hero) {
+      hero.innerHTML = `
+        <div class="status-pill danger">${escapeHtml(title)}</div>
+        <div class="top-gap">${escapeHtml(message)}</div>
+      `;
+    }
+    const board = document.getElementById('today-board');
+    if (board) {
+      board.innerHTML = `<div class="history-card"><strong>Could not load dashboard.</strong><div class="muted top-gap">${escapeHtml(message)}</div></div>`;
+    }
+  }
+
+  function syncBusinessDateFields() {
+    if (!state.effectiveDate) return;
+    const dashboardDate = document.getElementById('dashboard-date');
+    const deliveryDate = document.getElementById('order-delivery-date');
+    if (dashboardDate) {
+      dashboardDate.value = state.effectiveDate;
+    }
+    if (deliveryDate && !deliveryDate.value) {
+      deliveryDate.value = state.effectiveDate;
+    }
+  }
+
+  function hydrateSelects() {
+    hydrateSimpleSelect('initial-payment-method', state.config.paymentMethods);
+    hydrateSimpleSelect('payment-method', state.config.paymentMethods);
+    hydrateSimpleSelect('expense-payment-method', state.config.paymentMethods);
+    hydrateSimpleSelect('expense-category', state.config.expenseCategories);
+    hydrateSimpleSelect('document-type', state.config.documentTypes);
+    hydrateSimpleSelect('return-condition', state.config.returnConditions);
+    hydrateSimpleSelect('filter-status', state.config.orderStatuses, { keepFirst: true });
+    hydrateHelperSelect(document.getElementById('order-helper'));
+    hydrateHelperFilter();
+    hydrateOrderSelects();
+    hydrateCustomerSelect();
+  }
+
+  function hydrateSimpleSelect(elementId, values, options = {}) {
+    const select = document.getElementById(elementId);
+    if (!select) return;
+    const preservedValue = select.value;
+    const first = options.keepFirst ? select.querySelector('option')?.outerHTML || '' : '';
+    select.innerHTML = first + (values || []).map((value) => `<option value="${escapeAttribute(value)}">${humanize(value)}</option>`).join('');
+    if (preservedValue) select.value = preservedValue;
+  }
+
+  function hydrateHelperSelect(select, selectedValue = '') {
+    if (!select) return;
+    select.innerHTML = '<option value="">Unassigned</option>' + state.helpers
+      .map((helper) => `<option value="${escapeAttribute(helper.helperId)}">${escapeHtml(helper.helperName)}</option>`)
+      .join('');
+    select.value = selectedValue || (state.helpers[0] ? state.helpers[0].helperId : '');
+  }
+
+  function hydrateHelperFilter() {
+    const select = document.getElementById('filter-helper');
+    if (!select) return;
+    const preservedValue = select.value;
+    select.innerHTML = '<option value="">All drivers</option>' + state.helpers
+      .map((helper) => `<option value="${escapeAttribute(helper.helperId)}">${escapeHtml(helper.helperName)}</option>`)
+      .join('');
+    select.value = preservedValue;
+  }
+
+  function hydrateOrderSelects() {
+    const options = '<option value="">Select order</option>' + state.orders
+      .map((order) => `<option value="${escapeAttribute(order.orderId)}">${escapeHtml(order.orderId)} - ${escapeHtml(order.customerName)}</option>`)
+      .join('');
+    ['payment-order-id', 'return-order-id'].forEach((id) => {
+      const select = document.getElementById(id);
+      if (!select) return;
+      const preserved = select.value;
+      select.innerHTML = options;
+      select.value = preserved;
+    });
+  }
+
+  function hydrateCustomerSelect() {
+    const select = document.getElementById('return-customer-id');
+    if (!select) return;
+    const preserved = select.value;
+    select.innerHTML = '<option value="">Select customer</option>' + state.customers
+      .map((customer) => `<option value="${escapeAttribute(customer.customerId)}">${escapeHtml(customer.name)} (${escapeHtml(customer.phone)})</option>`)
+      .join('');
+    select.value = preserved;
+  }
+
+  function renderHeroTotals() {
+    const totals = state.totals || {};
+    const orders = state.orders || [];
+    const pending = orders.filter((o) => o.status === 'pending_approval').length;
+    const outForDelivery = orders.filter((o) => o.status === 'out_for_delivery').length;
+    const delivered = orders.filter((o) => o.status === 'delivered').length;
+    const revenue = orders.reduce((sum, o) => sum + Number(o.subtotal || 0), 0);
+    const collected = Number(totals.total_collected || 0);
+    const unpaid = Number(totals.unpaid_balance || 0);
+    const depositsHeld = Number(totals.outstanding_deposits || 0);
+    const outstanding = unpaid + depositsHeld;
+    const collectedPct = revenue > 0 ? Math.round((collected / revenue) * 100) + '% of booked' : '&mdash;';
+
+    const container = document.getElementById('hero-totals');
+    container.className = 'hero-card tile-grid';
+    container.innerHTML = `
+      <div class="tile ${pending > 0 ? 'danger' : ''}" data-clickable="1" data-hero-action="review-pending" title="Click to filter today by pending approvals">
+        <div class="tile-label">Pending approval</div>
+        <div class="tile-value">${pending}</div>
+        <div class="tile-foot">${pending > 0 ? 'Tap to review' : 'All caught up'}</div>
+      </div>
+      <div class="tile">
+        <div class="tile-label">Out for delivery</div>
+        <div class="tile-value">${outForDelivery}</div>
+        <div class="tile-foot">${escapeHtml(state.effectiveDate || '')}</div>
+      </div>
+      <div class="tile">
+        <div class="tile-label">Delivered today</div>
+        <div class="tile-value">${delivered}</div>
+        <div class="tile-foot">of ${orders.length} orders</div>
+      </div>
+      <div class="tile">
+        <div class="tile-label">Revenue booked</div>
+        <div class="tile-value">${formatCurrency(revenue)}</div>
+        <div class="tile-foot">Subtotal of today's orders</div>
+      </div>
+      <div class="tile">
+        <div class="tile-label">Collected</div>
+        <div class="tile-value">${formatCurrency(collected)}</div>
+        <div class="tile-foot">${collectedPct}</div>
+      </div>
+      <div class="tile" title="Unpaid: ${formatCurrency(unpaid)} · Deposits held: ${formatCurrency(depositsHeld)}">
+        <div class="tile-label">Outstanding</div>
+        <div class="tile-value">${formatCurrency(outstanding)}</div>
+        <div class="tile-foot">Unpaid + deposits</div>
+      </div>
+    `;
+
+    const badge = document.getElementById('today-tab-badge');
+    if (badge) {
+      badge.textContent = pending > 0 ? String(pending) : '';
+      badge.setAttribute('data-count', String(pending));
+    }
+  }
+
+  function renderPendingApprovalBanner() {
+    const banner = document.getElementById('pending-approval-banner');
+    const text = document.getElementById('pending-approval-banner-text');
+    if (!banner || !text) return;
+    const pending = (state.orders || []).filter((o) => o.status === 'pending_approval').length;
+    if (pending > 0) {
+      text.textContent = `⚠ ${pending} order${pending === 1 ? '' : 's'} awaiting your approval`;
+      banner.hidden = false;
+    } else {
+      banner.hidden = true;
+    }
+  }
+
+  function jumpToPendingApprovals() {
+    activateTab('today');
+    const filter = document.getElementById('filter-status');
+    if (filter) {
+      filter.value = 'pending_approval';
+      filter.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    const board = document.getElementById('today-board');
+    if (board && typeof board.scrollIntoView === 'function') {
+      board.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }
+
+  function wireMoneySubTabs() {
+    document.querySelectorAll('.sub-nav button[data-money-target]').forEach((btn) => {
+      btn.addEventListener('click', () => activateMoneyPanel(btn.dataset.moneyTarget));
+    });
+  }
+
+  function activateMoneyPanel(target) {
+    document.querySelectorAll('.sub-nav button[data-money-target]').forEach((btn) => {
+      btn.classList.toggle('active', btn.dataset.moneyTarget === target);
+    });
+    document.querySelectorAll('.money-panel').forEach((panel) => {
+      panel.classList.toggle('active', panel.dataset.moneyPanel === target);
+    });
+  }
+
+  function applyOrderMutation(result) {
+    if (!result || !result.order) return;
+    const nextOrder = result.order;
+    const index = state.orders.findIndex((entry) => entry.orderId === nextOrder.orderId);
+    if (index === -1) {
+      state.orders.unshift(nextOrder);
+    } else {
+      state.orders[index] = nextOrder;
+    }
+    if (result.totals) {
+      state.totals = result.totals;
+    }
+    hydrateOrderSelects();
+    renderHeroTotals();
+    renderTodayBoard();
+  }
+
+  function replaceOrderInState(nextOrder) {
+    const index = state.orders.findIndex((entry) => entry.orderId === nextOrder.orderId);
+    if (index === -1) {
+      state.orders.unshift(nextOrder);
+    } else {
+      state.orders[index] = nextOrder;
+    }
+  }
+
+  function redrawOrdersView() {
+    hydrateOrderSelects();
+    renderHeroTotals();
+    renderTodayBoard();
+  }
+
+  function recalculateMoneySummaryFromState() {
+    const selectedDate = state.auditDate || state.effectiveDate || '';
+    const relevantOrders = (state.orders || []).filter((order) => normalizeDateString(order.deliveryDate) === normalizeDateString(selectedDate));
+    const summary = {
+      totalSales: relevantOrders.reduce((sum, order) => sum + Number(order.subtotal || 0), 0),
+      totalCollectedCash: 0,
+      totalCollectedTransfer: 0,
+      unpaidBalances: relevantOrders.reduce((sum, order) => sum + Number(order.balanceDue || 0), 0),
+      outstandingDeposits: relevantOrders.reduce((sum, order) => sum + Number(order.depositTotal || 0), 0),
+      totalPurchases: (((state.audit || {}).recentPurchases) || []).reduce((sum, row) => sum + Number(row.total_cost || 0), 0),
+      totalExpenses: (((state.audit || {}).recentExpenses) || []).reduce((sum, row) => sum + Number(row.amount || 0), 0),
+      selectedDate
+    };
+
+    (((state.audit || {}).recentPayments) || []).forEach((payment) => {
+      const paymentDate = normalizeDateString(payment.payment_date);
+      if (paymentDate !== normalizeDateString(selectedDate)) return;
+      if (payment.method === 'cash') {
+        summary.totalCollectedCash += Number(payment.amount || 0);
+      } else {
+        summary.totalCollectedTransfer += Number(payment.amount || 0);
+      }
+    });
+
+    state.audit = Object.assign(createEmptyAuditState(), state.audit || {}, { summary });
+  }
+
+  function renderTodayBoard() {
+    renderPendingApprovalBanner();
+    const statusFilter = document.getElementById('filter-status').value;
+    const helperFilter = document.getElementById('filter-helper').value;
+    const filtered = state.orders.filter((order) => {
+      if (statusFilter && order.status !== statusFilter) return false;
+      if (helperFilter && order.assignedHelperId !== helperFilter) return false;
+      return true;
+    });
+
+    document.getElementById('today-summary').innerHTML = state.config.orderStatuses.map((status) => {
+      const count = filtered.filter((order) => order.status === status).length;
+      return `<div class="total-card"><div class="muted">${humanize(status)}</div><strong>${count}</strong></div>`;
+    }).join('');
+
+    document.getElementById('today-board').innerHTML = state.config.orderStatuses.map((status) => {
+      const orders = filtered.filter((order) => order.status === status);
+      return `
+        <div class="status-column">
+          <div class="status-column-head">
+            <h3>${humanize(status)}</h3>
+            <span class="status-pill">${orders.length}</span>
+          </div>
+          ${orders.length ? orders.map(renderOrderCard).join('') : `<div class="history-card muted">No ${humanize(status).toLowerCase()} orders.</div>`}
+        </div>
+      `;
+    }).join('');
+  }
+
+  function renderOrderCard(order) {
+    const helperOptions = ['<option value="">Unassigned</option>']
+      .concat(state.helpers.map((helper) => `<option value="${escapeAttribute(helper.helperId)}" ${helper.helperId === order.assignedHelperId ? 'selected' : ''}>${escapeHtml(helper.helperName)}</option>`))
+      .join('');
+    const allowedStatuses = state.config.orderStatuses.filter((status) => status !== 'delivered' || order.paymentStatus === 'paid' || order.status === 'delivered');
+    const statusOptions = allowedStatuses
+      .map((status) => `<option value="${escapeAttribute(status)}" ${status === order.status ? 'selected' : ''}>${humanize(status)}</option>`)
+      .join('');
+    const paymentClass = order.paymentStatus === 'unpaid' ? 'danger' : (order.paymentStatus === 'partial' ? 'warn' : '');
+    const depositText = order.depositTotal > 0 ? `${formatCurrency(order.depositTotal)} charged` : 'No deposit charged';
+    const canComplete = order.status !== 'delivered' && order.status !== 'cancelled' && order.paymentStatus === 'paid';
+    return `
+      <article class="order-card">
+        <div class="order-card-head">
+          <div>
+            <button class="inline-link-button" type="button" onclick="openCustomerFromOrder('${escapeJs(order.phone)}')">${escapeHtml(order.customerName)}</button>
+            <div class="muted">${escapeHtml(order.phone)}</div>
+            <div class="muted">${escapeHtml(order.address)}</div>
+          </div>
+          <div>
+            <div class="status-pill ${paymentClass}">${humanize(order.paymentStatus)}</div>
+            <div class="muted top-gap">${escapeHtml(order.orderId)}</div>
+          </div>
+        </div>
+        <div class="mini-meta">
+          <div><strong>Source:</strong> ${escapeHtml(order.sourceChannel || 'unknown')}</div>
+          <div><strong>Window:</strong> ${escapeHtml(order.deliveryWindow || 'Flexible')}</div>
+          <div><strong>Items:</strong> ${order.items.map((item) => `${item.quantity} x ${escapeHtml(item.productName)}`).join(', ')}</div>
+          <div><strong>Deposit:</strong> ${depositText}</div>
+          <div><strong>Balance:</strong> ${formatCurrency(order.balanceDue)}</div>
+          ${order.notes ? `<div><strong>Notes:</strong> ${escapeHtml(order.notes)}</div>` : ''}
+        </div>
+        <div class="card-grid-2 top-gap">
+          <label>
+            Driver
+            <select class="inline-select" data-field="assignedHelperId" data-order-id="${escapeAttribute(order.orderId)}">${helperOptions}</select>
+          </label>
+          <label>
+            Status
+            <select class="inline-select" data-field="status" data-order-id="${escapeAttribute(order.orderId)}">${statusOptions}</select>
+          </label>
+        </div>
+        <div class="quick-actions top-gap">
+          ${order.status === 'pending_approval' ? `<button type="button" onclick="approveOrder('${escapeJs(order.orderId)}')">Approve</button>` : ''}
+          ${canComplete ? `<button type="button" onclick="completeOrder('${escapeJs(order.orderId)}')">Complete order</button>` : ''}
+          <button type="button" onclick="saveDispatchUpdate('${escapeJs(order.orderId)}')">Update</button>
+          <button class="secondary" type="button" onclick="prefillPaymentFromOrder('${escapeJs(order.orderId)}')">Mark payment</button>
+        </div>
+      </article>
+    `;
+  }
+
+  function renderCatalogPickers() {
+    renderCatalogGroup('catalog-glass', (product) => product.category === 'glass');
+    renderCatalogGroup('catalog-jug', (product) => product.category === 'jug');
+    renderCatalogGroup('catalog-addon', (product) => product.category !== 'glass' && product.category !== 'jug');
+  }
+
+  function renderCatalogGroup(elementId, predicate) {
+    const element = document.getElementById(elementId);
+    if (!element) return;
+    const products = state.products.filter(predicate);
+    element.innerHTML = products.map((product) => `
+      <article class="catalog-item">
+        <div class="catalog-item-head">
+          <div>
+            <strong>${escapeHtml(product.productName)}</strong>
+            <div class="muted">${escapeHtml(product.notes || '')}</div>
+          </div>
+          <div><strong>${product.unitPrice ? formatCurrency(product.unitPrice) : 'Confirm price'}</strong></div>
+        </div>
+        <div class="qty-stepper">
+          <button class="secondary" type="button" onclick="changeCatalogQty('${escapeJs(product.productId)}', -1)">-</button>
+          <input class="catalog-qty" data-product-id="${escapeAttribute(product.productId)}" type="number" min="0" step="1" value="0">
+          <button class="secondary" type="button" onclick="changeCatalogQty('${escapeJs(product.productId)}', 1)">+</button>
+        </div>
+      </article>
+    `).join('');
+  }
+
+  function changeCatalogQty(productId, delta) {
+    const input = document.querySelector(`.catalog-qty[data-product-id="${cssEscape(productId)}"]`);
+    if (!input) return;
+    const nextValue = Math.max(0, Number(input.value || 0) + delta);
+    input.value = nextValue;
+    updateOrderComposer();
+  }
+
+  function collectCatalogItems() {
+    return Array.from(document.querySelectorAll('.catalog-qty')).map((input) => {
+      const quantity = Number(input.value || 0);
+      if (quantity <= 0) return null;
+      const product = state.products.find((entry) => entry.productId === input.dataset.productId);
+      if (!product) return null;
+      return {
+        productId: product.productId,
+        productName: product.productName,
+        quantity,
+        unitPrice: Number(product.unitPrice || 0),
+        category: product.category,
+        containerType: product.containerType,
+        defaultDepositAmount: Number(product.defaultDepositAmount || 0)
+      };
+    }).filter(Boolean);
+  }
+
+  function buildSelectedItems() {
+    const grouped = {};
+    collectCatalogItems().forEach((item) => {
+      const key = `${item.productId}::${item.unitPrice}`;
+      if (!grouped[key]) {
+        grouped[key] = Object.assign({}, item);
+      } else {
+        grouped[key].quantity += item.quantity;
+      }
+    });
+    return Object.values(grouped);
+  }
+
+  function updateOrderComposer() {
+    const items = buildSelectedItems();
+    const subtotal = items.reduce((sum, item) => sum + (item.quantity * item.unitPrice), 0);
+    const depositBreakdown = {};
+    items.forEach((item) => {
+      if (!item.defaultDepositAmount || !item.containerType) return;
+      if (!depositBreakdown[item.containerType]) {
+        depositBreakdown[item.containerType] = { qty: 0, amount: 0 };
+      }
+      depositBreakdown[item.containerType].qty += item.quantity;
+      depositBreakdown[item.containerType].amount += item.quantity * item.defaultDepositAmount;
+    });
+
+    const containerTypes = Object.keys(depositBreakdown);
+    const suggestedDepositQty = containerTypes.reduce((sum, key) => sum + depositBreakdown[key].qty, 0);
+    const suggestedDepositAmount = containerTypes.reduce((sum, key) => sum + depositBreakdown[key].amount, 0);
+    const initialPayment = Number(document.getElementById('initial-payment-amount').value || 0);
+    const totalDue = subtotal + suggestedDepositAmount;
+    const remainingDue = totalDue - initialPayment;
+    const depositLabel = containerTypes.length === 1 ? containerTypes[0] : (containerTypes.length ? 'mixed_container_deposit' : '');
+
+    document.getElementById('deposit-container-type').value = depositLabel;
+    document.getElementById('deposit-qty').value = suggestedDepositQty || '';
+    document.getElementById('deposit-amount').value = suggestedDepositAmount || '';
+
+    document.getElementById('order-totals').innerHTML = [
+      ['Catalog items', items.length],
+      ['Subtotal', formatCurrency(subtotal)],
+      ['Suggested deposit', formatCurrency(suggestedDepositAmount)],
+      ['Initial payment', formatCurrency(initialPayment)],
+      ['Total due', formatCurrency(totalDue)],
+      ['Remaining due', formatCurrency(remainingDue)]
+    ].map(([label, value]) => `<div class="total-card"><div class="muted">${label}</div><strong>${value}</strong></div>`).join('');
+  }
+
+  async function lookupCustomerForForm() {
+    try {
+      const phone = document.getElementById('quick-phone').value.trim() || document.querySelector('#order-form [name="phone"]').value.trim();
+      if (!phone) {
+        document.getElementById('lookup-feedback').textContent = 'Enter a phone number first.';
+        return;
+      }
+      const result = await runServer('getCustomerQuickLookup', phone);
+      if (!result.customer) {
+        document.getElementById('lookup-feedback').textContent = 'No customer found. Continue with a new customer record.';
+        return;
+      }
+      applyCustomerToForm(result.customer);
+      document.getElementById('lookup-feedback').textContent = `Loaded ${result.customer.name}${result.recentOrder ? ` | recent order: ${result.recentOrder.orderId}` : ''}`;
+    } catch (error) {
+      document.getElementById('lookup-feedback').textContent = error.message;
+    }
+  }
+
+  function applyCustomerToForm(customer) {
+    if (!customer) return;
+    setFormField('customerName', customer.name);
+    setFormField('phone', customer.phone || '');
+    setFormField('address', customer.address || '');
+    setFormField('area', customer.area || '');
+  }
+
+  async function saveOrderFromForm() {
+    try {
+      const form = document.getElementById('order-form');
+      const payload = Object.fromEntries(new FormData(form).entries());
+      const items = buildSelectedItems();
+      if (!items.length) {
+        document.getElementById('form-feedback').textContent = 'Select at least one item before saving.';
+        return;
+      }
+
+      const depositBreakdown = items
+        .filter((item) => item.defaultDepositAmount && item.containerType)
+        .map((item) => `${item.quantity} x ${item.containerType} (${formatCurrency(item.quantity * item.defaultDepositAmount)})`)
+        .join(' | ');
+
+      payload.items = items.map((item) => ({
+        productId: item.productId,
+        quantity: item.quantity,
+        unitPrice: item.unitPrice
+      }));
+      payload.sourceChannel = 'phone';
+      payload.status = 'new';
+      payload.initialPaymentAmount = Number(document.getElementById('initial-payment-amount').value || 0);
+      payload.initialPaymentMethod = document.getElementById('initial-payment-method').value;
+      payload.initialPaymentReference = document.getElementById('initial-payment-reference').value;
+      payload.initialPaymentReceivedBy = document.getElementById('initial-payment-received-by').value;
+      payload.initialPaymentProofLink = document.getElementById('initial-payment-proof-link').value;
+      payload.depositContainerType = document.getElementById('deposit-container-type').value;
+      payload.depositQty = Number(document.getElementById('deposit-qty').value || 0);
+      payload.depositAmount = Number(document.getElementById('deposit-amount').value || 0);
+      payload.depositProofLink = document.getElementById('deposit-proof-link').value;
+      payload.depositNotes = depositBreakdown;
+
+      const result = await runServer('saveOrder', payload);
+      document.getElementById('form-feedback').textContent = `Saved ${result.orderId}`;
+      resetOrderForm();
+      applyOrderMutation(result);
+      activateTab('today');
+    } catch (error) {
+      document.getElementById('form-feedback').textContent = error.message;
+    }
+  }
+
+  function resetOrderForm() {
+    document.getElementById('order-form').reset();
+    document.querySelectorAll('.catalog-qty').forEach((input) => { input.value = 0; });
+    clearAuditInputs();
+    initializeDates();
+    syncBusinessDateFields();
+    hydrateHelperSelect(document.getElementById('order-helper'));
+    updateOrderComposer();
+    document.getElementById('lookup-feedback').textContent = '';
+  }
+
+  async function saveDispatchUpdate(orderId) {
+    const getValue = (field) => document.querySelector(`[data-field="${field}"][data-order-id="${cssEscape(orderId)}"]`);
+    const index = state.orders.findIndex((entry) => entry.orderId === orderId);
+    const previousOrder = index === -1 ? null : cloneData(state.orders[index]);
+    try {
+      if (index !== -1) {
+        replaceOrderInState(Object.assign({}, state.orders[index], {
+          assignedHelperId: getValue('assignedHelperId').value,
+          status: getValue('status').value,
+          updatedAt: new Date().toISOString()
+        }));
+        redrawOrdersView();
+      }
+      const result = await runServer('updateOrderDispatch', {
+        orderId,
+        assignedHelperId: getValue('assignedHelperId').value,
+        status: getValue('status').value
+      });
+      applyOrderMutation(result);
+    } catch (error) {
+      if (previousOrder) {
+        replaceOrderInState(previousOrder);
+        redrawOrdersView();
+      }
+      alert(error.message);
+    }
+  }
+
+  async function approveOrder(orderId) {
+    const index = state.orders.findIndex((entry) => entry.orderId === orderId);
+    if (index === -1) return;
+    const previousOrder = JSON.parse(JSON.stringify(state.orders[index]));
+    try {
+      const optimisticOrder = Object.assign({}, state.orders[index], {
+        status: 'new',
+        updatedAt: new Date().toISOString()
+      });
+      replaceOrderInState(optimisticOrder);
+      redrawOrdersView();
+
+      const result = await runServer('approvePublicOrder', { orderId });
+      applyOrderMutation(result);
+    } catch (error) {
+      replaceOrderInState(previousOrder);
+      redrawOrdersView();
+      alert(error.message || String(error));
+    }
+  }
+
+  async function completeOrder(orderId) {
+    const index = state.orders.findIndex((entry) => entry.orderId === orderId);
+    if (index === -1) return;
+    const previousOrder = cloneData(state.orders[index]);
+    if (previousOrder.paymentStatus !== 'paid') {
+      alert('Order can only be completed after it is fully paid.');
+      return;
+    }
+    try {
+      replaceOrderInState(Object.assign({}, previousOrder, {
+        status: 'delivered',
+        updatedAt: new Date().toISOString()
+      }));
+      redrawOrdersView();
+      const result = await runServer('updateOrderDispatch', {
+        orderId,
+        assignedHelperId: previousOrder.assignedHelperId || '',
+        status: 'delivered'
+      });
+      applyOrderMutation(result);
+    } catch (error) {
+      replaceOrderInState(previousOrder);
+      redrawOrdersView();
+      alert(error.message || String(error));
+    }
+  }
+
+  function prefillPaymentFromOrder(orderId) {
+    const order = state.orders.find((entry) => entry.orderId === orderId);
+    if (!order) return;
+    activateTab('money');
+    document.getElementById('payment-order-id').value = order.orderId;
+    document.getElementById('payment-amount').value = order.balanceDue > 0 ? order.balanceDue : '';
+    document.getElementById('payment-reference').value = '';
+    document.getElementById('payment-received-by').value = 'Owner';
+  }
+
+  function prefillReturnFromOrder(orderId) {
+    const order = state.orders.find((entry) => entry.orderId === orderId);
+    if (!order) return;
+    const depositProduct = order.items
+      .map((item) => state.products.find((product) => product.productId === item.productId))
+      .find((product) => product && product.containerType && product.defaultDepositAmount > 0);
+    activateTab('money');
+    document.getElementById('return-order-id').value = order.orderId;
+    document.getElementById('return-customer-id').value = order.customerId;
+    document.getElementById('return-container-type').value = depositProduct ? depositProduct.containerType : '';
+    document.getElementById('return-qty').value = depositProduct ? 1 : '';
+    document.getElementById('return-amount').value = depositProduct ? depositProduct.defaultDepositAmount : '';
+  }
+
+  function openCustomerFromOrder(phone) {
+    document.getElementById('history-phone').value = phone;
+    activateTab('customers');
+    loadCustomerHistory(phone);
+  }
+
+  function renderCustomerCards(isLoading) {
+    const container = document.getElementById('customers-list');
+    if (isLoading) {
+      container.innerHTML = '<div class="history-card">Loading customers...</div>';
+      return;
+    }
+    container.innerHTML = state.customers.map((customer) => `
+      <article class="customer-card">
+        <strong>${escapeHtml(customer.name)}</strong>
+        <div class="muted">${escapeHtml(customer.phone)}</div>
+        <div class="mini-meta top-gap">
+          <div><strong>Balance:</strong> ${formatCurrency(customer.outstandingBalance)}</div>
+          <div><strong>Deposits:</strong> ${formatCurrency(customer.outstandingDeposits)}</div>
+          <div><strong>Orders:</strong> ${customer.orderCount}</div>
+        </div>
+        <div class="card-actions top-gap">
+          <button type="button" onclick="openCustomerFromOrder('${escapeJs(customer.phone)}')">Open history</button>
+          <button class="secondary" type="button" onclick="loadCustomerIntoOrderForm('${escapeJs(customer.phone)}')">Use in new order</button>
+        </div>
+      </article>
+    `).join('') || '<div class="history-card">No customers found.</div>';
+  }
+
+  async function loadCustomerHistory(phoneOverride) {
+    try {
+      const phone = phoneOverride || document.getElementById('history-phone').value.trim();
+      const result = await runServer('getCustomerHistoryByPhone', phone);
+      state.currentHistory = result;
+      const container = document.getElementById('customer-history');
+      if (!result.customer) {
+        container.innerHTML = '<div class="history-card">No customer found for that phone number.</div>';
+        return;
+      }
+      container.innerHTML = `
+        <article class="history-card">
+          <strong>${escapeHtml(result.customer.name)}</strong>
+          <div class="muted">${escapeHtml(result.customer.phone)} | ${escapeHtml(result.customer.address)}</div>
+          <div class="top-gap"><strong>Outstanding balance:</strong> ${formatCurrency(result.customer.outstandingBalance)}</div>
+          <div><strong>Outstanding deposits:</strong> ${formatCurrency(result.customer.outstandingDeposits)}</div>
+          <div><strong>Address history:</strong> ${escapeHtml(result.customer.addressHistory || result.customer.address || '')}</div>
+          ${result.customer.notes ? `<div><strong>Notes:</strong> ${escapeHtml(result.customer.notes)}</div>` : ''}
+          <div class="card-actions top-gap">
+            <button type="button" onclick="loadCustomerIntoOrderForm('${escapeJs(result.customer.phone)}')">New order for this customer</button>
+          </div>
+        </article>
+      ` + result.orders.map((order) => `
+        <article class="history-card">
+          <div class="status-pill ${order.paymentStatus === 'unpaid' ? 'danger' : (order.paymentStatus === 'partial' ? 'warn' : '')}">${humanize(order.paymentStatus)}</div>
+          <h4>${escapeHtml(order.orderId)}</h4>
+          <div class="muted">${escapeHtml(order.deliveryDate)} | ${escapeHtml(order.deliveryWindow || 'Flexible')}</div>
+          <p>${order.items.map((item) => `${item.quantity} x ${escapeHtml(item.productName)}`).join(', ')}</p>
+          <div class="top-gap"><strong>Balance:</strong> ${formatCurrency(order.balanceDue)}</div>
+          <div><strong>Deposit charged:</strong> ${formatCurrency(order.depositTotal)}</div>
+          <div class="card-actions top-gap">
+            <button type="button" onclick="reorderFromOrder('${escapeJs(order.orderId)}')">Reorder</button>
+            <button class="secondary" type="button" onclick="prefillPaymentFromOrder('${escapeJs(order.orderId)}')">Collect payment</button>
+          </div>
+        </article>
+      `).join('');
+    } catch (error) {
+      alert(error.message);
+    }
+  }
+
+  async function loadCustomerIntoOrderForm(phone) {
+    document.getElementById('quick-phone').value = phone;
+    activateTab('new-order');
+    await lookupCustomerForForm();
+  }
+
+  async function reorderFromOrder(orderId) {
+    try {
+      const draft = await runServer('createRepeatOrderDraft', orderId);
+      activateTab('new-order');
+      resetOrderSelectionsOnly();
+      if (draft.customer) {
+        applyCustomerToForm(draft.customer);
+      }
+      if (draft.order) {
+        setFormField('deliveryWindow', draft.order.deliveryWindow || '');
+        setFormField('assignedHelperId', draft.order.assignedHelperId || '');
+        setFormField('notes', draft.order.notes || '');
+        draft.order.items.forEach((item) => {
+          const catalogInput = document.querySelector(`.catalog-qty[data-product-id="${cssEscape(item.productId)}"]`);
+          if (catalogInput) {
+            catalogInput.value = item.quantity;
+          }
+        });
+      }
+      updateOrderComposer();
+    } catch (error) {
+      alert(error.message);
+    }
+  }
+
+  function resetOrderSelectionsOnly() {
+    document.querySelectorAll('.catalog-qty').forEach((input) => { input.value = 0; });
+    clearAuditInputs();
+  }
+
+  function renderMoneyScreen(isLoading) {
+    if (isLoading) {
+      document.getElementById('audit-summary-grid').innerHTML = '<div class="history-card">Loading money data...</div>';
+      document.getElementById('unpaid-orders-list').innerHTML = '<div class="history-card">Loading unpaid orders...</div>';
+      document.getElementById('payments-list').innerHTML = '<div class="history-card">Loading payments...</div>';
+      document.getElementById('deposits-list').innerHTML = '<div class="history-card">Loading deposit activity...</div>';
+      document.getElementById('purchases-list').innerHTML = '<div class="history-card">Loading purchases...</div>';
+      document.getElementById('expenses-list').innerHTML = '<div class="history-card">Loading expenses...</div>';
+      return;
+    }
+
+    const audit = state.audit || createEmptyAuditState();
+    const summary = audit.summary || {};
+    document.getElementById('audit-summary-grid').innerHTML = [
+      ['Sales', formatCurrency(summary.totalSales || 0)],
+      ['Cash', formatCurrency(summary.totalCollectedCash || 0)],
+      ['Transfer', formatCurrency(summary.totalCollectedTransfer || 0)],
+      ['Unpaid', formatCurrency(summary.unpaidBalances || 0)],
+      ['Deposits', formatCurrency(summary.outstandingDeposits || 0)],
+      ['Purchases', formatCurrency(summary.totalPurchases || 0)],
+      ['Expenses', formatCurrency(summary.totalExpenses || 0)],
+      ['Date', escapeHtml(summary.selectedDate || '')]
+    ].map(([label, value]) => `<div class="total-card"><div class="muted">${label}</div><strong>${value}</strong></div>`).join('');
+
+    document.getElementById('unpaid-orders-list').innerHTML = (audit.unpaidOrders || []).map((order) => `
+      <article class="history-card">
+        <strong>${escapeHtml(order.orderId)}</strong>
+        <div><button class="inline-link-button" type="button" onclick="openCustomerFromOrder('${escapeJs(order.phone || '')}')">${escapeHtml(order.customerName)}</button></div>
+        <div><strong>Balance:</strong> ${formatCurrency(order.balanceDue)}</div>
+        <div class="card-actions top-gap">
+          <button type="button" onclick="prefillPaymentFromOrder('${escapeJs(order.orderId)}')">Collect</button>
+        </div>
+      </article>
+    `).join('') || '<div class="history-card">No unpaid orders on this date.</div>';
+
+    document.getElementById('payments-list').innerHTML = renderLedgerCards(audit.recentPayments, (payment) => `
+      <strong>${escapeHtml(payment.payment_id)}</strong>
+      <div class="muted">${escapeHtml(payment.order_id)} | ${escapeHtml(normalizeDateString(payment.payment_date))}</div>
+      <div>${formatCurrency(payment.amount)} via ${escapeHtml(humanize(payment.method))}</div>
+    `);
+
+    const depositEntries = (audit.recentDeposits || []).map((event) => ({
+      key: event.deposit_event_id,
+      html: `
+        <strong>${escapeHtml(event.deposit_event_id)}</strong>
+        <div class="muted">${escapeHtml(event.customer_id)} | ${escapeHtml(normalizeDateString(event.event_date))}</div>
+        <div>${escapeHtml(humanize(event.event_type))} ${formatCurrency(event.amount)} / ${event.qty}</div>
+      `
+    })).concat((audit.recentReturns || []).map((entry) => ({
+      key: entry.return_id,
+      html: `
+        <strong>${escapeHtml(entry.return_id)}</strong>
+        <div class="muted">${escapeHtml(entry.customer_id)} | ${escapeHtml(normalizeDateString(entry.returned_at))}</div>
+        <div>Returned ${entry.qty} ${escapeHtml(entry.container_type)}</div>
+      `
+    })));
+    document.getElementById('deposits-list').innerHTML = depositEntries.map((entry) => `<article class="history-card">${entry.html}</article>`).join('') || '<div class="history-card">No recent deposit activity.</div>';
+
+    document.getElementById('purchases-list').innerHTML = renderLedgerCards(audit.recentPurchases, (purchase) => `
+      <strong>${escapeHtml(purchase.supplier_name)}</strong>
+      <div class="muted">${escapeHtml(normalizeDateString(purchase.purchase_date))}</div>
+      <div>${escapeHtml(purchase.item)}</div>
+      <div>${formatCurrency(purchase.total_cost)}</div>
+    `);
+
+    document.getElementById('expenses-list').innerHTML = renderLedgerCards(audit.recentExpenses, (expense) => `
+      <strong>${escapeHtml(humanize(expense.category))}</strong>
+      <div class="muted">${escapeHtml(normalizeDateString(expense.expense_date))}</div>
+      <div>${escapeHtml(expense.description)}</div>
+      <div>${formatCurrency(expense.amount)}</div>
+    `);
+  }
+
+  function renderLedgerCards(rows, renderer) {
+    return (rows || []).map((row) => `<article class="history-card">${renderer(row)}</article>`).join('') || '<div class="history-card">No recent activity.</div>';
+  }
+
+  async function savePayment() {
+    const orderId = document.getElementById('payment-order-id').value;
+    const amount = Number(document.getElementById('payment-amount').value || 0);
+    const method = document.getElementById('payment-method').value;
+    const paymentDate = document.getElementById('payment-date').value;
+    const reference = document.getElementById('payment-reference').value;
+    const receivedBy = document.getElementById('payment-received-by').value;
+    const proofLink = document.getElementById('payment-proof-link').value;
+    const orderIndex = state.orders.findIndex((entry) => entry.orderId === orderId);
+    const previousOrder = orderIndex === -1 ? null : cloneData(state.orders[orderIndex]);
+    const previousAudit = cloneData(state.audit || createEmptyAuditState());
+    try {
+      if (previousOrder && amount > 0) {
+        const nextAmountPaid = Number(previousOrder.amountPaid || 0) + amount;
+        const nextBalance = Math.max(0, Number(previousOrder.balanceDue || 0) - amount);
+        replaceOrderInState(Object.assign({}, previousOrder, {
+          amountPaid: nextAmountPaid,
+          balanceDue: nextBalance,
+          paymentStatus: nextBalance <= 0 ? 'paid' : 'partial',
+          updatedAt: new Date().toISOString()
+        }));
+
+        state.audit = Object.assign(createEmptyAuditState(), state.audit || {});
+        state.audit.recentPayments = [{
+          payment_id: 'Pending...',
+          order_id: orderId,
+          payment_date: paymentDate,
+          method,
+          amount
+        }].concat(state.audit.recentPayments || []);
+        state.audit.unpaidOrders = (state.orders || [])
+          .filter((order) => Number(order.balanceDue || 0) > 0)
+          .map((order) => ({
+            orderId: order.orderId,
+            customerName: order.customerName,
+            balanceDue: order.balanceDue,
+            phone: order.phone
+          }));
+        recalculateMoneySummaryFromState();
+        redrawOrdersView();
+        renderMoneyScreen(false);
+      }
+
+      const result = await runServer('recordOrderPayment', {
+        orderId,
+        paymentDate,
+        method,
+        amount,
+        reference,
+        receivedBy,
+        proofLink
+      });
+      applyOrderMutation(result);
+      clearFormFields(['payment-amount', 'payment-reference', 'payment-received-by', 'payment-proof-link']);
+      loadMoneyData(true);
+    } catch (error) {
+      if (previousOrder) {
+        replaceOrderInState(previousOrder);
+      }
+      state.audit = previousAudit;
+      redrawOrdersView();
+      renderMoneyScreen(false);
+      alert(error.message);
+    }
+  }
+
+  async function saveReturn() {
+    try {
+      await runServer('recordDepositReturn', {
+        customerId: document.getElementById('return-customer-id').value,
+        orderId: document.getElementById('return-order-id').value,
+        containerType: document.getElementById('return-container-type').value,
+        qty: Number(document.getElementById('return-qty').value || 0),
+        returnedAt: document.getElementById('return-date').value,
+        condition: document.getElementById('return-condition').value,
+        refundAction: document.getElementById('return-action').value,
+        refundAmount: Number(document.getElementById('return-amount').value || 0),
+        proofLink: document.getElementById('return-proof-link').value
+      });
+      clearFormFields(['return-container-type', 'return-qty', 'return-amount', 'return-proof-link']);
+      loadMoneyData(true);
+    } catch (error) {
+      alert(error.message);
+    }
+  }
+
+  async function savePurchase() {
+    try {
+      await runServer('recordPurchase', {
+        supplierName: document.getElementById('purchase-supplier').value,
+        purchaseDate: document.getElementById('purchase-date').value,
+        item: document.getElementById('purchase-item').value,
+        qty: Number(document.getElementById('purchase-qty').value || 0),
+        unitCost: Number(document.getElementById('purchase-unit-cost').value || 0),
+        invoiceNumber: document.getElementById('purchase-invoice-number').value,
+        paymentStatus: document.getElementById('purchase-payment-status').value,
+        proofLink: document.getElementById('purchase-proof-link').value
+      });
+      clearFormFields(['purchase-supplier', 'purchase-item', 'purchase-qty', 'purchase-unit-cost', 'purchase-invoice-number', 'purchase-proof-link']);
+      loadMoneyData(true);
+    } catch (error) {
+      alert(error.message);
+    }
+  }
+
+  async function saveExpense() {
+    try {
+      await runServer('recordExpense', {
+        expenseDate: document.getElementById('expense-date').value,
+        category: document.getElementById('expense-category').value,
+        description: document.getElementById('expense-description').value,
+        amount: Number(document.getElementById('expense-amount').value || 0),
+        paymentMethod: document.getElementById('expense-payment-method').value,
+        paidTo: document.getElementById('expense-paid-to').value,
+        proofLink: document.getElementById('expense-proof-link').value
+      });
+      clearFormFields(['expense-description', 'expense-amount', 'expense-paid-to', 'expense-proof-link']);
+      loadMoneyData(true);
+    } catch (error) {
+      alert(error.message);
+    }
+  }
+
+  async function saveDocument() {
+    try {
+      await runServer('recordDocumentEntry', {
+        entityType: document.getElementById('document-entity-type').value,
+        entityId: document.getElementById('document-entity-id').value,
+        documentType: document.getElementById('document-type').value,
+        driveLink: document.getElementById('document-drive-link').value,
+        notes: document.getElementById('document-notes').value
+      });
+      clearFormFields(['document-entity-id', 'document-drive-link', 'document-notes']);
+      loadMoneyData(true);
+    } catch (error) {
+      alert(error.message);
+    }
+  }
+
+  function clearAuditInputs() {
+    clearFormFields([
+      'initial-payment-amount',
+      'initial-payment-reference',
+      'initial-payment-received-by',
+      'initial-payment-proof-link',
+      'deposit-container-type',
+      'deposit-qty',
+      'deposit-amount',
+      'deposit-proof-link'
+    ]);
+  }
+
+  function clearFormFields(ids) {
+    ids.forEach((id) => {
+      const element = document.getElementById(id);
+      if (element) element.value = '';
+    });
+  }
+
+  function setFormField(fieldName, value) {
+    const element = document.querySelector(`#order-form [name="${fieldName}"]`) || document.getElementById(fieldName);
+    if (element) element.value = value;
+  }
+
+  function normalizeDateString(value) {
+    return String(value || '').slice(0, 10);
+  }
+
+  function humanize(value) {
+    return String(value || '').replace(/_/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase());
+  }
+
+  function formatCurrency(value) {
+    return new Intl.NumberFormat('vi-VN', { maximumFractionDigits: 0 }).format(Number(value || 0)) + ' ' + (state.config.currencySymbol || 'VND');
+  }
+
+  function escapeHtml(value) {
+    return String(value || '')
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#39;');
+  }
+
+  function escapeAttribute(value) {
+    return escapeHtml(value);
+  }
+
+  function escapeJs(value) {
+    return String(value || '').replaceAll('\\', '\\\\').replaceAll("'", "\\'");
+  }
+
+  function cssEscape(value) {
+    return String(value || '').replaceAll('"', '\\"');
+  }
+</script>

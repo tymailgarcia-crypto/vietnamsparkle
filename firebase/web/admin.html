@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vietnam Sparkle Owner Dashboard</title>
+    <link rel="stylesheet" href="./assets/styles.css">
+  </head>
+  <body>
+    <main class="page has-admin-dock">
+      <section id="auth-view" class="auth-shell">
+        <div class="auth-card">
+          <span class="pill">Owner sign-in</span>
+          <h2>Firestore owner dashboard</h2>
+          <p class="muted">Use a Firebase Auth email/password account for the owner.</p>
+          <form id="login-form" class="stack">
+            <label>
+              Email
+              <input id="login-email" required type="email" placeholder="owner@example.com">
+            </label>
+            <label>
+              Password
+              <input id="login-password" required type="password" placeholder="Password">
+            </label>
+            <button class="primary" type="submit">Sign in</button>
+          </form>
+          <p id="login-status" class="muted"></p>
+        </div>
+      </section>
+
+      <div id="app-view" class="hidden">
+        <a class="cog-button floating-settings" href="./settings.html" title="Settings" aria-label="Settings">⚙</a>
+        <section class="hero admin-dock">
+          <h1>Admin dashboard</h1>
+          <div class="button-row">
+            <a class="button-link secondary" href="./admin.html">Dashboard</a>
+            <a class="button-link secondary" href="./customers.html">Customers</a>
+            <a class="button-link secondary" href="./orders.html">Orders</a>
+            <a class="button-link secondary" href="./map.html">Map</a>
+            <a class="button-link secondary" href="./receivables.html">Receivables</a>
+            <a class="button-link secondary" href="./deposits.html">Deposits</a>
+          </div>
+          <div id="admin-toast" class="admin-dock-status" role="status" aria-live="polite" aria-atomic="true"></div>
+        </section>
+
+        <section class="panel">
+          <div class="date-header">
+            <input id="working-date" type="date" aria-label="Working date">
+          </div>
+          <div id="hero-stats" class="stats-grid"></div>
+          <div class="view-toggle" id="order-status-filter" style="margin-top:14px" role="group" aria-label="Filter orders by status"></div>
+          <div id="today-board" class="compact-list" style="margin-top:14px"></div>
+        </section>
+
+      </div>
+
+      <dialog id="delivery-payment-dialog" class="edit-dialog">
+        <form id="delivery-payment-form" class="form-grid" style="min-width:min(560px,90vw)">
+          <h3 class="span-2" style="margin:0">Mark delivered — <span id="delivery-payment-customer"></span></h3>
+          <p class="muted span-2" style="margin:0">Amount due: <strong id="delivery-payment-due">0 VND</strong></p>
+          <input type="hidden" id="delivery-payment-order-id">
+
+          <div class="span-2 button-row">
+            <label class="button-row" style="gap:6px;cursor:pointer">
+              <input type="radio" name="collected" value="collected" checked>
+              <span>Collected</span>
+            </label>
+            <label class="button-row" style="gap:6px;cursor:pointer">
+              <input type="radio" name="collected" value="deferred">
+              <span>Not collected today</span>
+            </label>
+          </div>
+
+          <div id="delivery-collected-fields" class="span-2 form-grid">
+            <label>
+              Amount collected
+              <input id="delivery-payment-amount" type="number" min="0" step="1000">
+            </label>
+            <label>
+              Method
+              <select id="delivery-payment-method">
+                <option value="cash">Cash</option>
+                <option value="transfer">Bank transfer</option>
+                <option value="bank_qr">QR code</option>
+                <option value="other">Other</option>
+              </select>
+            </label>
+            <label class="span-2">
+              Reference (optional)
+              <input id="delivery-payment-reference" type="text" maxlength="199" placeholder="Bank reference or note">
+            </label>
+          </div>
+
+          <div id="delivery-deferred-fields" class="span-2 form-grid hidden">
+            <label>
+              Reason
+              <select id="delivery-deferral-reason">
+                <option value="customer_said_next_time">Customer said next time</option>
+                <option value="customer_not_home">Customer wasn't home</option>
+                <option value="driver_forgot_to_ask">Driver forgot to ask</option>
+                <option value="waived_by_owner">Waived by owner</option>
+                <option value="other">Other</option>
+              </select>
+            </label>
+            <label>
+              Follow up by
+              <input id="delivery-follow-up" type="date">
+            </label>
+            <label class="span-2">
+              Notes
+              <textarea id="delivery-deferral-notes" rows="2" maxlength="999" placeholder="What did the customer say?"></textarea>
+            </label>
+          </div>
+
+          <div class="span-2">
+            <h4 style="margin:12px 0 8px">Containers returned this trip</h4>
+            <p class="muted" style="margin:0 0 8px" id="delivery-containers-help">Loading customer containers...</p>
+            <div id="delivery-containers-list" class="stack"></div>
+          </div>
+
+          <div class="span-2">
+            <label class="button-row" style="gap:6px;cursor:pointer">
+              <input type="checkbox" id="delivery-loss-checkbox">
+              <span>Report lost or destroyed containers</span>
+            </label>
+            <div id="delivery-loss-fields" class="form-grid hidden" style="margin-top:8px">
+              <label>
+                Container type
+                <select id="delivery-loss-type"></select>
+              </label>
+              <label>
+                Qty lost
+                <input id="delivery-loss-qty" type="number" min="1" step="1" value="1">
+              </label>
+              <label class="span-2">
+                Reason / note
+                <input id="delivery-loss-note" type="text" maxlength="199" placeholder="Broken jug, never returned, etc.">
+              </label>
+            </div>
+          </div>
+
+          <div class="span-2 button-row">
+            <button class="primary" type="submit">Save & mark delivered</button>
+            <button class="ghost" type="button" id="delivery-payment-cancel-button">Discard</button>
+            <span class="muted" id="delivery-payment-status"></span>
+          </div>
+        </form>
+      </dialog>
+
+      <dialog id="invoice-dialog" class="edit-dialog" style="max-width:min(760px,95vw);width:100%">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:8px">
+          <h3 style="margin:0">Invoice preview</h3>
+          <button class="ghost" type="button" id="invoice-close-button">Close</button>
+        </div>
+        <div class="button-row" style="margin-bottom:10px;flex-wrap:wrap;gap:8px">
+          <button class="primary" type="button" id="invoice-download-button">Download PDF</button>
+          <button class="secondary" type="button" id="invoice-email-button" style="display:none">Send via email</button>
+          <a class="button-link secondary" id="invoice-whatsapp-button" href="#" target="_blank" rel="noopener" style="display:none">Send via WhatsApp</a>
+          <span class="muted" id="invoice-status"></span>
+        </div>
+        <div id="invoice-preview-slot" style="max-height:70vh;overflow-y:auto;border:1px solid var(--line);border-radius:12px;background:#fff"></div>
+      </dialog>
+
+      <dialog id="edit-order-dialog" class="edit-dialog">
+        <form id="edit-order-form" class="form-grid" style="min-width:min(600px,90vw)">
+          <h3 class="span-2" style="margin:0">Edit order</h3>
+          <input type="hidden" id="edit-order-id">
+          <label>
+            Customer name
+            <input id="edit-customer-name" required minlength="2" maxlength="199" type="text">
+          </label>
+          <label>
+            Phone
+            <input id="edit-phone" required minlength="6" maxlength="39" type="tel" pattern="(?=.*\d)[+0-9 ()\-]{6,40}">
+          </label>
+          <label class="span-2">
+            Address
+            <input id="edit-address" required minlength="5" maxlength="499" type="text">
+          </label>
+          <label>
+            Delivery date
+            <input id="edit-delivery-date" required type="date">
+          </label>
+          <label>
+            Delivery window
+            <select id="edit-delivery-window"></select>
+          </label>
+          <label class="span-2">
+            Notes
+            <textarea id="edit-notes" rows="3" maxlength="1999"></textarea>
+          </label>
+          <div class="span-2">
+            <h4 style="margin:0 0 8px">Items</h4>
+            <div id="edit-items-list" class="stack"></div>
+            <div class="button-row" style="margin-top:8px">
+              <select id="edit-add-item-select"></select>
+              <button class="secondary" type="button" id="edit-add-item-button">Add product</button>
+            </div>
+            <div class="stats-grid" id="edit-totals" style="margin-top:12px"></div>
+          </div>
+          <div class="span-2 button-row">
+            <button class="primary" type="submit">Save changes</button>
+            <button class="ghost" type="button" id="edit-cancel-button">Discard</button>
+            <span class="muted" id="edit-status"></span>
+          </div>
+        </form>
+      </dialog>
+    </main>
+
+    <script type="module" src="./assets/adminApp.js"></script>
+  </body>
+</html>

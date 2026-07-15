@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vietnam Sparkle Water Delivery</title>
+    <link rel="stylesheet" href="./assets/styles.css">
+  </head>
+  <body>
+    <div id="app-loading" class="app-loading" role="status" aria-live="polite">
+      <div class="app-loading-inner">
+        <div class="app-loading-spinner" aria-hidden="true"></div>
+        <div>Loading…</div>
+      </div>
+    </div>
+    <main class="page">
+      <section class="hero">
+        <span class="pill">Da Nang water delivery</span>
+        <div class="button-row" id="contact-channels"></div>
+        <div class="button-row hero-signin hidden" id="hero-signin-row">
+          <button type="button" class="primary" id="hero-google-signin-button">Sign in with Google</button>
+          <a class="button-link secondary" href="./account.html">Sign in with email</a>
+          <span id="hero-signin-status" class="muted"></span>
+        </div>
+        <p class="muted" id="signed-in-banner"></p>
+      </section>
+
+      <section class="panel">
+        <div class="grid-3">
+          <div>
+            <h3>Glass bottle water</h3>
+            <div id="catalog-glass" class="stack catalog-column"></div>
+          </div>
+          <div>
+            <h3>Large water jugs</h3>
+            <div id="catalog-jug" class="stack catalog-column"></div>
+          </div>
+          <div>
+            <h3>Extra items</h3>
+            <div id="catalog-addon" class="stack catalog-column"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="personal-details-heading">
+          <h2>Personal details</h2>
+          <button id="update-account-details" class="secondary compact-button hidden" type="button">Update my account</button>
+        </div>
+        <p id="update-account-status" class="muted personal-details-status" role="status" aria-live="polite"></p>
+        <form id="public-order-form" class="form-grid pair-mobile">
+          <label>
+            Customer name
+            <input id="form-customer-name" name="customerName" required minlength="2" maxlength="199" type="text" placeholder="Tran Minh">
+          </label>
+          <label>
+            Phone
+            <input id="form-phone" name="phone" required minlength="6" maxlength="39" type="tel" pattern="(?=.*\d)[-+0-9 ()]{6,40}" title="Digits, spaces, +, -, ( ) only. At least one digit required." placeholder="0900 000 001">
+          </label>
+          <label class="span-2">
+            Address
+            <input id="form-address" name="address" required minlength="5" maxlength="499" type="text" placeholder="12 Nguyen Hue, Da Nang">
+            <span class="address-verify-actions">
+              <button id="address-verify-button" class="ghost" type="button">Find on Google Maps</button>
+              <span id="address-verify-status" class="muted" role="status" aria-live="polite">Confirm the delivery pin to help us find you.</span>
+            </span>
+          </label>
+          <div id="address-map-wrap" class="span-2 address-map-wrap" hidden>
+            <div id="address-confirm-map" class="address-confirm-map" aria-label="Map showing the delivery location"></div>
+            <div class="address-map-footer">
+              <p class="muted address-map-help">Drag the pin to your exact entrance, then submit your order.</p>
+              <button id="address-reset-pin" class="ghost" type="button">Reset pin</button>
+            </div>
+          </div>
+          <label>
+            Delivery date
+            <input id="delivery-date" name="deliveryDate" required type="date">
+          </label>
+          <label>
+            Delivery window
+            <select id="delivery-window" name="deliveryWindow"></select>
+          </label>
+          <label class="span-2">
+            Notes
+            <textarea name="notes" rows="3" placeholder="Stairs, call before arrival, empty pickup, reception desk"></textarea>
+          </label>
+        </form>
+      </section>
+
+      <section class="panel mobile-sticky-totals">
+        <h3>Order totals</h3>
+        <div id="totals" class="stats-grid"></div>
+        <div class="button-row public-order-actions" style="margin-top:16px">
+          <a class="button-link secondary" href="./account.html" id="account-link">Sign in</a>
+          <button type="button" class="secondary" id="reorder-open-button">Reorder</button>
+          <button class="primary" form="public-order-form" type="submit">Submit order</button>
+        </div>
+        <div id="public-feedback" class="muted top-gap"></div>
+      </section>
+    </main>
+
+    <dialog id="reorder-dialog" class="edit-dialog reorder-dialog" aria-labelledby="reorder-dialog-title">
+      <div class="reorder-dialog-body">
+        <div id="reorder-dialog-status" class="muted" style="margin:0 0 12px"></div>
+        <div id="reorder-dialog-list" class="stack"></div>
+        <div class="button-row top-gap" id="reorder-dialog-load-more-row" style="display:none">
+          <button class="ghost" type="button" id="reorder-dialog-load-more">Load more</button>
+        </div>
+      </div>
+      <div class="reorder-dialog-footer">
+        <div class="reorder-dialog-heading">
+          <h3 id="reorder-dialog-title" style="margin:0">Past orders</h3>
+          <p class="muted" id="reorder-dialog-hint" style="margin:4px 0 0">Tap Reorder on any past order to load its items into the form.</p>
+        </div>
+        <button type="button" class="ghost" id="reorder-dialog-close" aria-label="Close">Close</button>
+      </div>
+    </dialog>
+
+    <dialog id="profile-save-dialog" class="edit-dialog profile-save-dialog" aria-labelledby="profile-save-title">
+      <form id="profile-save-form" method="dialog">
+        <h3 id="profile-save-title" style="margin:0">Save to your profile?</h3>
+        <p class="muted" id="profile-save-hint" style="margin:6px 0 12px"></p>
+        <div id="profile-save-fields" class="stack" style="gap:8px"></div>
+        <div id="profile-save-address-block" class="profile-save-address" hidden>
+          <div class="profile-save-address-heading">This delivery address is different from the one saved on your profile. Save it and pick which one to use by default.</div>
+          <label class="profile-save-address-option">
+            <input type="radio" name="primaryAddress" value="existing">
+            <span>
+              <strong>Keep current default</strong>
+              <span class="muted" id="profile-save-address-existing"></span>
+            </span>
+          </label>
+          <label class="profile-save-address-option">
+            <input type="radio" name="primaryAddress" value="submitted" checked>
+            <span>
+              <strong>Use this new address as default</strong>
+              <span class="muted" id="profile-save-address-submitted"></span>
+            </span>
+          </label>
+        </div>
+        <p class="muted" id="profile-save-status" style="min-height:18px;margin:12px 0 0"></p>
+        <div class="button-row top-gap" style="justify-content:flex-end">
+          <button type="button" class="ghost" id="profile-save-cancel">Not now</button>
+          <button type="submit" class="primary" id="profile-save-confirm">Save</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script type="module" src="./assets/publicApp.js"></script>
+  </body>
+</html>

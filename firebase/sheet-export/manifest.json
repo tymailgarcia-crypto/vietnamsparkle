@@ -1,0 +1,98 @@
+{
+  "exportedAt": "2026-07-05T09:33:45.132Z",
+  "folderName": "water-delivery-export-20260705-163342",
+  "sheetCount": 13,
+  "files": [
+    {
+      "key": "customers",
+      "rowCount": 17,
+      "fileId": "1z-sLkozNGjo8ckQ18zCnem3fJfUBZjH0",
+      "fileName": "customers.json",
+      "url": "https://drive.google.com/file/d/1z-sLkozNGjo8ckQ18zCnem3fJfUBZjH0/view?usp=drivesdk"
+    },
+    {
+      "key": "orders",
+      "rowCount": 1,
+      "fileId": "1CZWaALeKzAaKUpjl7et5LE3w8FUyjkVJ",
+      "fileName": "orders.json",
+      "url": "https://drive.google.com/file/d/1CZWaALeKzAaKUpjl7et5LE3w8FUyjkVJ/view?usp=drivesdk"
+    },
+    {
+      "key": "orderItems",
+      "rowCount": 26,
+      "fileId": "1LVVFozcLRQu-4ni0bx-FLURUZ-s42z7v",
+      "fileName": "orderItems.json",
+      "url": "https://drive.google.com/file/d/1LVVFozcLRQu-4ni0bx-FLURUZ-s42z7v/view?usp=drivesdk"
+    },
+    {
+      "key": "products",
+      "rowCount": 12,
+      "fileId": "1aJpKQOOWWVlQ1O_Oo0P6zc9WmKc6dl4W",
+      "fileName": "products.json",
+      "url": "https://drive.google.com/file/d/1aJpKQOOWWVlQ1O_Oo0P6zc9WmKc6dl4W/view?usp=drivesdk"
+    },
+    {
+      "key": "helpers",
+      "rowCount": 3,
+      "fileId": "1uavnh6paTa6VhKOEJKryv3zJ1QPfQbb4",
+      "fileName": "helpers.json",
+      "url": "https://drive.google.com/file/d/1uavnh6paTa6VhKOEJKryv3zJ1QPfQbb4/view?usp=drivesdk"
+    },
+    {
+      "key": "payments",
+      "rowCount": 15,
+      "fileId": "1NJBZ9JJwfv-0xxECGOU3WlFOp-4DIg2U",
+      "fileName": "payments.json",
+      "url": "https://drive.google.com/file/d/1NJBZ9JJwfv-0xxECGOU3WlFOp-4DIg2U/view?usp=drivesdk"
+    },
+    {
+      "key": "deposits",
+      "rowCount": 12,
+      "fileId": "1A3AW3oWZ0oYe_teIvMc3sq5f0ugyjEPC",
+      "fileName": "deposits.json",
+      "url": "https://drive.google.com/file/d/1A3AW3oWZ0oYe_teIvMc3sq5f0ugyjEPC/view?usp=drivesdk"
+    },
+    {
+      "key": "returns",
+      "rowCount": 0,
+      "fileId": "1aIgz2JTUBvHfAoyeJxeayR2rxmvpEY5b",
+      "fileName": "returns.json",
+      "url": "https://drive.google.com/file/d/1aIgz2JTUBvHfAoyeJxeayR2rxmvpEY5b/view?usp=drivesdk"
+    },
+    {
+      "key": "purchases",
+      "rowCount": 0,
+      "fileId": "1N3CcRuEgERjjz3gJ4fOtq2YYlDSJX49b",
+      "fileName": "purchases.json",
+      "url": "https://drive.google.com/file/d/1N3CcRuEgERjjz3gJ4fOtq2YYlDSJX49b/view?usp=drivesdk"
+    },
+    {
+      "key": "expenses",
+      "rowCount": 0,
+      "fileId": "1wwa4YMHMqV-pMmjst5hYu3zKXMrQ9D_P",
+      "fileName": "expenses.json",
+      "url": "https://drive.google.com/file/d/1wwa4YMHMqV-pMmjst5hYu3zKXMrQ9D_P/view?usp=drivesdk"
+    },
+    {
+      "key": "documents",
+      "rowCount": 0,
+      "fileId": "1hNzNyNUgOM4-mimyQPJ3jElUEIjH6Cm-",
+      "fileName": "documents.json",
+      "url": "https://drive.google.com/file/d/1hNzNyNUgOM4-mimyQPJ3jElUEIjH6Cm-/view?usp=drivesdk"
+    },
+    {
+      "key": "dailySummary",
+      "rowCount": 1,
+      "fileId": "1GtTtfj0CvttxisM0d3v7gN8I-3PRcLqP",
+      "fileName": "dailySummary.json",
+      "url": "https://drive.google.com/file/d/1GtTtfj0CvttxisM0d3v7gN8I-3PRcLqP/view?usp=drivesdk"
+    },
+    {
+      "key": "inquiries",
+      "rowCount": 2,
+      "fileId": "1ietM0x3lb-6LvObXRrmznky7JqxkKaFe",
+      "fileName": "inquiries.json",
+      "url": "https://drive.google.com/file/d/1ietM0x3lb-6LvObXRrmznky7JqxkKaFe/view?usp=drivesdk"
+    }
+  ]
+}

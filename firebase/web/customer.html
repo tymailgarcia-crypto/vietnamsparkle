@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Customer profile · Vietnam Sparkle</title>
+    <link rel="stylesheet" href="./assets/styles.css">
+  </head>
+  <body>
+    <main class="page has-admin-dock">
+      <section id="auth-view" class="auth-shell hidden">
+        <div class="auth-card">
+          <span class="pill">Owner sign-in required</span>
+          <h2>Sign in to view this customer</h2>
+          <div class="button-row">
+            <a class="button-link primary" href="./admin.html">Go to sign in</a>
+          </div>
+        </div>
+      </section>
+
+      <div id="app-view" class="hidden">
+        <a class="cog-button floating-settings" href="./settings.html" title="Settings" aria-label="Settings">⚙</a>
+        <section class="hero admin-dock">
+          <span class="pill">Customer profile</span>
+          <h1 id="customer-headline">Loading customer...</h1>
+          <p class="muted" id="customer-subline"></p>
+          <div class="button-row">
+            <a class="button-link secondary" href="./admin.html">Dashboard</a>
+            <a class="button-link secondary" href="./customers.html">Customers</a>
+            <a class="button-link secondary" href="./orders.html">Orders</a>
+            <a class="button-link secondary" href="./map.html">Map</a>
+            <a class="button-link secondary" href="./receivables.html">Receivables</a>
+            <a class="button-link secondary" href="./deposits.html">Deposits</a>
+          </div>
+        </section>
+
+        <section id="merged-banner" class="panel hidden" style="margin-top:16px;background:rgba(11,122,99,0.08);border-left:4px solid #0b7a63">
+          <strong>This record was merged.</strong>
+          <p class="muted" style="margin:6px 0 0">All order history now lives on <a id="merged-target-link" href="#">the merged record</a>. This archived copy is kept for audit only.</p>
+        </section>
+
+        <section class="panel">
+          <div class="button-row" style="margin-bottom:16px">
+            <button class="primary" id="new-order-button" type="button">Create order for this customer</button>
+            <a class="button-link secondary" href="./customers.html">All customers</a>
+          </div>
+          <h2>Details</h2>
+          <p class="muted" id="load-status"></p>
+          <form id="customer-form" class="form-grid">
+            <label>
+              Name
+              <input id="field-name" required minlength="2" maxlength="199" type="text">
+            </label>
+            <label>
+              Phone
+              <input id="field-phone" required minlength="6" maxlength="39" type="tel" pattern="(?=.*\d)[+0-9 ()\-]{6,40}">
+            </label>
+            <label>
+              Email
+              <input id="field-email" maxlength="199" type="email">
+            </label>
+            <label>
+              Billing name
+              <input id="field-billing-name" maxlength="199" type="text">
+            </label>
+            <label>
+              Tax ID
+              <input id="field-tax-id" maxlength="60" type="text">
+            </label>
+            <label>
+              Area
+              <input id="field-area" maxlength="100" type="text" placeholder="Hai Chau / Son Tra / ...">
+            </label>
+            <label class="span-2">
+              Address
+              <input id="field-address" required minlength="5" maxlength="499" type="text">
+            </label>
+            <label class="span-2">
+              Notes
+              <textarea id="field-notes" rows="8" maxlength="4999" placeholder="Delivery preferences, allergies, past complaints..."></textarea>
+            </label>
+            <div class="span-2 button-row">
+              <button class="secondary" type="button" id="append-note-button">Append dated note</button>
+              <span class="muted">Prepends <code>[YYYY-MM-DD HH:mm] your note</code> to Notes above.</span>
+            </div>
+            <div class="span-2 button-row">
+              <button class="primary" type="submit">Save changes</button>
+              <span class="muted" id="save-status"></span>
+            </div>
+          </form>
+        </section>
+
+        <section class="panel">
+          <h2>Order history</h2>
+          <p class="muted" id="orders-status"></p>
+          <div id="order-history" class="stack"></div>
+        </section>
+
+        <section class="panel" id="merge-panel" style="margin-top:24px">
+          <h3 style="margin:0 0 8px">Merge this customer into another</h3>
+          <p class="muted" style="margin:0 0 12px">Use this when the same person has two records — e.g. an owner-created walk-in profile and a self-serve sign-up from the same customer. Every order, payment, deposit, and return on THIS record is moved onto the target record, then this record is archived (kept for audit, hidden from lookups).</p>
+          <div class="button-row">
+            <button class="secondary" id="open-merge-button" type="button">Choose a target and merge…</button>
+          </div>
+        </section>
+      </div>
+      <dialog id="merge-dialog" class="edit-dialog">
+        <form id="merge-form" class="form-grid" style="min-width:min(560px,90vw)">
+          <h3 class="span-2" style="margin:0">Merge <span id="merge-from-label"></span> into…</h3>
+          <p class="muted span-2" style="margin:0">Pick the record that should own all of this customer's history going forward. The record you're on right now will be archived.</p>
+          <label class="span-2">
+            Search target
+            <input type="text" id="merge-target-search" placeholder="Type a name, phone, or CUS-… id" autocomplete="off">
+          </label>
+          <div class="span-2" id="merge-target-suggestions" style="max-height:220px;overflow:auto;border:1px solid rgba(0,0,0,0.08);border-radius:8px"></div>
+          <div class="span-2 hidden" id="merge-preview"></div>
+          <div class="span-2 button-row">
+            <button class="primary" type="submit" id="merge-submit-button" disabled>Merge and archive this record</button>
+            <button class="ghost" type="button" id="merge-cancel-button">Cancel</button>
+            <span class="muted" id="merge-status"></span>
+          </div>
+        </form>
+      </dialog>
+      <dialog id="new-order-dialog" class="edit-dialog">
+        <form id="new-order-form" class="form-grid" style="min-width:min(620px,90vw)">
+          <h3 class="span-2" style="margin:0">New order for <span id="new-order-customer-name"></span></h3>
+          <p class="muted span-2" style="margin:0">Owner-created orders skip the approval step and land on the today board as "new". Assign a driver from there.</p>
+          <label>
+            Delivery date
+            <input id="new-order-date" required type="date">
+          </label>
+          <label>
+            Delivery window
+            <select id="new-order-window"></select>
+          </label>
+          <label class="span-2">
+            Address
+            <input id="new-order-address" required minlength="5" maxlength="499" type="text">
+          </label>
+          <label class="span-2">
+            Notes
+            <textarea id="new-order-notes" rows="3" maxlength="1999"></textarea>
+          </label>
+          <div class="span-2">
+            <h4 style="margin:0 0 8px">Items</h4>
+            <div id="new-order-items" class="stack"></div>
+            <div class="button-row" style="margin-top:8px">
+              <select id="new-order-add-select"></select>
+              <button class="secondary" type="button" id="new-order-add-button">Add product</button>
+            </div>
+            <div class="stats-grid" id="new-order-totals" style="margin-top:12px"></div>
+          </div>
+          <div class="span-2 button-row">
+            <button class="primary" type="submit">Create order</button>
+            <button class="ghost" type="button" id="new-order-cancel-button">Discard</button>
+            <span class="muted" id="new-order-status"></span>
+          </div>
+        </form>
+      </dialog>
+    </main>
+
+    <script type="module" src="./assets/customerApp.js"></script>
+  </body>
+</html>

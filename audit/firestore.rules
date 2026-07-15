@@ -1,0 +1,228 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    function isOwner() {
+      return isSignedIn() && request.auth.token.role == 'owner';
+    }
+    function isDriver() {
+      return isSignedIn() && request.auth.token.role == 'driver';
+    }
+    function myDriverId() {
+      return request.auth.token.driverId;
+    }
+    function isCustomer() {
+      // A signed-in user with no owner/driver role. Custom-claim tokens omit
+      // the `role` key entirely for customer accounts, so we test both
+      // "key absent" and "key explicitly null" — v2 rules don't treat those
+      // as equivalent, and `role == null` alone silently denies every read
+      // for tokens that never had the claim set.
+      return isSignedIn()
+        && (!('role' in request.auth.token) || request.auth.token.role == null);
+    }
+    function myUid() {
+      return request.auth.uid;
+    }
+
+    function orderMathValid() {
+      let d = request.resource.data;
+      return d.subtotal is number && d.subtotal >= 0
+        && d.depositTotal is number && d.depositTotal >= 0
+        && d.amountPaid is number && d.amountPaid >= 0
+        && d.balanceDue is number
+        && d.balanceDue == d.subtotal + d.depositTotal - d.amountPaid
+        && d.paymentStatus in ['unpaid', 'partial', 'paid']
+        && (d.paymentStatus != 'paid' || d.balanceDue <= 0)
+        && (d.paymentStatus != 'unpaid' || d.amountPaid == 0);
+    }
+
+    function touchesMoneyFields() {
+      return request.resource.data.diff(resource.data).affectedKeys()
+        .hasAny(['subtotal', 'depositTotal', 'amountPaid', 'balanceDue', 'paymentStatus']);
+    }
+
+    function isDeliveryTransition() {
+      return request.resource.data.status == 'delivered'
+        && resource.data.status != 'delivered';
+    }
+
+    function hasValidDeliveryPayment() {
+      // NOTE: cannot use exists() here — the payments doc is created in the
+      // same writeBatch as this order update, and Firestore rules evaluate
+      // exists() against the pre-batch state, so it always returns false
+      // and blocks the transition. We require the id to be a string; the
+      // client always writes the payments doc in the same batch, and a
+      // nightly reconciliation should catch any orphan ids.
+      return request.resource.data.deliveryPaymentEventId is string
+        && request.resource.data.deliveryPaymentEventId.size() > 0;
+    }
+
+    // Public orders now flow through the `submitPublicOrder` Cloud Function
+    // (see firebase/functions/index.js), which reads canonical product prices
+    // server-side and writes via the Admin SDK (bypasses rules). The
+    // browser-write path is closed — only owners can create orders directly.
+
+    match /orders/{orderId} {
+      allow read: if isOwner()
+        || (isDriver() && resource.data.assignedDriverId == myDriverId())
+        || (isCustomer() && resource.data.authUid == myUid());
+      allow create: if isOwner() && orderMathValid();
+      allow update: if (isOwner()
+            && (!touchesMoneyFields() || orderMathValid())
+            && (!isDeliveryTransition() || hasValidDeliveryPayment()))
+        || (isDriver()
+            && resource.data.assignedDriverId == myDriverId()
+            && (
+              (!isDeliveryTransition()
+                && request.resource.data.diff(resource.data).affectedKeys()
+                     .hasOnly(['status', 'updatedAt', 'notes']))
+              ||
+              (isDeliveryTransition()
+                && hasValidDeliveryPayment()
+                && request.resource.data.diff(resource.data).affectedKeys()
+                     .hasOnly(['status', 'updatedAt', 'notes', 'deliveryPaymentEventId',
+                               'amountPaid', 'balanceDue', 'paymentStatus', 'followUpBy'])
+                && (!touchesMoneyFields() || orderMathValid()))
+            ))
+        || (isCustomer()
+            && resource.data.authUid == myUid()
+            && (
+              (resource.data.status == 'pending_approval'
+               && request.resource.data.status == 'cancelled'
+               && request.resource.data.diff(resource.data).affectedKeys()
+                    .hasOnly(['status', 'cancellationReason', 'cancelledAt', 'cancelledBy', 'updatedAt']))
+              ||
+              (request.resource.data.status == resource.data.status
+               && resource.data.status != 'delivered'
+               && resource.data.status != 'cancelled'
+               && request.resource.data.diff(resource.data).affectedKeys()
+                    .hasOnly(['cancellationRequested', 'cancellationRequestReason', 'cancellationRequestedAt', 'updatedAt']))
+            ))
+        || (isCustomer()
+            && resource.data.authUid == null
+            && request.resource.data.authUid == myUid()
+            && request.resource.data.diff(resource.data).affectedKeys()
+                 .hasOnly(['authUid', 'updatedAt'])
+            && resource.data.customerId is string
+            && get(/databases/$(database)/documents/customers/$(resource.data.customerId)).data.authUid == myUid());
+      // Compliance: orders are financial records. Never hard-delete real orders.
+      // The one exception is docs the owner explicitly seeded as test fixtures
+      // from /settings.html — they carry testFixture: true and can be cleaned
+      // up in bulk without piling up cancelled rows on the today board.
+      allow delete: if isOwner() && resource.data.testFixture == true;
+    }
+
+    match /orderItems/{itemId} {
+      allow read: if isOwner() || isDriver()
+        || (isCustomer() && resource.data.authUid == myUid());
+      allow create: if isOwner();
+      allow update: if isOwner();
+      allow delete: if isOwner();
+    }
+
+    match /customers/{customerId} {
+      // Signed-in customer can read their own doc (authUid match) OR an
+      // unclaimed doc whose email matches their verified Firebase Auth email
+      // — this is what unblocks accountApp.js's auto-link on first sign-in.
+      // Without this, the query for unclaimed-by-email silently returns empty
+      // and the customer can never claim their legacy owner-created profile.
+      allow read: if isOwner() || isDriver()
+        || (isCustomer() && resource.data.authUid == myUid())
+        || (isCustomer()
+            && resource.data.authUid == null
+            && resource.data.email is string
+            && resource.data.email == request.auth.token.email);
+      allow create: if isOwner()
+        || (isCustomer() && request.resource.data.authUid == myUid());
+      allow update: if isOwner()
+        || (isCustomer()
+            && resource.data.authUid == myUid()
+            && request.resource.data.authUid == resource.data.authUid)
+        || (isCustomer()
+            && resource.data.authUid == null
+            && resource.data.email is string
+            && resource.data.email == request.auth.token.email
+            && request.resource.data.authUid == myUid()
+            && request.resource.data.diff(resource.data).affectedKeys()
+                 .hasOnly(['authUid', 'updatedAt']));
+      // Compliance: customer records tied to past transactions must be retained.
+      // Use archived: true (or anonymize personal fields) instead of hard-delete.
+      // Exception: fixtures seeded from /settings.html carry testFixture: true
+      // and are safe to remove — they never represent a real customer.
+      allow delete: if isOwner() && resource.data.testFixture == true;
+    }
+
+    match /products/{productId} {
+      allow read: if true;
+      allow write: if isOwner();
+    }
+
+    match /drivers/{driverId} {
+      allow read: if isSignedIn();
+      allow write: if isOwner();
+    }
+
+    match /payments/{paymentId} {
+      allow read: if isOwner()
+        || (isCustomer() && resource.data.authUid == myUid());
+      allow create: if isOwner()
+        || (isDriver()
+            && request.resource.data.orderId is string
+            && get(/databases/$(database)/documents/orders/$(request.resource.data.orderId)).data.assignedDriverId == myDriverId()
+            && request.resource.data.amount is number
+            && request.resource.data.amount >= 0);
+      allow update, delete: if isOwner();
+    }
+    match /depositEvents/{eventId} {
+      allow read: if isOwner()
+        || (isCustomer() && resource.data.authUid == myUid());
+      allow create: if isOwner()
+        || (isDriver()
+            && request.resource.data.orderId is string
+            && get(/databases/$(database)/documents/orders/$(request.resource.data.orderId)).data.assignedDriverId == myDriverId()
+            && request.resource.data.qty is number
+            && request.resource.data.qty >= 0
+            && request.resource.data.amount is number
+            && request.resource.data.amount >= 0);
+      allow update, delete: if isOwner();
+    }
+    match /returns/{returnId} {
+      allow read: if isOwner()
+        || (isCustomer() && resource.data.authUid == myUid());
+      allow write: if isOwner();
+    }
+    match /purchases/{purchaseId}    { allow read, write: if isOwner(); }
+    match /expenses/{expenseId}      { allow read, write: if isOwner(); }
+    match /documents/{documentId}    { allow read, write: if isOwner(); }
+    match /dailySummaries/{summaryId} { allow read, write: if isOwner(); }
+
+    match /settings/{settingId} {
+      allow read: if true;
+      allow write: if isOwner();
+    }
+
+    // Audit trail written by the nightly reconciliation Cloud Function
+    // (firebase/functions/index.js::nightlyReconcileOrderMath). Admin SDK
+    // bypasses these rules on write; clients get owner-only read and no
+    // write path at all.
+    match /reconciliationReports/{runId} {
+      allow read: if isOwner();
+      allow write: if false;
+      match /drifts/{orderId} {
+        allow read: if isOwner();
+        allow write: if false;
+      }
+    }
+
+    match /inquiries/{inquiryId} {
+      allow read, update, delete: if isOwner();
+      allow create: if request.resource.data.name is string
+        && request.resource.data.name.size() > 0
+        && request.resource.data.name.size() < 200
+        && request.resource.data.phone is string
+        && request.resource.data.phone.size() < 40;
+    }
+  }
+}

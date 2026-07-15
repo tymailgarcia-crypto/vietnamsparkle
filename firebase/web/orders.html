@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Orders · Vietnam Sparkle</title>
+    <link rel="stylesheet" href="./assets/styles.css">
+  </head>
+  <body>
+    <main class="page has-admin-dock">
+      <section id="auth-view" class="auth-shell hidden">
+        <div class="auth-card">
+          <span class="pill">Owner sign-in required</span>
+          <h2>Sign in to view orders</h2>
+          <div class="button-row">
+            <a class="button-link primary" href="./admin.html">Go to sign in</a>
+          </div>
+        </div>
+      </section>
+
+      <div id="app-view" class="hidden">
+        <a class="cog-button floating-settings" href="./settings.html" title="Settings" aria-label="Settings">⚙</a>
+        <section class="hero admin-dock">
+          <h1>Orders</h1>
+          <div class="button-row">
+            <a class="button-link secondary" href="./admin.html">Dashboard</a>
+            <a class="button-link secondary" href="./customers.html">Customers</a>
+            <a class="button-link secondary" href="./orders.html">Orders</a>
+            <a class="button-link secondary" href="./map.html">Map</a>
+            <a class="button-link secondary" href="./receivables.html">Receivables</a>
+            <a class="button-link secondary" href="./deposits.html">Deposits</a>
+          </div>
+          <span id="auth-email" class="hidden"></span>
+        </section>
+
+        <section class="panel">
+          <div class="toolbar">
+            <div></div>
+            <div class="button-row" style="flex-wrap:wrap;gap:8px">
+              <input id="search-input" type="search" placeholder="Search..." style="min-width:200px">
+              <select id="status-filter">
+                <option value="">All statuses</option>
+                <option value="pending_approval">Pending approval</option>
+                <option value="new">Approved</option>
+                <option value="assigned">Assigned</option>
+                <option value="out_for_delivery">Out for delivery</option>
+                <option value="delivered">Delivered</option>
+                <option value="cancelled">Cancelled</option>
+              </select>
+              <label class="muted">From <input id="date-from" type="date"></label>
+              <label class="muted">To <input id="date-to" type="date"></label>
+              <select id="sort-select">
+                <option value="delivery-desc">Delivery date (newest)</option>
+                <option value="delivery-asc">Delivery date (oldest)</option>
+                <option value="created-desc">Created (newest)</option>
+                <option value="created-asc">Created (oldest)</option>
+              </select>
+              <button class="secondary" id="refresh-button" type="button">Refresh</button>
+            </div>
+          </div>
+          <p class="muted" id="list-status" style="margin-top:12px"></p>
+          <div class="customer-table-wrap">
+            <table class="customer-table orders-table">
+              <thead>
+                <tr>
+                  <th>Customer</th>
+                  <th>Phone</th>
+                  <th>Status</th>
+                  <th>Payment</th>
+                  <th style="text-align:right">Subtotal</th>
+                  <th style="text-align:right">Balance</th>
+                  <th>Order ID</th>
+                </tr>
+              </thead>
+              <tbody id="order-rows"></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <script type="module" src="./assets/ordersApp.js"></script>
+  </body>
+</html>

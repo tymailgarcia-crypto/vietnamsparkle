@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Customers · Vietnam Sparkle</title>
+    <link rel="stylesheet" href="./assets/styles.css">
+  </head>
+  <body>
+    <main class="page has-admin-dock">
+      <section id="auth-view" class="auth-shell hidden">
+        <div class="auth-card">
+          <span class="pill">Owner sign-in required</span>
+          <h2>Sign in to view customers</h2>
+          <p class="muted">Owner sign-in happens on the main dashboard.</p>
+          <div class="button-row">
+            <a class="button-link primary" href="./admin.html">Go to sign in</a>
+          </div>
+        </div>
+      </section>
+
+      <div id="app-view" class="hidden">
+        <a class="cog-button floating-settings" href="./settings.html" title="Settings" aria-label="Settings">⚙</a>
+        <section class="hero admin-dock">
+          <h1>Customers</h1>
+          <div class="button-row">
+            <a class="button-link secondary" href="./admin.html">Dashboard</a>
+            <a class="button-link secondary" href="./customers.html">Customers</a>
+            <a class="button-link secondary" href="./orders.html">Orders</a>
+            <a class="button-link secondary" href="./map.html">Map</a>
+            <a class="button-link secondary" href="./receivables.html">Receivables</a>
+            <a class="button-link secondary" href="./deposits.html">Deposits</a>
+          </div>
+          <span id="auth-email" class="hidden"></span>
+        </section>
+
+        <section class="panel">
+          <div class="toolbar">
+            <div></div>
+            <div class="button-row" style="flex-wrap:wrap;gap:8px">
+              <input id="search-input" type="search" placeholder="Search..." style="min-width:220px">
+              <select id="area-filter"><option value="">All areas</option></select>
+              <select id="sort-select">
+                <option value="name-asc">Name (A → Z)</option>
+                <option value="name-desc">Name (Z → A)</option>
+                <option value="last-order-desc">Most recent order</option>
+                <option value="last-order-asc">Oldest order first</option>
+                <option value="order-count-desc">Most orders</option>
+              </select>
+              <button class="secondary" id="refresh-button" type="button">Refresh</button>
+              <button class="primary" id="add-customer-button" type="button">Add customer</button>
+            </div>
+          </div>
+          <p class="muted" id="list-status" style="margin-top:12px"></p>
+          <div class="customer-table-wrap">
+            <table class="customer-table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Contact</th>
+                  <th>Address</th>
+                  <th>Notes</th>
+                  <th>Last order</th>
+                  <th>Orders</th>
+                </tr>
+              </thead>
+              <tbody id="customer-rows"></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+      <dialog id="add-customer-dialog" class="edit-dialog">
+        <form id="add-customer-form" class="form-grid" style="min-width:min(560px,90vw)">
+          <h3 class="span-2" style="margin:0">Add a new customer</h3>
+          <p class="muted span-2" style="margin:0">If a customer already exists with the same phone, you'll see a warning below with a link to their profile.</p>
+          <label>
+            Name
+            <input id="new-customer-name" required minlength="2" maxlength="199" type="text" autocomplete="off">
+          </label>
+          <label>
+            Phone
+            <input id="new-customer-phone" required minlength="6" maxlength="39" type="tel" pattern="(?=.*\d)[+0-9 ()\-]{6,40}" autocomplete="off" placeholder="0901 234 501 or +1 ...">
+          </label>
+          <label>
+            Email
+            <input id="new-customer-email" maxlength="199" type="email" autocomplete="off">
+          </label>
+          <label>
+            Area
+            <input id="new-customer-area" maxlength="100" type="text" autocomplete="off" placeholder="Hai Chau / Son Tra / ...">
+          </label>
+          <label class="span-2">
+            Address
+            <input id="new-customer-address" required minlength="5" maxlength="499" type="text" autocomplete="off">
+          </label>
+          <label class="span-2">
+            Notes
+            <textarea id="new-customer-notes" rows="3" maxlength="1999" placeholder="Delivery preferences, allergies, past complaints..."></textarea>
+          </label>
+          <div class="span-2" id="new-customer-dedupe-banner" style="display:none"></div>
+          <div class="span-2 button-row">
+            <button class="primary" type="submit">Save customer</button>
+            <button class="ghost" type="button" id="add-customer-cancel-button">Discard</button>
+            <span class="muted" id="add-customer-status"></span>
+          </div>
+        </form>
+      </dialog>
+    </main>
+
+    <script type="module" src="./assets/customersApp.js"></script>
+  </body>
+</html>

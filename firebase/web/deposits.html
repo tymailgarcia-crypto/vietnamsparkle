@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Deposits · Vietnam Sparkle</title>
+    <link rel="stylesheet" href="./assets/styles.css">
+  </head>
+  <body>
+    <main class="page has-admin-dock">
+      <section id="auth-view" class="auth-shell hidden">
+        <div class="auth-card">
+          <span class="pill">Owner sign-in required</span>
+          <h2>Sign in to view deposits</h2>
+          <div class="button-row">
+            <a class="button-link primary" href="./admin.html">Go to sign in</a>
+          </div>
+        </div>
+      </section>
+
+      <div id="app-view" class="hidden">
+        <a class="cog-button floating-settings" href="./settings.html" title="Settings" aria-label="Settings">⚙</a>
+        <section class="hero admin-dock">
+          <h1>Deposits</h1>
+          <p class="muted">Containers currently with customers, per type. Oldest first. Mark as forfeit when a container is confirmed lost or destroyed.</p>
+          <div class="button-row">
+            <a class="button-link secondary" href="./admin.html">Dashboard</a>
+            <a class="button-link secondary" href="./customers.html">Customers</a>
+            <a class="button-link secondary" href="./orders.html">Orders</a>
+            <a class="button-link secondary" href="./map.html">Map</a>
+            <a class="button-link secondary" href="./receivables.html">Receivables</a>
+            <a class="button-link secondary" href="./deposits.html">Deposits</a>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="toolbar">
+            <div>
+              <h2>Containers outstanding</h2>
+              <p class="muted" id="list-status"></p>
+            </div>
+            <div class="button-row">
+              <input id="search-input" type="search" placeholder="Search customer / phone" style="min-width:220px">
+              <button class="secondary" id="refresh-button" type="button">Refresh</button>
+            </div>
+          </div>
+          <div class="customer-table-wrap">
+            <table class="customer-table deposits-table">
+              <thead>
+                <tr>
+                  <th>Customer</th>
+                  <th>Phone</th>
+                  <th>Container</th>
+                  <th style="text-align:right">Qty</th>
+                  <th style="text-align:right">Deposit</th>
+                  <th>Since</th>
+                  <th>Days</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="deposit-rows"></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+
+      <dialog id="forfeit-dialog" class="edit-dialog">
+        <form id="forfeit-form" class="form-grid" style="min-width:min(440px,90vw)">
+          <h3 class="span-2" style="margin:0">Mark as forfeit</h3>
+          <p class="muted span-2" style="margin:0"><span id="forfeit-customer"></span> · <span id="forfeit-summary"></span></p>
+          <input type="hidden" id="forfeit-customer-id">
+          <input type="hidden" id="forfeit-container-type">
+          <input type="hidden" id="forfeit-max-qty">
+          <input type="hidden" id="forfeit-deposit-per-unit">
+          <label>
+            Qty to forfeit
+            <input id="forfeit-qty" type="number" min="1" step="1" required>
+          </label>
+          <label>
+            Reason
+            <select id="forfeit-reason">
+              <option value="lost">Lost</option>
+              <option value="destroyed">Destroyed / broken</option>
+              <option value="never_returned">Never returned after multiple attempts</option>
+              <option value="waived">Waived as goodwill</option>
+              <option value="other">Other</option>
+            </select>
+          </label>
+          <label class="span-2">
+            Note
+            <input id="forfeit-note" type="text" maxlength="199" placeholder="Optional context">
+          </label>
+          <div class="span-2 button-row">
+            <button class="primary" type="submit">Confirm forfeit</button>
+            <button class="ghost" type="button" id="forfeit-cancel-button">Discard</button>
+            <span class="muted" id="forfeit-status"></span>
+          </div>
+        </form>
+      </dialog>
+    </main>
+
+    <script type="module" src="./assets/depositsApp.js"></script>
+  </body>
+</html>

@@ -1,0 +1,35 @@
+# Dependencies — reinstall with `pnpm install` in firebase/ and firebase/functions/
+node_modules/
+
+# Secrets. The Firebase *web* config (apiKey, appId) in
+# firebase/web/assets/firebaseWebConfig.js is deliberately NOT ignored — those
+# ship in the browser bundle and are public by design; Firestore rules and API
+# key referrer restrictions are what protect the project, not hiding them.
+# These patterns are for real credentials, which must never be committed:
+# Admin SDK service accounts grant full database access and bypass all rules.
+.env
+.env.*
+*-adminsdk-*.json
+*serviceAccount*.json
+*service-account*.json
+*.pem
+*.p12
+
+# Firebase CLI state
+.firebase/
+.firebaserc.local
+
+# Logs (emulator, CLI debug output)
+*.log
+
+# Personal Claude Code settings — per-machine permission allowlist, and it
+# records local absolute paths. Shared project config belongs in
+# .claude/settings.json instead, which is committed.
+# Trailing glob is load-bearing: writes land as settings.local.json.tmp.<pid>.<hash>
+# first, and a bare filename pattern lets those temp files through.
+.claude/settings.local.json*
+
+# OS noise
+.DS_Store
+Thumbs.db
+desktop.ini

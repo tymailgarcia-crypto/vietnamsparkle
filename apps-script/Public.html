@@ -1,0 +1,1217 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <base target="_top">
+    <script>
+      window.__PUBLIC_CONFIG__ = <?!= appConfig ?>;
+    </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+      :root {
+        --ink: #0f2139;
+        --ink-soft: #182433;
+        --body: rgba(60, 72, 84, 0.85);
+        --muted: #6b7683;
+        --brand: #1b68e9;
+        --brand-dark: #0c3870;
+        --brand-hover: #1554c6;
+        --sky: #479eff;
+        --sky-tint: rgba(46, 134, 246, 0.10);
+        --sky-tint-strong: rgba(46, 134, 246, 0.17);
+        --surface: #ffffff;
+        --canvas: #f5f8ff;
+        --line: rgba(15, 33, 57, 0.08);
+        --line-strong: rgba(15, 33, 57, 0.14);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+        color: var(--body);
+        background: var(--canvas);
+        font-size: 16px;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+      }
+
+      h1, h2, h3, h4, h5 {
+        color: var(--ink);
+        font-weight: 700;
+        letter-spacing: -0.01em;
+      }
+
+      p { line-height: 1.6; }
+
+      .page {
+        min-height: 100vh;
+        padding: 24px 24px 48px;
+      }
+
+      .frame {
+        max-width: 1200px;
+        margin: 0 auto;
+        display: grid;
+        gap: 20px;
+      }
+
+      /* Header */
+      header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 16px;
+        padding: 14px 24px;
+        background: var(--surface);
+        border-radius: 16px;
+        border: 1px solid var(--line);
+      }
+
+      .brand-lockup {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .brand-lockup img {
+        height: 42px;
+        width: auto;
+        display: block;
+      }
+
+      .brand {
+        font-size: 20px;
+        font-weight: 800;
+        color: var(--ink);
+        line-height: 1.1;
+      }
+
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        border-radius: 999px;
+        padding: 8px 14px;
+        background: var(--sky-tint-strong);
+        color: var(--brand-dark);
+        font-size: 13px;
+        font-weight: 600;
+      }
+
+      /* Hero */
+      .hero {
+        display: grid;
+        grid-template-columns: 1.15fr 0.85fr;
+        gap: 20px;
+      }
+
+      .hero-copy {
+        padding: 44px 40px;
+        border-radius: 20px;
+        background:
+          radial-gradient(circle at 90% 10%, rgba(71, 158, 255, 0.28), transparent 55%),
+          linear-gradient(140deg, #0c3870 0%, #1b68e9 100%);
+        color: #ffffff;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        position: relative;
+        overflow: hidden;
+      }
+
+      .hero-copy .pill {
+        background: rgba(255, 255, 255, 0.14);
+        color: #ffffff;
+        align-self: flex-start;
+      }
+
+      .hero-copy h1 {
+        margin: 14px 0 16px;
+        font-size: 44px;
+        line-height: 1.05;
+        color: #ffffff;
+        letter-spacing: -0.02em;
+      }
+
+      .hero-copy p {
+        max-width: 560px;
+        font-size: 17px;
+        line-height: 1.55;
+        color: rgba(255, 255, 255, 0.9);
+        margin: 0;
+      }
+
+      .hero-visual {
+        border-radius: 20px;
+        overflow: hidden;
+        background: var(--surface);
+        border: 1px solid var(--line);
+        display: grid;
+        grid-template-rows: 1fr auto;
+        min-height: 320px;
+      }
+
+      .hero-visual .hero-photo {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
+      }
+
+      .hero-visual .hero-tagline {
+        padding: 18px 22px;
+        display: grid;
+        gap: 6px;
+        background: var(--surface);
+        border-top: 1px solid var(--line);
+      }
+
+      .hero-visual .hero-tagline strong {
+        color: var(--ink);
+        font-size: 16px;
+      }
+
+      .hero-visual .hero-tagline span {
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      /* CTAs / buttons */
+      .actions {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        margin-top: 24px;
+      }
+
+      .cta,
+      button {
+        border: 0;
+        border-radius: 12px;
+        padding: 13px 20px;
+        font: inherit;
+        font-size: 15px;
+        font-weight: 600;
+        cursor: pointer;
+        text-decoration: none;
+        transition: transform 120ms ease, box-shadow 120ms ease, background 120ms ease;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 44px;
+      }
+
+      .cta.primary {
+        background: #ffffff;
+        color: var(--brand-dark);
+        box-shadow: 0 6px 20px rgba(12, 56, 112, 0.24);
+      }
+
+      .cta.primary:hover { transform: translateY(-1px); }
+
+      .cta.secondary {
+        background: rgba(255, 255, 255, 0.14);
+        color: #ffffff;
+        border: 1px solid rgba(255, 255, 255, 0.28);
+      }
+
+      .cta.secondary:hover { background: rgba(255, 255, 255, 0.22); }
+
+      button[type="submit"] {
+        background: var(--brand);
+        color: #ffffff;
+        box-shadow: 0 6px 20px rgba(27, 104, 233, 0.28);
+        padding: 15px 24px;
+        min-height: 48px;
+      }
+
+      button[type="submit"]:hover {
+        background: var(--brand-hover);
+        transform: translateY(-1px);
+      }
+
+      /* Meta strip in hero */
+      .meta {
+        display: flex;
+        gap: 24px;
+        flex-wrap: wrap;
+        margin-top: 22px;
+        padding-top: 18px;
+        border-top: 1px solid rgba(255, 255, 255, 0.18);
+      }
+
+      .meta div {
+        display: grid;
+        gap: 4px;
+        min-width: 150px;
+      }
+
+      .meta strong {
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: rgba(255, 255, 255, 0.75);
+        font-weight: 600;
+      }
+
+      .meta span {
+        font-size: 14px;
+        color: #ffffff;
+      }
+
+      /* Hero side panel */
+      .hero-panel {
+        border-radius: 20px;
+        background: var(--surface);
+        border: 1px solid var(--line);
+        padding: 24px;
+        display: grid;
+        gap: 18px;
+      }
+
+      .hero-panel h2 {
+        margin: 0;
+        font-size: 20px;
+      }
+
+      /* Sections */
+      .section-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 20px;
+      }
+
+      .section,
+      .contact-card {
+        padding: 28px;
+        border-radius: 20px;
+        background: var(--surface);
+        border: 1px solid var(--line);
+      }
+
+      .section h2,
+      .contact-card h2 {
+        margin-top: 0;
+        margin-bottom: 8px;
+        font-size: 24px;
+      }
+
+      .section > p {
+        margin-top: 0;
+        color: var(--body);
+      }
+
+      /* Cards */
+      .cards {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+        gap: 14px;
+        margin-top: 18px;
+      }
+
+      .cards article {
+        border-radius: 14px;
+        padding: 16px;
+        background: #fbfcff;
+        border: 1px solid var(--line);
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+
+      .cards article .product-thumb {
+        width: 100%;
+        aspect-ratio: 1 / 1;
+        border-radius: 10px;
+        background: var(--sky-tint);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+      }
+
+      .cards article .product-thumb img {
+        max-width: 78%;
+        max-height: 78%;
+        object-fit: contain;
+      }
+
+      .cards article h3 {
+        margin: 0;
+        font-size: 16px;
+        color: var(--ink);
+      }
+
+      .cards article p {
+        margin: 0;
+        font-size: 14px;
+        color: var(--body);
+        line-height: 1.5;
+      }
+
+      /* FAQ */
+      .faq-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 12px;
+        margin-top: 16px;
+      }
+
+      .faq-card {
+        border-radius: 14px;
+        padding: 16px 18px;
+        background: #fbfcff;
+        border: 1px solid var(--line);
+      }
+
+      .faq-card strong {
+        display: block;
+        margin-bottom: 6px;
+        color: var(--ink);
+        font-size: 15px;
+      }
+
+      .faq-card p {
+        margin: 0;
+        font-size: 14px;
+        color: var(--body);
+      }
+
+      /* Contact strip */
+      .contact-strip {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        margin: 14px 0 4px;
+      }
+
+      .contact-strip a {
+        display: inline-flex;
+        align-items: center;
+        padding: 10px 14px;
+        border-radius: 10px;
+        background: var(--sky-tint);
+        color: var(--brand-dark);
+        font-weight: 600;
+        font-size: 14px;
+        text-decoration: none;
+        border: 1px solid transparent;
+        min-height: 44px;
+      }
+
+      .contact-strip a:hover {
+        background: var(--sky-tint-strong);
+        border-color: var(--line-strong);
+      }
+
+      /* Form */
+      form {
+        display: grid;
+        gap: 14px;
+        margin-top: 18px;
+      }
+
+      .form-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 14px;
+      }
+
+      .order-group {
+        display: grid;
+        gap: 12px;
+        padding: 18px;
+        border-radius: 14px;
+        border: 1px solid var(--line);
+        background: #fbfcff;
+      }
+
+      .order-group h3 {
+        margin: 0;
+        font-size: 16px;
+        color: var(--ink);
+      }
+
+      .menu-picker {
+        display: grid;
+        gap: 10px;
+      }
+
+      /* Order row: GrabFood-style thumb + name + stepper */
+      .menu-item {
+        display: grid;
+        grid-template-columns: 60px 1fr auto;
+        gap: 14px;
+        padding: 12px;
+        border-radius: 12px;
+        border: 1px solid var(--line);
+        background: var(--surface);
+        align-items: center;
+      }
+
+      .menu-item .menu-thumb {
+        width: 60px;
+        height: 60px;
+        border-radius: 10px;
+        background: var(--sky-tint);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+      }
+
+      .menu-item .menu-thumb img {
+        max-width: 80%;
+        max-height: 80%;
+        object-fit: contain;
+      }
+
+      .menu-item .menu-body strong {
+        display: block;
+        margin-bottom: 3px;
+        color: var(--ink);
+        font-size: 15px;
+      }
+
+      /* Qty stepper (mirrors AdminStyles.html .qty-stepper) */
+      .qty-stepper {
+        display: grid;
+        grid-template-columns: 44px 56px 44px;
+        gap: 6px;
+        align-items: center;
+      }
+
+      .qty-stepper button {
+        min-height: 44px;
+        min-width: 44px;
+        padding: 0;
+        border-radius: 10px;
+        background: var(--sky-tint);
+        color: var(--brand-dark);
+        font-size: 20px;
+        font-weight: 700;
+        box-shadow: none;
+      }
+
+      .qty-stepper button:hover {
+        background: var(--sky-tint-strong);
+      }
+
+      .qty-stepper button:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+      }
+
+      .qty-stepper input {
+        text-align: center;
+        font-weight: 700;
+        color: var(--ink);
+        font-size: 16px;
+        padding: 10px 4px;
+        min-height: 44px;
+      }
+
+      .qty-stepper .qty-unit {
+        display: none;
+      }
+
+      .muted-copy {
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.45;
+      }
+
+      .full { grid-column: span 2; }
+
+      label {
+        display: grid;
+        gap: 6px;
+        font-weight: 600;
+        font-size: 13px;
+        color: var(--ink);
+      }
+
+      input,
+      textarea,
+      select {
+        width: 100%;
+        border: 1px solid var(--line-strong);
+        border-radius: 10px;
+        padding: 11px 13px;
+        background: var(--surface);
+        font-family: inherit;
+        font-size: 16px;
+        font-weight: 400;
+        color: var(--ink);
+        transition: border-color 120ms ease, box-shadow 120ms ease;
+      }
+
+      input:focus,
+      textarea:focus,
+      select:focus {
+        outline: none;
+        border-color: var(--brand);
+        box-shadow: 0 0 0 3px var(--sky-tint-strong);
+      }
+
+      textarea { resize: vertical; }
+
+      .note {
+        padding: 14px 16px;
+        border-radius: 12px;
+        background: var(--sky-tint);
+        border: 1px solid var(--sky-tint-strong);
+        line-height: 1.55;
+        color: var(--ink-soft);
+        font-size: 14px;
+      }
+
+      .feedback {
+        color: var(--brand-dark);
+        min-height: 18px;
+        font-size: 14px;
+        font-weight: 500;
+      }
+
+      /* Sticky bottom submit — mobile only */
+      .sticky-submit {
+        display: none;
+      }
+
+      /* Footer */
+      footer .footer-box {
+        padding: 26px 28px;
+        border-radius: 20px;
+        background: var(--ink);
+        color: #f5f8ff;
+      }
+
+      .footer-box strong {
+        display: block;
+        font-size: 18px;
+        color: #ffffff;
+        margin-bottom: 8px;
+      }
+
+      .footer-box p { margin: 4px 0; color: rgba(245, 248, 255, 0.85); }
+
+      .footer-box a {
+        color: var(--sky);
+        text-decoration: none;
+        font-weight: 600;
+      }
+
+      .footer-box a:hover { text-decoration: underline; }
+
+      @media (max-width: 920px) {
+        body { font-size: 16px; }
+
+        .page {
+          padding: 16px 16px 100px;
+        }
+
+        header {
+          padding: 12px 16px;
+        }
+
+        .hero,
+        .section-grid,
+        .form-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .hero-copy {
+          padding: 28px 22px;
+        }
+
+        .hero-copy h1 { font-size: 32px; }
+        .hero-copy p { font-size: 15px; }
+
+        .hero-visual { min-height: 220px; }
+        .hero-visual .hero-photo { max-height: 200px; }
+
+        .section,
+        .contact-card {
+          padding: 20px;
+        }
+
+        .section h2,
+        .contact-card h2 { font-size: 22px; }
+
+        .cards article h3 { font-size: 15px; }
+
+        /* Order rows keep single row: thumb + body + stepper */
+        .menu-item {
+          grid-template-columns: 52px 1fr auto;
+          gap: 10px;
+          padding: 10px;
+        }
+
+        .menu-item .menu-thumb {
+          width: 52px;
+          height: 52px;
+        }
+
+        .menu-item .menu-body strong { font-size: 14px; }
+        .menu-item .menu-body .muted-copy {
+          font-size: 12px;
+          display: -webkit-box;
+          -webkit-line-clamp: 2;
+          -webkit-box-orient: vertical;
+          overflow: hidden;
+        }
+
+        .qty-stepper {
+          grid-template-columns: 40px 44px 40px;
+          gap: 4px;
+        }
+
+        .qty-stepper button {
+          min-width: 40px;
+          min-height: 40px;
+          font-size: 18px;
+        }
+
+        .qty-stepper input {
+          font-size: 16px;
+          padding: 8px 2px;
+          min-height: 40px;
+        }
+
+        /* Sticky submit bar */
+        .sticky-submit {
+          display: flex;
+          position: fixed;
+          bottom: 0;
+          left: 0;
+          right: 0;
+          padding: 12px 16px calc(12px + env(safe-area-inset-bottom, 0px));
+          background: var(--surface);
+          border-top: 1px solid var(--line-strong);
+          box-shadow: 0 -8px 24px rgba(15, 33, 57, 0.12);
+          align-items: center;
+          gap: 12px;
+          z-index: 40;
+        }
+
+        .sticky-submit .sticky-count {
+          flex: 1;
+          display: grid;
+          gap: 2px;
+        }
+
+        .sticky-submit .sticky-count strong {
+          color: var(--ink);
+          font-size: 15px;
+          font-weight: 700;
+        }
+
+        .sticky-submit .sticky-count span {
+          color: var(--muted);
+          font-size: 12px;
+        }
+
+        .sticky-submit button {
+          flex: 0 0 auto;
+          background: var(--brand);
+          color: #ffffff;
+          padding: 14px 22px;
+          font-size: 15px;
+          border-radius: 12px;
+          min-height: 48px;
+          box-shadow: 0 6px 16px rgba(27, 104, 233, 0.28);
+        }
+
+        .sticky-submit button:disabled {
+          background: var(--muted);
+          box-shadow: none;
+        }
+
+        /* Hide inline submit on mobile — sticky takes over */
+        form > button[type="submit"] { display: none; }
+
+        .full { grid-column: span 1; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <div class="frame">
+        <header>
+          <div class="brand-lockup">
+            <img src="https://danangwatercom.swipepages.media/2025/2/5fafecac22647a001ca2c0c1/sparkling-mineral-water-logo0-300.webp" alt="" onerror="this.style.display='none'">
+            <div class="brand" id="brand-name">Da Nang Water</div>
+          </div>
+          <div class="pill">FREE delivery of mineral water in Da Nang</div>
+        </header>
+
+        <section class="hero">
+          <div class="hero-copy">
+            <div class="pill">Glass bottles or big jugs</div>
+            <h1>Get your mineral water delivered in Da Nang.</h1>
+            <p>Choose sparkling or still water in recyclable glass bottles, or order large jugs with taps for home and office use. Submit the form below and the team confirms delivery on your preferred channel.</p>
+            <div class="actions">
+              <a class="cta primary" href="#order-form-section">Start order form</a>
+              <a class="cta secondary" href="#product-catalog">See products</a>
+              <a class="cta secondary" href="#contact-after-form">Need help first?</a>
+            </div>
+            <div class="meta">
+              <div>
+                <strong>Hours</strong>
+                <span id="business-hours"></span>
+              </div>
+              <div>
+                <strong>Coverage</strong>
+                <span id="service-areas"></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="hero-visual">
+            <img class="hero-photo" src="https://danangwatercom.swipepages.media/2025/3/5fafecac22647a001ca2c0c1/beach-water-750.webp" alt="Fresh water from a local spring near Da Nang">
+            <div class="hero-tagline">
+              <strong>Delicious spring water, delivered in glass.</strong>
+              <span>Free bottle opener with every crate. Deposits refunded on empty return.</span>
+            </div>
+          </div>
+        </section>
+
+        <div class="hero-panel">
+          <h2>Why customers choose this</h2>
+          <div class="cards">
+            <article>
+              <h3>Glass instead of plastic</h3>
+              <p>Still and sparkling mineral water in reusable glass bottles that are picked up, washed, and refilled.</p>
+            </article>
+            <article>
+              <h3>Free delivery and returns</h3>
+              <p>Delivery is free, and empties are collected later so customers can recover their container deposits.</p>
+            </article>
+            <article>
+              <h3>Easy payment</h3>
+              <p>Cash on delivery works well, and electronic transfer can be arranged when needed.</p>
+            </article>
+          </div>
+          <div class="note">
+            A small deposit is charged for each crate, jug, or reusable container. Deposit amounts are returned when the empty containers come back in good condition.
+          </div>
+        </div>
+
+        <div class="section-grid">
+          <section class="section" id="product-catalog">
+            <h2>Glass bottles of sparkling and still mineral water</h2>
+            <p>Reusable glass bottles delivered in crates of 20. Sparkling or still, from Danh Thanh, Thach Bich, Vikoda, and Glassia.</p>
+            <div class="cards" id="glass-catalog"></div>
+          </section>
+
+          <section class="section">
+            <h2>Big jugs of still water with taps</h2>
+            <p>Reusable 19–20 liter jugs with taps for home and office. Free shipping typically kicks in from three jugs.</p>
+            <div class="cards" id="jug-catalog"></div>
+          </section>
+        </div>
+
+        <div class="section-grid">
+          <section class="section">
+            <h2>Add-ons and home extras</h2>
+            <p>Small extras that can ride along with a delivery.</p>
+            <div class="cards" id="addon-catalog"></div>
+          </section>
+          <section class="section">
+            <h2>Good to know</h2>
+            <div class="faq-grid">
+              <div class="faq-card">
+                <strong>Deposits</strong>
+                <p>Reusable crates and jugs carry a deposit, while accessory items do not. Deposits generally fall in the 30k–50k range.</p>
+              </div>
+              <div class="faq-card">
+                <strong>Variable-price items</strong>
+                <p>Fresh coconuts can be requested through the same form, but the final price still needs confirmation because it changes day to day.</p>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <div class="section-grid">
+          <section class="section" id="order-form-section">
+            <h2>Place your delivery order</h2>
+            <p>Use this form first for every order. It captures the customer, delivery address, requested products, and follow-up preference in a structured sheet before dispatch confirms the run.</p>
+            <form id="delivery-form">
+              <div class="form-grid">
+                <label>
+                  Name
+                  <input name="name" required type="text" placeholder="Your name">
+                </label>
+                <label>
+                  Phone number
+                  <input name="phone" required type="tel" placeholder="Phone number">
+                </label>
+                <label class="full">
+                  Delivery address
+                  <input name="address" required type="text" placeholder="Street, building, unit, landmark">
+                </label>
+                <label>
+                  Delivery date
+                  <input name="deliveryDate" required type="date">
+                </label>
+                <label>
+                  Delivery time
+                  <select name="timeSlot">
+                    <option value="Morning 9AM-10AM">Morning 9AM-10AM</option>
+                    <option value="Morning 10AM-11AM">Morning 10AM-11AM</option>
+                    <option value="Morning 11AM-12PM">Morning 11AM-12PM</option>
+                    <option value="Afternoon 12PM-1PM">Afternoon 12PM-1PM</option>
+                    <option value="Afternoon 1PM-2PM">Afternoon 1PM-2PM</option>
+                    <option value="Afternoon 2PM-3PM">Afternoon 2PM-3PM</option>
+                    <option value="Afternoon 3PM-4PM">Afternoon 3PM-4PM</option>
+                    <option value="Afternoon 4PM-5PM">Afternoon 4PM-5PM</option>
+                    <option value="Evening 5PM-6PM">Evening 5PM-6PM</option>
+                    <option value="Evening 6PM-7PM">Evening 6PM-7PM</option>
+                    <option value="Evening 7PM-8PM">Evening 7PM-8PM</option>
+                    <option value="Evening 8PM-9PM">Evening 8PM-9PM</option>
+                  </select>
+                </label>
+                <label>
+                  Email
+                  <input name="email" type="email" placeholder="Optional email">
+                </label>
+                <div class="full order-group">
+                  <h3>Glass bottle crates</h3>
+                  <div class="menu-picker" id="glass-order-items"></div>
+                </div>
+                <div class="full order-group">
+                  <h3>Big jugs with taps</h3>
+                  <div class="menu-picker" id="jug-order-items"></div>
+                </div>
+                <div class="full order-group">
+                  <h3>Add-ons and extras</h3>
+                  <div class="menu-picker" id="addon-order-items"></div>
+                </div>
+                <label class="full">
+                  Delivery notes
+                  <textarea name="extras" rows="3" placeholder="Empty pickup request, gate code, reception instructions, move-out deadline, or any special request"></textarea>
+                </label>
+                <label>
+                  Best reply channel
+                  <select name="preferredChannel">
+                    <option value="whatsapp">WhatsApp</option>
+                    <option value="facebook">Facebook</option>
+                    <option value="zalo">Zalo</option>
+                    <option value="phone">Phone call</option>
+                    <option value="email">Email</option>
+                  </select>
+                </label>
+              </div>
+              <button type="submit">Submit order</button>
+            </form>
+            <div class="feedback" id="delivery-feedback"></div>
+          </section>
+
+          <aside class="contact-card" id="contact-after-form">
+            <h2>Need chat support after the form?</h2>
+            <p>Once the form is submitted, the team can confirm timing or clarify details over the customer’s preferred channel.</p>
+            <div class="contact-strip">
+              <a id="wa-inline" href="#" target="_blank" rel="noopener">WhatsApp</a>
+              <a id="fb-inline" href="#" target="_blank" rel="noopener">Facebook</a>
+              <a id="zalo-inline" href="#" target="_blank" rel="noopener">Zalo</a>
+              <a href="mailto:info@danangwater.com">info@danangwater.com</a>
+            </div>
+            <div class="note">
+              A free bottle opener can be included with a crate order, and customers may also request a simple tap-water test. Empty-container pickup can be arranged in advance to speed up deposit returns.
+            </div>
+            <h3>Questions customers usually ask</h3>
+            <div class="faq-grid">
+              <div class="faq-card">
+                <strong>Does it come in glass?</strong>
+                <p>Yes. Still and sparkling mineral water options are available in reusable glass bottles, depending on the brand selected.</p>
+              </div>
+              <div class="faq-card">
+                <strong>How fast is delivery?</strong>
+                <p>Orders are generally accepted throughout the day, with same-day scheduling where possible and a message shortly before arrival.</p>
+              </div>
+            </div>
+          </aside>
+        </div>
+
+        <div class="section-grid">
+          <section class="section">
+            <h2>Frequently asked questions</h2>
+            <div class="faq-grid">
+              <div class="faq-card">
+                <strong>How do deposits work?</strong>
+                <p>Each reusable crate, jug, or bottle set carries a small deposit. The deposit comes back when the empties are returned in acceptable condition.</p>
+              </div>
+              <div class="faq-card">
+                <strong>Is delivery really free?</strong>
+                <p>Glass-bottle delivery is positioned as free, and returns are also collected. Jug orders may need a minimum quantity for free delivery.</p>
+              </div>
+              <div class="faq-card">
+                <strong>Can customers return water they do not like?</strong>
+                <p>Returns can be discussed if the packaging is intact and the product is still in good condition. Container counts and transport distance may affect the final resolution.</p>
+              </div>
+              <div class="faq-card">
+                <strong>How should customers get their deposit back quickly?</strong>
+                <p>Tell the business early when empties need to be collected, especially if a pickup must happen before a move-out, handover, or deadline.</p>
+              </div>
+            </div>
+          </section>
+
+          <section class="section">
+            <h2>Why this page is structured this way</h2>
+            <p>The content mirrors the current business reality:</p>
+            <div class="cards">
+              <article>
+                <h3>Structured approval</h3>
+                <p>Every customer order lands in the order ledger immediately, then the owner approves it for dispatch instead of retyping it from chat later.</p>
+              </article>
+              <article>
+                <h3>Chat as follow-up</h3>
+                <p>WhatsApp, Facebook, and Zalo still matter, but they now support clarification after the record already exists.</p>
+              </article>
+              <article>
+                <h3>Audit-ready operations</h3>
+                <p>All of this should feed a structured backend that tracks customer identity, payments, deposits, returns, purchases, expenses, and proof links.</p>
+              </article>
+            </div>
+          </section>
+        </div>
+
+        <footer>
+          <div class="footer-box">
+            <strong id="footer-brand">Da Nang Water</strong>
+            <p>Healthy minerals, reusable containers, and doorstep delivery in Da Nang.</p>
+            <p>Contact: <a href="mailto:info@danangwater.com">info@danangwater.com</a></p>
+          </div>
+        </footer>
+      </div>
+    </div>
+
+    <div class="sticky-submit" id="sticky-submit" role="region" aria-label="Order summary">
+      <div class="sticky-count">
+        <strong><span id="sticky-item-count">0</span> items selected</strong>
+        <span>Tap Submit to send your order</span>
+      </div>
+      <button type="button" id="sticky-submit-btn" disabled>Submit order</button>
+    </div>
+
+    <script>
+      const config = window.__PUBLIC_CONFIG__ || {};
+
+      // Map catalog item IDs to real product photography pulled from danangwater.com.
+      // Kept out of Config so the pure catalog data stays untouched.
+      const PRODUCT_IMAGES = {
+        'PUB-DANH-THANH-SPARKLING': 'https://danangwatercom.swipepages.media/2025/3/5fafecac22647a001ca2c0c1/danhthanh-pwcz0f.png',
+        'PUB-THACH-BICH-SPARKLING': 'https://danangwatercom.swipepages.media/2025/10/5fafecac22647a001ca2c0c1/thach-bich.png',
+        'PUB-VIKODA-STILL-GLASS':   'https://danangwatercom.swipepages.media/2025/9/5fafecac22647a001ca2c0c1/vikoda-still-480ml-500.webp',
+        'PUB-GLASSIA-STILL-GLASS':  'https://danangwatercom.swipepages.media/2025/9/5fafecac22647a001ca2c0c1/custom-dimensions-1000x1000-px--1--500.webp',
+        'PUB-THACH-BICH-18L9':      'https://danangwatercom.swipepages.media/2025/3/5fafecac22647a001ca2c0c1/thach-bich-19l-1-0hrekh.png',
+        'PUB-VIKODA-19L':           'https://danangwatercom.swipepages.media/2025/9/5fafecac22647a001ca2c0c1/vikoda-20l-transparent-with-minerals-500.webp',
+        'PUB-UNI-20L':              'https://danangwatercom.swipepages.media/2025/3/5fafecac22647a001ca2c0c1/uni-18-9.png',
+        'PUB-SHOWER-FILTER':        'https://danangwatercom.swipepages.media/2025/2/5fafecac22647a001ca2c0c1/website-pic-no-qr.png',
+        'PUB-GLASS-STRAW':          'https://danangwatercom.swipepages.media/2025/2/5fafecac22647a001ca2c0c1/rrr-water-recycle-500.webp',
+        'PUB-TAP-TEST-16IN1':       'https://danangwatercom.swipepages.media/2025/2/5fafecac22647a001ca2c0c1/rrr-water-recycle-500.webp',
+        'PUB-TAP-TEST-DIGITAL':     'https://danangwatercom.swipepages.media/2025/2/5fafecac22647a001ca2c0c1/rrr-water-recycle-500.webp',
+        'PUB-COCONUT':              'https://danangwatercom.swipepages.media/2025/3/5fafecac22647a001ca2c0c1/beach-water-500.webp'
+      };
+
+      document.getElementById('brand-name').textContent = config.businessName || 'Da Nang Water';
+      document.getElementById('footer-brand').textContent = config.businessName || 'Da Nang Water';
+      document.getElementById('wa-inline').href = config.publicOrderLinks?.whatsapp || '#';
+      document.getElementById('fb-inline').href = config.publicOrderLinks?.facebook || '#';
+      document.getElementById('zalo-inline').href = config.publicOrderLinks?.zalo || '#';
+      document.getElementById('service-areas').textContent = (config.serviceAreas || []).join(', ');
+      document.getElementById('business-hours').textContent = (config.businessHours || []).join(' | ');
+
+      const publicCatalog = Array.isArray(config.publicCatalog) ? config.publicCatalog : [];
+      const glassCatalogEl = document.getElementById('glass-catalog');
+      const jugCatalogEl = document.getElementById('jug-catalog');
+      const addonCatalogEl = document.getElementById('addon-catalog');
+      const glassOrderItemsEl = document.getElementById('glass-order-items');
+      const jugOrderItemsEl = document.getElementById('jug-order-items');
+      const addonOrderItemsEl = document.getElementById('addon-order-items');
+      const stickyCountEl = document.getElementById('sticky-item-count');
+      const stickyBtn = document.getElementById('sticky-submit-btn');
+
+      function escapeHtml(value) {
+        return String(value || '')
+          .replaceAll('&', '&amp;')
+          .replaceAll('<', '&lt;')
+          .replaceAll('>', '&gt;')
+          .replaceAll('"', '&quot;')
+          .replaceAll("'", '&#39;');
+      }
+
+      function imgForItem(item) {
+        const url = PRODUCT_IMAGES[item.itemId];
+        if (!url) return '';
+        return `<img src="${escapeHtml(url)}" alt="${escapeHtml(item.itemName)}" loading="lazy" onerror="this.style.display='none'">`;
+      }
+
+      function renderCatalogCard(item) {
+        return `
+          <article>
+            <div class="product-thumb">${imgForItem(item)}</div>
+            <h3>${escapeHtml(item.itemName)}</h3>
+            <p>${escapeHtml(item.description)}</p>
+          </article>
+        `;
+      }
+
+      function renderOrderItem(item) {
+        const inputName = `qty_${item.itemId}`;
+        return `
+          <div class="menu-item">
+            <div class="menu-thumb">${imgForItem(item)}</div>
+            <div class="menu-body">
+              <strong>${escapeHtml(item.itemName)}</strong>
+              <div class="muted-copy">${escapeHtml(item.description)}</div>
+            </div>
+            <div class="qty-stepper" aria-label="Quantity for ${escapeHtml(item.itemName)}">
+              <button type="button" data-step="-1" data-target="${escapeHtml(inputName)}" aria-label="Decrease">−</button>
+              <input data-item-id="${escapeHtml(item.itemId)}" data-order-label="${escapeHtml(item.orderLabel)}" data-group="${escapeHtml(item.group)}" name="${escapeHtml(inputName)}" type="number" min="0" step="1" value="0" inputmode="numeric" aria-label="${escapeHtml(item.itemName)} quantity in ${escapeHtml(item.unitLabel || 'item')}">
+              <button type="button" data-step="1" data-target="${escapeHtml(inputName)}" aria-label="Increase">+</button>
+            </div>
+          </div>
+        `;
+      }
+
+      const glassItems = publicCatalog.filter((item) => item.group === 'glass');
+      const jugItems = publicCatalog.filter((item) => item.group === 'jug');
+      const addonItems = publicCatalog.filter((item) => item.group === 'addon');
+      glassCatalogEl.innerHTML = glassItems.map(renderCatalogCard).join('');
+      jugCatalogEl.innerHTML = jugItems.map(renderCatalogCard).join('');
+      addonCatalogEl.innerHTML = addonItems.map(renderCatalogCard).join('');
+      glassOrderItemsEl.innerHTML = glassItems.map(renderOrderItem).join('');
+      jugOrderItemsEl.innerHTML = jugItems.map(renderOrderItem).join('');
+      addonOrderItemsEl.innerHTML = addonItems.map(renderOrderItem).join('');
+
+      const deliveryDateInput = document.querySelector('input[name="deliveryDate"]');
+      if (deliveryDateInput && !deliveryDateInput.value) {
+        deliveryDateInput.value = new Date().toISOString().slice(0, 10);
+      }
+
+      function totalItemsSelected() {
+        let total = 0;
+        document.querySelectorAll('.qty-stepper input[type="number"]').forEach((input) => {
+          const n = Number(input.value || 0);
+          if (n > 0) total += n;
+        });
+        return total;
+      }
+
+      function updateStickyBar() {
+        const total = totalItemsSelected();
+        stickyCountEl.textContent = String(total);
+        stickyBtn.disabled = total === 0;
+      }
+
+      // Qty stepper: delegate +/- clicks
+      document.getElementById('delivery-form').addEventListener('click', (event) => {
+        const btn = event.target.closest('button[data-step]');
+        if (!btn) return;
+        const step = Number(btn.dataset.step || 0);
+        const targetName = btn.dataset.target;
+        if (!targetName) return;
+        const input = document.querySelector(`input[name="${targetName}"]`);
+        if (!input) return;
+        const next = Math.max(0, Number(input.value || 0) + step);
+        input.value = String(next);
+        updateStickyBar();
+      });
+
+      // Also react if the user types in the number field directly
+      document.getElementById('delivery-form').addEventListener('input', (event) => {
+        if (event.target && event.target.matches('.qty-stepper input[type="number"]')) {
+          const raw = Number(event.target.value || 0);
+          if (raw < 0) event.target.value = '0';
+          updateStickyBar();
+        }
+      });
+
+      // Sticky submit → trigger the real form's submit (single source of truth)
+      stickyBtn.addEventListener('click', () => {
+        const form = document.getElementById('delivery-form');
+        if (typeof form.requestSubmit === 'function') {
+          form.requestSubmit();
+        } else {
+          form.dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
+        }
+      });
+
+      updateStickyBar();
+
+      document.getElementById('delivery-form').addEventListener('submit', (event) => {
+        event.preventDefault();
+        const feedback = document.getElementById('delivery-feedback');
+        const formData = Object.fromEntries(new FormData(event.currentTarget).entries());
+        const selectedItems = publicCatalog.map((item) => {
+          const rawQty = formData[`qty_${item.itemId}`];
+          const qty = Number(rawQty || 0);
+          return qty > 0 ? { group: item.group, label: item.orderLabel, qty, productId: item.productId } : null;
+        }).filter(Boolean);
+        const glassOrder = selectedItems
+          .filter((item) => item.group === 'glass')
+          .map((item) => `${item.qty} x ${item.label}`)
+          .join(' | ');
+        const jugOrder = selectedItems
+          .filter((item) => item.group === 'jug')
+          .map((item) => `${item.qty} x ${item.label}`)
+          .join(' | ');
+        const addonOrder = selectedItems
+          .filter((item) => item.group === 'addon')
+          .map((item) => `${item.qty} x ${item.label}`)
+          .join(' | ');
+        const deliveryNotes = String(formData.extras || '').trim();
+        const extras = [
+          addonOrder ? `Selected add-ons: ${addonOrder}` : '',
+          deliveryNotes ? `Delivery notes: ${deliveryNotes}` : ''
+        ].filter(Boolean).join(' | ');
+
+        if (!glassOrder && !jugOrder && !addonOrder) {
+          feedback.textContent = 'Select at least one product and quantity before submitting.';
+          return;
+        }
+
+        if (!window.google || !google.script || !google.script.run) {
+          feedback.textContent = 'This preview is static. After deployment, this form will create an order in Google Sheets for owner approval.';
+          return;
+        }
+
+        feedback.textContent = 'Sending...';
+        google.script.run
+          .withSuccessHandler((result) => {
+            feedback.textContent = `Order saved (${result.orderId}). The team will approve and schedule it from the owner dashboard.`;
+            event.currentTarget.reset();
+            if (deliveryDateInput) {
+              deliveryDateInput.value = new Date().toISOString().slice(0, 10);
+            }
+            updateStickyBar();
+          })
+          .withFailureHandler((error) => {
+            feedback.textContent = error.message || String(error);
+          })
+          .submitPublicOrder({
+            name: formData.name,
+            phone: formData.phone,
+            email: formData.email,
+            address: formData.address,
+            deliveryDate: formData.deliveryDate,
+            timeSlot: formData.timeSlot,
+            items: selectedItems.map((item) => ({
+              productId: item.productId,
+              quantity: item.qty
+            })),
+            extras,
+            preferredChannel: formData.preferredChannel,
+            sourcePage: window.location.href,
+            referrerUrl: document.referrer,
+            notes: 'Submitted from public delivery form'
+          });
+      });
+    </script>
+  </body>
+</html>
