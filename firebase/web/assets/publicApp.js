@@ -8,6 +8,7 @@ import {
   getDocs,
   GoogleAuthProvider,
   httpsCallable,
+  isEmulatorMode,
   limit,
   onAuthStateChanged,
   orderBy,
@@ -23,13 +24,14 @@ import {
   computeOrderTotals,
   escapeHtml,
   formatCurrency,
+  normalizePhoneE164VN,
   productCategoryKey,
   productImageUrl,
   setDeliveryWindow,
   todayKey,
   withSubmitLock
 } from "./shared.js";
-import { mapsApiKey } from "./firebaseWebConfig.js";
+import { mapsApiKey, mapsDefaultCenter } from "./firebaseWebConfig.js";
 
 const submitPublicOrderFn = httpsCallable(functions, "submitPublicOrder");
 
@@ -45,7 +47,8 @@ const state = {
   pastOrdersExhausted: false,
   pastOrdersLoaded: false,
   pastItemsByOrderId: {},
-  deliveryLocation: null
+  deliveryLocation: null,
+  addressMode: "guest"
 };
 
 let mapsLoadPromise = null;
@@ -72,6 +75,281 @@ function setAddressVerifyStatus(text, verified = false) {
   if (!node) return;
   node.textContent = text;
   node.classList.toggle("address-verified", verified);
+}
+
+function normalizeAddress(value) {
+  return String(value || "").trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function savedAddressData(customer = state.customer) {
+  const primary = String(customer?.address || "").trim();
+  const seen = new Set(primary ? [normalizeAddress(primary)] : []);
+  const additional = (Array.isArray(customer?.additionalAddresses) ? customer.additionalAddresses : [])
+    .map((value) => String(value || "").trim())
+    .filter((value) => {
+      const key = normalizeAddress(value);
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  return { primary, additional };
+}
+
+function validSavedLocation(location) {
+  const lat = Number(location?.lat);
+  const lng = Number(location?.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  return {
+    lat,
+    lng,
+    formattedAddress: String(location?.formattedAddress || "").trim(),
+    source: String(location?.source || "saved_profile")
+  };
+}
+
+function savedAddressLocationEntries(customer = state.customer) {
+  const byAddress = new Map();
+  (Array.isArray(customer?.addressLocations) ? customer.addressLocations : []).forEach((entry) => {
+    const address = String(entry?.address || "").trim();
+    const location = validSavedLocation(entry);
+    if (address && location) {
+      byAddress.set(normalizeAddress(address), {
+        address,
+        ...location,
+        geocodedAt: entry.geocodedAt || null
+      });
+    }
+  });
+  const primary = String(customer?.address || "").trim();
+  const legacyPrimaryLocation = validSavedLocation(customer?.location);
+  if (primary && legacyPrimaryLocation && !byAddress.has(normalizeAddress(primary))) {
+    byAddress.set(normalizeAddress(primary), {
+      address: primary,
+      ...legacyPrimaryLocation,
+      geocodedAt: customer.location?.geocodedAt || null
+    });
+  }
+  return Array.from(byAddress.values());
+}
+
+function savedLocationForAddress(address, customer = state.customer) {
+  const key = normalizeAddress(address);
+  return savedAddressLocationEntries(customer).find((entry) => normalizeAddress(entry.address) === key) || null;
+}
+
+function setSavedAddressHelp(text = "") {
+  const help = document.getElementById("saved-address-help");
+  if (!help) return;
+  help.textContent = text;
+  help.hidden = !text;
+}
+
+function setAddressSaveChoice(value) {
+  const option = document.querySelector(`input[name="addressSaveChoice"][value="${value}"]`);
+  if (option) option.checked = true;
+}
+
+function updateAddressSaveOptions({ resetChoice = false } = {}) {
+  const wrap = document.getElementById("address-save-options");
+  if (!wrap) return;
+  const signedInChoice = state.user && ["additional", "different", "no_primary"].includes(state.addressMode);
+  wrap.hidden = !signedInChoice;
+  if (!signedInChoice) return;
+
+  const { primary } = savedAddressData();
+  const additionalOption = document.getElementById("address-save-additional-option");
+  const addressIsAlreadySaved = state.addressMode === "additional";
+  if (additionalOption) additionalOption.hidden = addressIsAlreadySaved || !primary;
+
+  const hint = document.getElementById("address-save-options-hint");
+  if (hint) {
+    hint.textContent = primary
+      ? "Choose whether this address is only for today or should change your saved delivery addresses."
+      : "You do not have a primary delivery address yet. Make this primary to use it automatically next time.";
+  }
+  if (resetChoice || !wrap.querySelector('input[name="addressSaveChoice"]:checked')) {
+    setAddressSaveChoice(primary ? "order_only" : "primary");
+  }
+}
+
+function selectedAddressSaveChoice() {
+  if (!state.user || state.addressMode === "guest") return "order_only";
+  if (state.addressMode === "primary") return "primary";
+  return document.querySelector('input[name="addressSaveChoice"]:checked')?.value || "order_only";
+}
+
+function setAddressMode(mode, address = "", location = null) {
+  const input = document.getElementById("form-address");
+  const verifyButton = document.getElementById("address-verify-button");
+  const editor = document.getElementById("delivery-address-editor");
+  const editorLabel = document.getElementById("delivery-address-editor-label");
+  const savedLocation = validSavedLocation(location);
+  const isSavedAddress = mode === "primary" || mode === "additional";
+  state.addressMode = mode;
+  if (editor) editor.hidden = isSavedAddress;
+  if (editorLabel) editorLabel.textContent = mode === "different"
+    ? "Enter a different address"
+    : "Enter delivery address";
+  if (input) {
+    input.readOnly = mode === "primary" || mode === "additional";
+    input.value = address;
+  }
+  document.getElementById("address-map-wrap")?.setAttribute("hidden", "");
+  if (verifyButton) {
+    verifyButton.classList.toggle("hidden", isEmulatorMode || isSavedAddress);
+  }
+
+  if (isSavedAddress && savedLocation) {
+    state.deliveryLocation = {
+      ...savedLocation,
+      formattedAddress: savedLocation.formattedAddress || address
+    };
+    setAddressVerifyStatus(
+      mode === "primary"
+        ? "✓ Using the confirmed pin for your primary delivery address."
+        : "✓ Using the confirmed pin from this saved delivery profile.",
+      true
+    );
+  } else {
+    state.deliveryLocation = null;
+    const message = isSavedAddress
+      ? "Loading the confirmed pin from this saved delivery profile…"
+      : mode === "no_primary"
+        ? "No primary address yet — confirm this address, then choose whether to make it primary."
+        : "Confirm the delivery pin to help us find you.";
+    setAddressVerifyStatus(isEmulatorMode ? "Local test mode — map confirmation is disabled." : message);
+  }
+  updateAddressSaveOptions({ resetChoice: true });
+}
+
+async function recoverLegacySavedAddressLocation(address) {
+  if (!state.user || !address) return null;
+  // Prefer a location previously confirmed for an order to an approximate
+  // geocode. This repairs old secondary-address records whose profile flow
+  // confirmed a pin but discarded it before `addressLocations` existed.
+  try {
+    const snap = await getDocs(query(
+      collection(db, "orders"),
+      where("authUid", "==", state.user.uid),
+      orderBy("createdAt", "desc"),
+      limit(25)
+    ));
+    const previous = snap.docs
+      .map((docSnap) => docSnap.data())
+      .find((order) => normalizeAddress(order.address) === normalizeAddress(address)
+        && validSavedLocation(order.deliveryLocation));
+    if (previous) return { ...validSavedLocation(previous.deliveryLocation), source: "legacy_order" };
+  } catch (error) {
+    console.warn("Could not recover saved pin from past orders:", error);
+  }
+
+  try {
+    await loadGoogleMaps();
+    const geocoder = new google.maps.Geocoder();
+    const match = await new Promise((resolve, reject) => {
+      geocoder.geocode({ address, region: "vn" }, (results, status) => {
+        if (status === "OK" && results?.[0] && !results[0].partial_match) resolve(results[0]);
+        else reject(new Error("Saved address could not be resolved."));
+      });
+    });
+    return validSavedLocation({
+      lat: match.geometry.location.lat(),
+      lng: match.geometry.location.lng(),
+      formattedAddress: match.formatted_address || address,
+      source: "legacy_auto_geocode"
+    });
+  } catch (error) {
+    console.warn("Could not recover saved pin from Google Maps:", error);
+    return null;
+  }
+}
+
+async function selectSavedAddress(mode, address, location) {
+  setAddressMode(mode, address, location);
+  if (validSavedLocation(location) || isEmulatorMode) {
+    setSavedAddressHelp("");
+    return;
+  }
+  setSavedAddressHelp("Loading this saved delivery profile…");
+  const expectedAddress = normalizeAddress(address);
+  const recovered = await recoverLegacySavedAddressLocation(address);
+  if (state.addressMode !== mode
+    || normalizeAddress(document.getElementById("form-address")?.value) !== expectedAddress) return;
+  if (recovered) {
+    setAddressMode(mode, address, recovered);
+    setSavedAddressHelp("");
+  } else {
+    state.deliveryLocation = null;
+    setSavedAddressHelp("This older saved profile is missing its stored pin. Edit it once under My account → Delivery addresses.");
+  }
+}
+
+async function renderSavedAddressControl() {
+  const control = document.getElementById("saved-address-control");
+  const select = document.getElementById("saved-address-select");
+  const help = document.getElementById("saved-address-help");
+  const currentAddress = String(document.getElementById("form-address")?.value || "").trim();
+  if (!control || !select || !help) return;
+
+  select.replaceChildren();
+  if (!state.user) {
+    control.hidden = true;
+    setSavedAddressHelp("");
+    setAddressMode("guest", "");
+    return;
+  }
+
+  control.hidden = false;
+  const { primary, additional } = savedAddressData();
+  if (primary) {
+    const option = document.createElement("option");
+    option.value = "primary";
+    option.textContent = `Primary — ${primary}`;
+    select.appendChild(option);
+  }
+  additional.forEach((address, index) => {
+    const option = document.createElement("option");
+    option.value = `additional:${index}`;
+    option.textContent = `Saved address — ${address}`;
+    select.appendChild(option);
+  });
+  const different = document.createElement("option");
+  different.value = "different";
+  different.textContent = primary || additional.length
+    ? "Use a different address for this order"
+    : "Add a delivery address";
+  select.appendChild(different);
+
+  if (primary) {
+    select.value = "primary";
+    setSavedAddressHelp("");
+    await selectSavedAddress("primary", primary, savedLocationForAddress(primary));
+  } else {
+    select.value = "different";
+    setSavedAddressHelp("No primary delivery address is saved yet.");
+    setAddressMode("no_primary", currentAddress);
+  }
+}
+
+async function handleSavedAddressSelection() {
+  const select = document.getElementById("saved-address-select");
+  const { primary, additional } = savedAddressData();
+  const value = select?.value || "different";
+  if (value === "primary" && primary) {
+    setSavedAddressHelp("");
+    await selectSavedAddress("primary", primary, savedLocationForAddress(primary));
+    return;
+  }
+  if (value.startsWith("additional:")) {
+    const index = Number(value.split(":")[1]);
+    const address = additional[index] || "";
+    setSavedAddressHelp("");
+    await selectSavedAddress("additional", address, savedLocationForAddress(address));
+    return;
+  }
+  setSavedAddressHelp(primary ? "" : "No primary delivery address is saved yet.");
+  setAddressMode(primary ? "different" : "no_primary", "");
+  document.getElementById("form-address")?.focus();
 }
 
 function clearDeliveryLocation(message = "Address changed — confirm the pin again.") {
@@ -249,7 +527,12 @@ function buildCallablePayload(form) {
       phone: form.phone.value.trim(),
       email: state.user?.email || null,
       address: form.address.value.trim(),
-      deliveryLocation: state.deliveryLocation,
+      deliveryLocation: state.deliveryLocation || (isEmulatorMode ? {
+        lat: mapsDefaultCenter.lat,
+        lng: mapsDefaultCenter.lng,
+        formattedAddress: form.address.value.trim(),
+        source: "local_test_bypass"
+      } : null),
       deliveryDate: form.deliveryDate.value,
       deliveryWindow: form.deliveryWindow.value.trim(),
       notes: form.notes.value.trim()
@@ -538,14 +821,33 @@ async function submitOrder(event) {
   event.preventDefault();
   const form = event.currentTarget;
   const feedback = document.getElementById("public-feedback");
-  if (!state.deliveryLocation) {
-    feedback.textContent = "Confirm your delivery address on Google Maps before submitting.";
-    setAddressVerifyStatus("Map confirmation is required before ordering.");
-    document.getElementById("address-verify-button")?.focus();
+  if (!state.deliveryLocation && !isEmulatorMode) {
+    const savedAddressMissingPin = state.addressMode === "primary" || state.addressMode === "additional";
+    feedback.textContent = savedAddressMissingPin
+      ? "This older saved delivery profile is missing its stored pin. Edit it once under My account → Delivery addresses."
+      : "Confirm your delivery address on Google Maps before submitting.";
+    if (savedAddressMissingPin) setSavedAddressHelp(feedback.textContent);
+    else setAddressVerifyStatus(feedback.textContent);
+    (savedAddressMissingPin
+      ? document.getElementById("saved-address-select")
+      : document.getElementById("address-verify-button"))?.focus();
     return;
   }
   const submitButton = event.submitter
     || document.querySelector('button[form="public-order-form"][type="submit"]');
+
+  // Phones are stored E.164-only so wa.me links work (Ty, 2026-07-16).
+  // Vietnamese local formats normalize to +84 automatically; other countries
+  // must be typed with their country code. The field is rewritten so the
+  // customer sees exactly what we will store, and the server enforces the
+  // same rule — this check just makes the error arrive before the round-trip.
+  const phoneE164 = normalizePhoneE164VN(form.phone?.value);
+  if (!phoneE164) {
+    feedback.textContent = "Please include your phone's country code, e.g. +84 905 123 456.";
+    form.phone?.focus();
+    return;
+  }
+  if (form.phone) form.phone.value = phoneE164;
   feedback.textContent = "Submitting order...";
 
   // Capture identity fields before we reset the form — needed for the
@@ -553,7 +855,10 @@ async function submitOrder(event) {
   const submittedIdentity = {
     name: String(form.customerName?.value || "").trim(),
     phone: String(form.phone?.value || "").trim(),
-    address: String(form.address?.value || "").trim()
+    address: String(form.address?.value || "").trim(),
+    addressMode: state.addressMode,
+    addressSaveChoice: selectedAddressSaveChoice(),
+    deliveryLocation: state.deliveryLocation ? { ...state.deliveryLocation } : null
   };
 
   let successOrderId = null;
@@ -589,35 +894,121 @@ async function submitOrder(event) {
         <div>Thanks! We'll confirm shortly and message you before delivery.</div>
       </div>
     `;
+    try {
+      await persistDeliveryAddressChoice(submittedIdentity);
+    } catch (error) {
+      console.warn("Could not save delivery address choice:", error);
+      feedback.insertAdjacentHTML(
+        "beforeend",
+        `<p class="muted">The order was received, but the delivery address could not be saved to your profile: ${escapeHtml(error.message || String(error))}</p>`
+      );
+    }
     await maybeSaveIdentityToProfile(submittedIdentity);
   }
 }
 
-// Offer to persist the identity fields the customer just typed into their
-// customer profile — but only when they're signed in and their profile
-// doesn't already carry those values. Their explicit yes/no controls the
-// write; we never save silently. If the submitted address is different
-// from the one already on file, the dialog also lets the customer save
-// it as an additional address and pick which one is primary.
+function uniqueAddresses(values, excluded = "") {
+  const excludedKey = normalizeAddress(excluded);
+  const seen = new Set(excludedKey ? [excludedKey] : []);
+  return values
+    .map((value) => String(value || "").trim())
+    .filter((value) => {
+      const key = normalizeAddress(value);
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+function updatedSavedAddressLocations(savedAddresses, confirmedAddress, confirmedLocation) {
+  const addressTextByKey = new Map(
+    savedAddresses.filter(Boolean).map((address) => [normalizeAddress(address), String(address).trim()])
+  );
+  const byAddress = new Map(
+    savedAddressLocationEntries()
+      .filter((entry) => addressTextByKey.has(normalizeAddress(entry.address)))
+      .map((entry) => [normalizeAddress(entry.address), {
+        ...entry,
+        address: addressTextByKey.get(normalizeAddress(entry.address))
+      }])
+  );
+  const location = validSavedLocation(confirmedLocation);
+  const confirmedKey = normalizeAddress(confirmedAddress);
+  if (confirmedKey && location && addressTextByKey.has(confirmedKey)) {
+    byAddress.set(confirmedKey, {
+      address: addressTextByKey.get(confirmedKey),
+      lat: location.lat,
+      lng: location.lng,
+      formattedAddress: location.formattedAddress || String(confirmedAddress).trim(),
+      geocodedAt: new Date().toISOString()
+    });
+  }
+  return Array.from(byAddress.values());
+}
+
+// Submit the order first, then apply the customer's explicit address choice.
+// A profile-write problem can therefore never prevent or duplicate the order.
+async function persistDeliveryAddressChoice(submitted) {
+  if (!state.user || submitted.addressSaveChoice === "order_only" || !submitted.address) return;
+  const { primary, additional } = savedAddressData();
+  const sameAsPrimary = normalizeAddress(submitted.address) === normalizeAddress(primary);
+  const ref = doc(db, "customers", state.customer?.id || `CUS-${state.user.uid}`);
+  const payload = { updatedAt: serverTimestamp() };
+
+  if (submitted.addressSaveChoice === "additional") {
+    const alreadySaved = sameAsPrimary
+      || additional.some((address) => normalizeAddress(address) === normalizeAddress(submitted.address));
+    if (alreadySaved) return;
+    payload.additionalAddresses = uniqueAddresses([...additional, submitted.address], primary);
+    payload.addressLocations = updatedSavedAddressLocations(
+      [primary, ...payload.additionalAddresses],
+      submitted.address,
+      submitted.deliveryLocation
+    );
+  } else if (submitted.addressSaveChoice === "primary") {
+    // Reusing an already-confirmed primary address is not a profile change.
+    if (sameAsPrimary && submitted.addressMode === "primary" && submitted.deliveryLocation?.source === "saved_profile") return;
+    payload.address = submitted.address;
+    payload.additionalAddresses = uniqueAddresses([
+      ...(!sameAsPrimary && primary ? [primary] : []),
+      ...additional
+    ], submitted.address);
+    payload.addressLocations = updatedSavedAddressLocations(
+      [payload.address, ...payload.additionalAddresses],
+      submitted.address,
+      submitted.deliveryLocation
+    );
+    payload.location = submitted.deliveryLocation ? {
+      lat: submitted.deliveryLocation.lat,
+      lng: submitted.deliveryLocation.lng,
+      formattedAddress: submitted.deliveryLocation.formattedAddress || submitted.address,
+      geocodedAt: new Date().toISOString()
+    } : null;
+  } else {
+    return;
+  }
+
+  if (!state.customer) {
+    payload.authUid = state.user.uid;
+    payload.email = state.user.email || null;
+    payload.createdAt = serverTimestamp();
+  }
+  await setDoc(ref, payload, { merge: true });
+  state.customer = { ...(state.customer || {}), id: ref.id, ...payload };
+}
+
+// Address handling is already explicit in the order form. This prompt only
+// offers to fill missing contact fields, and only after a successful order.
 async function maybeSaveIdentityToProfile(submitted) {
   if (!state.user) return;
   const existing = state.customer || {};
   const existingName = String(existing.name || "").trim();
   const existingPhone = String(existing.phone || "").trim();
-  const existingAddress = String(existing.address || "").trim();
-  const additional = Array.isArray(existing.additionalAddresses) ? existing.additionalAddresses : [];
 
   const missing = [];
   if (submitted.name && !existingName) missing.push({ key: "name", value: submitted.name });
   if (submitted.phone && !existingPhone) missing.push({ key: "phone", value: submitted.phone });
-  if (submitted.address && !existingAddress) missing.push({ key: "address", value: submitted.address });
-
-  const addressDiffers = !!submitted.address
-    && !!existingAddress
-    && submitted.address !== existingAddress
-    && !additional.includes(submitted.address);
-
-  if (!missing.length && !addressDiffers) return;
+  if (!missing.length) return;
 
   const dialog = document.getElementById("profile-save-dialog");
   if (!dialog) return;
@@ -625,22 +1016,15 @@ async function maybeSaveIdentityToProfile(submitted) {
   // ---- Populate the dialog --------------------------------------------------
   const hint = document.getElementById("profile-save-hint");
   const fieldsWrap = document.getElementById("profile-save-fields");
-  const addressBlock = document.getElementById("profile-save-address-block");
-  const addressExistingText = document.getElementById("profile-save-address-existing");
-  const addressSubmittedText = document.getElementById("profile-save-address-submitted");
   const status = document.getElementById("profile-save-status");
   const confirmBtn = document.getElementById("profile-save-confirm");
   const cancelBtn = document.getElementById("profile-save-cancel");
 
   if (hint) {
     if (!state.customer) {
-      hint.textContent = "Create a profile so we can prefill your details next time.";
-    } else if (missing.length && addressDiffers) {
-      hint.textContent = "Save these details and pick which address to use by default.";
-    } else if (missing.length) {
-      hint.textContent = "We can save these to your profile so we prefill them next time.";
-    } else if (addressDiffers) {
-      hint.textContent = "This delivery address isn't on your profile yet — save it as another delivery address?";
+      hint.textContent = "Create a profile so we can prefill your contact details next time.";
+    } else {
+      hint.textContent = "We can save these contact details to your profile for next time.";
     }
   }
   if (fieldsWrap) {
@@ -652,15 +1036,6 @@ async function maybeSaveIdentityToProfile(submitted) {
         </div>
       `).join("")
       : "";
-  }
-  if (addressBlock) {
-    addressBlock.hidden = !addressDiffers;
-    if (addressDiffers) {
-      if (addressExistingText) addressExistingText.textContent = existingAddress;
-      if (addressSubmittedText) addressSubmittedText.textContent = submitted.address;
-      const submittedRadio = dialog.querySelector('input[name="primaryAddress"][value="submitted"]');
-      if (submittedRadio) submittedRadio.checked = true;
-    }
   }
   if (status) status.textContent = "";
   if (confirmBtn) {
@@ -687,9 +1062,8 @@ async function maybeSaveIdentityToProfile(submitted) {
       confirmBtn.disabled = true;
       confirmBtn.textContent = "Saving...";
     }
-    const primaryChoice = dialog.querySelector('input[name="primaryAddress"]:checked')?.value || "submitted";
     try {
-      await writeIdentityToProfile({ submitted, missing, addressDiffers, existingAddress, additional, primaryChoice });
+      await writeIdentityToProfile({ missing });
       closeDialog();
     } catch (error) {
       console.warn("Could not save profile:", error);
@@ -707,27 +1081,12 @@ async function maybeSaveIdentityToProfile(submitted) {
   else dialog.setAttribute("open", "");
 }
 
-async function writeIdentityToProfile({ submitted, missing, addressDiffers, existingAddress, additional, primaryChoice }) {
+async function writeIdentityToProfile({ missing }) {
   const ref = doc(db, "customers", state.customer?.id || `CUS-${state.user.uid}`);
   const payload = { updatedAt: serverTimestamp() };
   missing.forEach((m) => {
-    if (m.key !== "address") payload[m.key] = m.value;
+    payload[m.key] = m.value;
   });
-
-  // Address handling: primary lives in `address`, alternates in
-  // `additionalAddresses` (keeps existing admin/account reads working).
-  if (missing.find((m) => m.key === "address")) {
-    payload.address = submitted.address;
-  } else if (addressDiffers) {
-    if (primaryChoice === "submitted") {
-      payload.address = submitted.address;
-      const nextAlt = [existingAddress, ...additional.filter((a) => a && a !== submitted.address && a !== existingAddress)];
-      payload.additionalAddresses = Array.from(new Set(nextAlt.filter(Boolean)));
-    } else {
-      const nextAlt = [...additional.filter((a) => a && a !== submitted.address), submitted.address];
-      payload.additionalAddresses = Array.from(new Set(nextAlt));
-    }
-  }
 
   if (!state.customer) {
     payload.authUid = state.user.uid;
@@ -736,7 +1095,7 @@ async function writeIdentityToProfile({ submitted, missing, addressDiffers, exis
   }
 
   await setDoc(ref, payload, { merge: true });
-  state.customer = { ...(state.customer || {}), ...payload };
+  state.customer = { ...(state.customer || {}), id: ref.id, ...payload };
 }
 
 async function updateAccountFromPersonalDetails() {
@@ -744,58 +1103,44 @@ async function updateAccountFromPersonalDetails() {
   const status = document.getElementById("update-account-status");
   const name = String(document.getElementById("form-customer-name")?.value || "").trim();
   const phone = String(document.getElementById("form-phone")?.value || "").trim();
-  const address = String(document.getElementById("form-address")?.value || "").trim();
-  const fields = ["form-customer-name", "form-phone", "form-address"]
+  const fields = ["form-customer-name", "form-phone"]
     .map((id) => document.getElementById(id));
   if (!state.user) return;
-  if (fields.some((field) => field && !field.checkValidity()) || name.length < 2 || phone.length < 6 || address.length < 5) {
-    status.textContent = "Complete your name, phone, and address first.";
+  if (fields.some((field) => field && !field.checkValidity()) || name.length < 2 || phone.length < 6) {
+    status.textContent = "Complete your name and phone first.";
     fields.find((field) => field && !field.checkValidity())?.reportValidity();
     return;
   }
-  if (!state.deliveryLocation) {
-    status.textContent = "Confirm this address on Google Maps before updating your account.";
-    document.getElementById("address-verify-button")?.focus();
+  // Same E.164-only rule as the order form — stored phones must carry the
+  // country code so wa.me links work.
+  const phoneE164 = normalizePhoneE164VN(phone);
+  if (!phoneE164) {
+    status.textContent = "Please include your phone's country code, e.g. +84 905 123 456.";
     return;
   }
+  const phoneField = document.getElementById("form-phone");
+  if (phoneField) phoneField.value = phoneE164;
   button.disabled = true;
-  button.textContent = "Updating…";
-  status.textContent = "Updating your saved details…";
+  button.textContent = "Saving…";
+  status.textContent = "Saving your contact details…";
   try {
     const ref = doc(db, "customers", state.customer?.id || `CUS-${state.user.uid}`);
-    const oldAddress = String(state.customer?.address || "").trim();
-    const existingAdditional = Array.isArray(state.customer?.additionalAddresses)
-      ? state.customer.additionalAddresses.map((item) => String(item || "").trim()).filter(Boolean)
-      : [];
-    const additionalAddresses = Array.from(new Set([
-      ...(oldAddress && oldAddress !== address ? [oldAddress] : []),
-      ...existingAdditional.filter((item) => item !== address)
-    ]));
     const payload = {
       authUid: state.user.uid,
       email: state.user.email || null,
       name,
-      phone,
-      address,
-      additionalAddresses,
-      location: {
-        lat: state.deliveryLocation.lat,
-        lng: state.deliveryLocation.lng,
-        formattedAddress: state.deliveryLocation.formattedAddress,
-        source: "customer_google_maps",
-        geocodedAt: new Date().toISOString()
-      },
+      phone: phoneE164,
       updatedAt: serverTimestamp()
     };
     if (!state.customer) payload.createdAt = serverTimestamp();
     await setDoc(ref, payload, { merge: true });
     state.customer = { ...(state.customer || {}), id: ref.id, ...payload };
-    status.textContent = "Your account details were updated.";
+    status.textContent = "Your contact details were saved.";
   } catch (error) {
-    status.textContent = `Could not update your account: ${error.message || error}`;
+    status.textContent = `Could not save your contact details: ${error.message || error}`;
   } finally {
     button.disabled = false;
-    button.textContent = "Update my account";
+    button.textContent = "Save contact details";
   }
 }
 
@@ -819,6 +1164,13 @@ async function prefillFromCustomer(user) {
   document.getElementById("update-account-details")?.classList.toggle("hidden", !user);
   if (!user) {
     if (banner) banner.textContent = "";
+    if (prevUid) {
+      const nameField = document.getElementById("form-customer-name");
+      const phoneField = document.getElementById("form-phone");
+      if (nameField) nameField.value = "";
+      if (phoneField) phoneField.value = "";
+    }
+    await renderSavedAddressControl();
     return;
   }
   if (banner) {
@@ -826,17 +1178,24 @@ async function prefillFromCustomer(user) {
   }
   try {
     const snap = await getDocs(query(collection(db, "customers"), where("authUid", "==", user.uid)));
-    if (snap.empty) return;
+    if (snap.empty) {
+      const nameField = document.getElementById("form-customer-name");
+      if (nameField && !nameField.value) nameField.value = user.displayName || "";
+      await renderSavedAddressControl();
+      return;
+    }
     const customer = { id: snap.docs[0].id, ...snap.docs[0].data() };
     state.customer = customer;
     const nameField = document.getElementById("form-customer-name");
     const phoneField = document.getElementById("form-phone");
-    const addressField = document.getElementById("form-address");
     if (nameField && !nameField.value) nameField.value = customer.name || user.displayName || "";
     if (phoneField && !phoneField.value) phoneField.value = customer.phone || "";
-    if (addressField && !addressField.value) addressField.value = customer.address || "";
+    // The saved primary address is authoritative. Do not preserve a stale or
+    // partially-entered address that happens to be in the form already.
+    await renderSavedAddressControl();
   } catch (error) {
     console.warn("Could not prefill customer profile:", error);
+    await renderSavedAddressControl();
   }
 }
 
@@ -896,12 +1255,17 @@ setTimeout(hideAppLoading, 8000);
 
 document.getElementById("delivery-date").value = todayKey();
 setDeliveryWindow(document.getElementById("delivery-window"), "");
+if (isEmulatorMode) {
+  document.getElementById("address-verify-button")?.classList.add("hidden");
+  setAddressVerifyStatus("Local test mode — map confirmation is disabled.");
+}
 document.getElementById("public-order-form").addEventListener("submit", submitOrder);
 document.getElementById("address-verify-button")?.addEventListener("click", verifyAddressOnMap);
 document.getElementById("update-account-details")?.addEventListener("click", updateAccountFromPersonalDetails);
+document.getElementById("saved-address-select")?.addEventListener("change", handleSavedAddressSelection);
 document.getElementById("address-reset-pin")?.addEventListener("click", () => {
-  clearDeliveryLocation("Pin reset — update the address if needed, then find it on the map again.");
-  document.getElementById("form-address")?.focus();
+  clearDeliveryLocation("Pin reset — find this delivery address on the map again.");
+  document.getElementById("address-verify-button")?.focus();
 });
 document.getElementById("form-address")?.addEventListener("input", () => {
   if (state.deliveryLocation) clearDeliveryLocation();

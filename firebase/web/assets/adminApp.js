@@ -8,7 +8,10 @@ import {
   getDoc,
   getDocs,
   httpsCallable,
+  limit,
   onAuthStateChanged,
+  onSnapshot,
+  orderBy,
   query,
   runTransaction,
   serverTimestamp,
@@ -62,6 +65,12 @@ function initialSelectedDate() {
   return todayKey();
 }
 
+function monthStartKey(dateKey = todayKey()) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(dateKey) ? `${dateKey.slice(0, 7)}-01` : todayKey();
+}
+
+let financeLoadSequence = 0;
+
 const state = {
   products: [],
   drivers: [],
@@ -71,7 +80,9 @@ const state = {
   depositEvents: [],
   thresholds: { ...THRESHOLD_DEFAULTS },
   selectedDate: initialSelectedDate(),
-  statusFilter: "all"
+  statusFilter: "all",
+  financeFrom: monthStartKey(),
+  financeTo: todayKey()
 };
 
 const STATUS_FILTERS = [
@@ -118,6 +129,118 @@ function renderHero() {
       <div class="money-row"><span>Unpaid</span><strong>${unpaid}</strong></div>
     </div>
   `;
+}
+
+function setFinanceStatus(message, isError = false) {
+  const node = document.getElementById("finance-status");
+  if (!node) return;
+  node.textContent = message || "";
+  node.style.color = isError ? "var(--danger, #b3261e)" : "var(--muted)";
+}
+
+function validFinanceRange(from, to) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(from)
+    && /^\d{4}-\d{2}-\d{2}$/.test(to)
+    && from <= to;
+}
+
+function finiteAmount(value) {
+  const amount = Number(value || 0);
+  return Number.isFinite(amount) ? amount : 0;
+}
+
+function computeFinanceSummary(orders, payments, depositEvents) {
+  const deliveredOrders = orders.filter((order) => order.status === "delivered");
+  const revenue = deliveredOrders.reduce((sum, order) => sum + finiteAmount(order.subtotal), 0);
+
+  const methodTotals = { cash: 0, bank: 0, other: 0 };
+  const collected = payments.reduce((sum, payment) => {
+    const amount = finiteAmount(payment.amount);
+    if (payment.method === "cash") methodTotals.cash += amount;
+    else if (payment.method === "transfer" || payment.method === "bank_qr") methodTotals.bank += amount;
+    else methodTotals.other += amount;
+    return sum + amount;
+  }, 0);
+
+  const outstandingOrders = orders.filter((order) => (
+    order.status !== "cancelled"
+    && order.status !== "pending_approval"
+    && finiteAmount(order.balanceDue) > 0
+  ));
+  const outstanding = outstandingOrders.reduce((sum, order) => sum + Math.max(0, finiteAmount(order.balanceDue)), 0);
+
+  const depositBalances = new Map();
+  depositEvents.forEach((event) => {
+    const ownerKey = event.customerId || `order:${event.orderId || event.id || "unknown"}`;
+    const key = `${ownerKey}|${event.containerType || "other"}`;
+    const amount = finiteAmount(event.amount);
+    const direction = event.eventType === "charged"
+      ? 1
+      : (["refunded", "credited", "forfeited"].includes(event.eventType) ? -1 : 0);
+    depositBalances.set(key, (depositBalances.get(key) || 0) + (direction * amount));
+  });
+  const depositsHeld = Array.from(depositBalances.values())
+    .reduce((sum, balance) => sum + Math.max(0, balance), 0);
+
+  return {
+    revenue,
+    deliveredCount: deliveredOrders.length,
+    collected,
+    methodTotals,
+    outstanding,
+    outstandingCount: outstandingOrders.length,
+    depositsHeld
+  };
+}
+
+function renderFinanceSummary(summary, from, to) {
+  document.getElementById("finance-stats").innerHTML = `
+    <div class="card">
+      <span class="muted">Delivered sales</span>
+      <strong>${formatCurrency(summary.revenue)}</strong>
+      <div class="muted">Subtotal only · ${summary.deliveredCount} delivered order${summary.deliveredCount === 1 ? "" : "s"}</div>
+    </div>
+    <div class="card">
+      <span class="muted">Collected</span>
+      <strong>${formatCurrency(summary.collected)}</strong>
+      <div class="muted">Cash ${formatCurrency(summary.methodTotals.cash)} · Bank/QR ${formatCurrency(summary.methodTotals.bank)} · Other ${formatCurrency(summary.methodTotals.other)}</div>
+    </div>
+    <div class="card">
+      <span class="muted">Current outstanding on range orders</span>
+      <strong>${formatCurrency(summary.outstanding)}</strong>
+      <div class="muted">${summary.outstandingCount} order${summary.outstandingCount === 1 ? "" : "s"} still owe · includes deposits</div>
+    </div>
+    <div class="card">
+      <span class="muted">Deposits held at end date</span>
+      <strong>${formatCurrency(summary.depositsHeld)}</strong>
+      <div class="muted">All customer deposit events through ${escapeHtml(to)}</div>
+    </div>
+  `;
+  setFinanceStatus(`${from} to ${to}. Collections follow payment dates; outstanding is the current balance on orders in this range.`);
+}
+
+async function refreshFinanceSummary() {
+  const from = state.financeFrom;
+  const to = state.financeTo;
+  if (!validFinanceRange(from, to)) {
+    setFinanceStatus("Choose a valid range where From is not after To.", true);
+    return;
+  }
+
+  const requestId = ++financeLoadSequence;
+  setFinanceStatus("Loading finance summary...");
+  try {
+    const [orders, payments, depositEvents] = await Promise.all([
+      loadCollection("orders", [where("deliveryDate", ">=", from), where("deliveryDate", "<=", to)]),
+      loadCollection("payments", [where("paymentDate", ">=", from), where("paymentDate", "<=", to)]),
+      loadCollection("depositEvents", [where("eventDate", "<=", to)])
+    ]);
+    if (requestId !== financeLoadSequence) return;
+    renderFinanceSummary(computeFinanceSummary(orders, payments, depositEvents), from, to);
+  } catch (error) {
+    if (requestId !== financeLoadSequence) return;
+    setFinanceStatus(`Could not load finance summary: ${error.message || error}`, true);
+  }
 }
 
 function productLinesForOrder(orderId) {
@@ -500,6 +623,7 @@ function renderStateActions(order) {
         <button class="primary" data-collect="${order.id}">Mark delivered &amp; record payment</button>
         ${invoiceButton}
         <button class="ghost" data-cancel="${order.id}">Cancel order</button>
+        ${renderQuickCallAction(order)}
       `;
     case "delivered":
       return `<span class="muted">Delivered</span> ${invoiceButton}`;
@@ -511,8 +635,18 @@ function renderStateActions(order) {
 }
 
 function phoneDialHref(phone) {
-  const digits = String(phone || "").replace(/[^0-9+]/g, "");
-  return digits ? `tel:${digits}` : "";
+  const raw = String(phone || "").trim();
+  const digits = raw.replace(/\D/g, "");
+  if (!digits) return "";
+  return `tel:${raw.startsWith("+") ? "+" : ""}${digits}`;
+}
+
+function renderQuickCallAction(order) {
+  const href = phoneDialHref(order.phone);
+  if (!href) return "";
+  const customer = String(order.customerName || "customer").trim() || "customer";
+  const phone = String(order.phone || "").trim();
+  return `<a class="button-link secondary" style="padding:6px 10px;font-size:13px;border-radius:10px;margin-left:auto" href="${escapeHtml(href)}" aria-label="Call ${escapeHtml(customer)}${phone ? ` at ${escapeHtml(phone)}` : ""}">Call customer</a>`;
 }
 
 function mapDirectionsHref(address) {
@@ -554,7 +688,7 @@ function renderOrderCompact(order) {
     : "";
   const address = order.address || "";
   const driver = driverName(order.assignedDriverId);
-  const orderIdLink = `<a class="muted" style="font-family:monospace;font-size:11px" href="./admin.html?date=${encodeURIComponent(order.deliveryDate || "")}">${escapeHtml(order.id)}</a>`;
+  const orderIdLink = `<a class="muted" style="font-family:monospace;font-size:11px" href="./order.html?id=${encodeURIComponent(order.id)}">${escapeHtml(order.id)}</a>`;
   return `
     <div class="compact-order">
       <div class="top">
@@ -1541,13 +1675,344 @@ async function refreshDashboard() {
   setStatus("");
 }
 
+// --- Actionable order alerts ------------------------------------------------
+//
+// Deliberately NOT date-scoped, unlike everything else on this page. The board
+// only loads `deliveryDate == selectedDate`, but approval doesn't follow the
+// delivery date: an order placed this afternoon for tomorrow needs approving
+// now, and would never once appear on today's board. So this watches every
+// pending_approval order there is, and the toast carries the delivery date so
+// the owner can jump to the day it lives on.
+//
+// Owner-only, and cheap: the orders read rule already grants owners the whole
+// collection, and a single equality filter needs no composite index. This is
+// the in-page half of the notification story — it only fires while the
+// dashboard is open. Push (FCM) would cover a closed tab and is a much bigger
+// lift; see ROADMAP.
+const ALERT_BASE_TITLE = document.title;
+
+const pendingAlerts = {
+  unsub: null,
+  seeded: false,
+  count: 0,
+  cancellationUnsub: null,
+  cancellationSeeded: false,
+  cancellationCount: 0
+};
+
+function alertStack() {
+  let node = document.getElementById("order-alerts");
+  if (!node) {
+    node = document.createElement("div");
+    node.id = "order-alerts";
+    node.className = "order-alerts";
+    node.setAttribute("role", "status");
+    node.setAttribute("aria-live", "polite");
+    document.body.appendChild(node);
+  }
+  return node;
+}
+
+// The count rides in the tab title because that is the only part of the page
+// visible when the dashboard is in a background tab, which is where it will
+// spend most of its day.
+function renderPendingBadge() {
+  const total = pendingAlerts.count + pendingAlerts.cancellationCount;
+  document.title = total > 0
+    ? `(${total}) ${ALERT_BASE_TITLE}`
+    : ALERT_BASE_TITLE;
+}
+
+function dismissAlert(card) {
+  card.classList.add("is-dismissing");
+  setTimeout(() => card.remove(), 180);
+}
+
+// Only burn the toast's lifespan while someone can actually see it.
+//
+// A backgrounded tab is the case this whole feature exists for, and it breaks
+// the naive version twice over: requestAnimationFrame never fires there (so an
+// entrance animation driven by it never starts), and setTimeout keeps running
+// (so a 15s timer expires while the tab is hidden). Net result was a toast that
+// was invisible for its entire life and already gone by the time the owner
+// looked. The entrance is CSS-driven now, and the countdown waits for a visible
+// tab.
+function armAlertDismiss(card, ms) {
+  if (document.visibilityState === "visible") {
+    setTimeout(() => {
+      if (card.isConnected) dismissAlert(card);
+    }, ms);
+    return;
+  }
+  const onVisible = () => {
+    if (document.visibilityState !== "visible") return;
+    document.removeEventListener("visibilitychange", onVisible);
+    if (card.isConnected) armAlertDismiss(card, ms);
+  };
+  document.addEventListener("visibilitychange", onVisible);
+}
+
+async function jumpToPendingOrder(order) {
+  state.statusFilter = "to_approve";
+  if (order.deliveryDate && order.deliveryDate !== state.selectedDate) {
+    state.selectedDate = order.deliveryDate;
+    const dateInput = document.getElementById("working-date");
+    if (dateInput) dateInput.value = state.selectedDate;
+  }
+  await refreshDashboard();
+}
+
+async function jumpToCancellationRequest(order) {
+  state.statusFilter = "all";
+  if (order.deliveryDate && order.deliveryDate !== state.selectedDate) {
+    state.selectedDate = order.deliveryDate;
+    const dateInput = document.getElementById("working-date");
+    if (dateInput) dateInput.value = state.selectedDate;
+  }
+  await refreshDashboard();
+  const action = [...document.querySelectorAll("[data-approve-cancel]")]
+    .find((button) => button.dataset.approveCancel === order.id);
+  if (action) {
+    action.closest(".compact-order")?.scrollIntoView({ block: "center", behavior: "smooth" });
+    action.focus();
+  }
+}
+
+function showOrderAlert(order) {
+  const dateLabel = order.deliveryDate === state.selectedDate
+    ? "for today's board"
+    : `for ${escapeHtml(order.deliveryDate || "no delivery date")}`;
+  const card = document.createElement("div");
+  card.className = "order-alert";
+  card.innerHTML = `
+    <button type="button" class="order-alert-dismiss" aria-label="Dismiss">×</button>
+    <strong>New order to approve</strong>
+    <span>${escapeHtml(order.customerName || "Unknown customer")} — ${dateLabel}</span>
+    <button type="button" class="order-alert-view primary">View</button>
+  `;
+  card.querySelector(".order-alert-dismiss").addEventListener("click", () => dismissAlert(card));
+  card.querySelector(".order-alert-view").addEventListener("click", async () => {
+    dismissAlert(card);
+    await jumpToPendingOrder(order);
+  });
+  alertStack().appendChild(card);
+  armAlertDismiss(card, 15000);
+}
+
+function showCancellationAlert(order) {
+  const dateLabel = order.deliveryDate === state.selectedDate
+    ? "on today's board"
+    : `for ${escapeHtml(order.deliveryDate || "no delivery date")}`;
+  const reason = order.cancellationRequestReason
+    ? `<span>Reason: ${escapeHtml(order.cancellationRequestReason)}</span>`
+    : `<span>No reason was provided.</span>`;
+  const card = document.createElement("div");
+  card.className = "order-alert";
+  card.innerHTML = `
+    <button type="button" class="order-alert-dismiss" aria-label="Dismiss">×</button>
+    <strong>Cancellation requested</strong>
+    <span>${escapeHtml(order.customerName || "Unknown customer")} — ${dateLabel}</span>
+    ${reason}
+    <button type="button" class="order-alert-view primary">Review</button>
+  `;
+  card.querySelector(".order-alert-dismiss").addEventListener("click", () => dismissAlert(card));
+  card.querySelector(".order-alert-view").addEventListener("click", async () => {
+    dismissAlert(card);
+    await jumpToCancellationRequest(order);
+  });
+  alertStack().appendChild(card);
+  armAlertDismiss(card, 15000);
+}
+
+function watchPendingApprovals() {
+  if (pendingAlerts.unsub) return;
+  pendingAlerts.seeded = false;
+  const pendingQuery = query(collection(db, "orders"), where("status", "==", "pending_approval"));
+  pendingAlerts.unsub = onSnapshot(pendingQuery, (snap) => {
+    pendingAlerts.count = snap.size;
+    renderPendingBadge();
+    // Seed on the first snapshot that actually came from the server, and toast
+    // nothing before then. The existing backlog is not news — the badge covers
+    // it. Seeding on the *first* callback instead looks right and isn't: that
+    // one is usually served from the local cache and can hold a stale subset,
+    // so every order the server then reveals arrives as an `added` change and
+    // toasts. Cache warm with 1 of 2 orders produced exactly one phantom toast
+    // on reload; a cold cache with a real backlog would fire one per order.
+    if (!pendingAlerts.seeded) {
+      if (snap.metadata.fromCache) return;
+      pendingAlerts.seeded = true;
+      return;
+    }
+    let touchesSelectedDate = false;
+    snap.docChanges().forEach((change) => {
+      if (change.type !== "added") return;
+      const order = { id: change.doc.id, ...change.doc.data() };
+      showOrderAlert(order);
+      if (order.deliveryDate === state.selectedDate) touchesSelectedDate = true;
+    });
+    // The board is a point-in-time read. Without this the toast announces an
+    // order that isn't in the list behind it.
+    if (touchesSelectedDate) refreshDashboard();
+  }, (error) => {
+    // A dead listener must not read as a broken dashboard; the board itself is
+    // still correct, it just stops self-updating.
+    console.warn("Pending-order watch stopped:", error);
+  });
+}
+
+function watchCancellationRequests() {
+  if (pendingAlerts.cancellationUnsub) return;
+  pendingAlerts.cancellationSeeded = false;
+  const cancellationQuery = query(collection(db, "orders"), where("cancellationRequested", "==", true));
+  pendingAlerts.cancellationUnsub = onSnapshot(cancellationQuery, (snap) => {
+    pendingAlerts.cancellationCount = snap.size;
+    renderPendingBadge();
+    // As with new orders, an existing request is backlog rather than a new
+    // notification. Wait for the first server snapshot so cache catch-up does
+    // not announce old requests as if the customer just submitted them.
+    if (!pendingAlerts.cancellationSeeded) {
+      if (snap.metadata.fromCache) return;
+      pendingAlerts.cancellationSeeded = true;
+      return;
+    }
+    let touchesSelectedDate = false;
+    snap.docChanges().forEach((change) => {
+      const order = { id: change.doc.id, ...change.doc.data() };
+      if (change.type === "added") showCancellationAlert(order);
+      if (order.deliveryDate === state.selectedDate) touchesSelectedDate = true;
+    });
+    // Keep an already-open board in sync when another tab creates, approves,
+    // or dismisses a request for the selected delivery date.
+    if (touchesSelectedDate) refreshDashboard();
+  }, (error) => {
+    console.warn("Cancellation-request watch stopped:", error);
+  });
+}
+
+// --- Reconciliation health toast ---------------------------------------
+//
+// One-shot check, not a listener: the nightly job writes once a day, so the
+// dashboard just reads the newest reconciliationReports doc on load. This is
+// the in-page half of the alert story — a true push channel (email/WhatsApp)
+// needs a provider + credentials; see ROADMAP.
+//
+// Unlike the order toasts this one does NOT auto-dismiss: there is no
+// tab-title badge backing it up, so a toast that expires unseen is an alert
+// that never happened. Dismissing (or opening the report) records the run id
+// in localStorage and stays quiet for that run. The stale case re-arms every
+// day so a dead cron keeps nagging until someone actually fixes it.
+
+const RECON_ALERT_DISMISS_KEY = "reconAlertDismissed";
+const RECON_STALE_HOURS = 30;
+
+function reconAlertToken(runId, kind) {
+  return kind === "stale" ? `${runId}|stale|${todayKey()}` : `${runId}|${kind}`;
+}
+
+function showReconAlert({ token, title, detail }) {
+  let dismissed = null;
+  try { dismissed = localStorage.getItem(RECON_ALERT_DISMISS_KEY); } catch (_) {}
+  if (dismissed === token) return;
+  const card = document.createElement("div");
+  card.className = "order-alert";
+  card.innerHTML = `
+    <button type="button" class="order-alert-dismiss" aria-label="Dismiss">×</button>
+    <strong>${escapeHtml(title)}</strong>
+    <span>${escapeHtml(detail)}</span>
+    <button type="button" class="order-alert-view primary">Open report</button>
+  `;
+  const remember = () => {
+    try { localStorage.setItem(RECON_ALERT_DISMISS_KEY, token); } catch (_) {}
+  };
+  card.querySelector(".order-alert-dismiss").addEventListener("click", () => {
+    remember();
+    dismissAlert(card);
+  });
+  card.querySelector(".order-alert-view").addEventListener("click", () => {
+    remember();
+    window.location.href = "./reports.html";
+  });
+  alertStack().appendChild(card);
+}
+
+async function checkReconciliationHealth() {
+  let run = null;
+  try {
+    const snap = await getDocs(query(
+      collection(db, "reconciliationReports"),
+      orderBy("startedAt", "desc"),
+      limit(1)
+    ));
+    // Never run at all: nothing worth toasting — reports.html already says so.
+    if (snap.empty) return;
+    run = { id: snap.docs[0].id, ...(snap.docs[0].data() || {}) };
+  } catch (error) {
+    // The health check must never take the dashboard down with it.
+    console.warn("Reconciliation health check skipped:", error);
+    return;
+  }
+
+  const startedAt = run.startedAt && typeof run.startedAt.toDate === "function"
+    ? run.startedAt.toDate()
+    : null;
+  const ageHours = startedAt ? (Date.now() - startedAt.getTime()) / 36e5 : Infinity;
+  const drifted = Number(run.drifted || 0);
+  const fixFailures = Number(run.failed || 0);
+
+  // One toast per load, worst condition wins: silence > failure > drift.
+  if (ageHours > RECON_STALE_HOURS) {
+    showReconAlert({
+      token: reconAlertToken(run.id, "stale"),
+      title: "Reconciliation has gone quiet",
+      detail: `No run in over ${RECON_STALE_HOURS} hours — the nightly 03:00 job may be broken.`
+    });
+    return;
+  }
+  if (run.status === "failed" || fixFailures > 0) {
+    showReconAlert({
+      token: reconAlertToken(run.id, "failed"),
+      title: "Reconciliation run failed",
+      detail: run.status === "failed"
+        ? String(run.error || "The nightly run did not finish.")
+        : `${fixFailures} drift fix${fixFailures === 1 ? "" : "es"} failed last night.`
+    });
+    return;
+  }
+  if (drifted > 0) {
+    showReconAlert({
+      token: reconAlertToken(run.id, "drift"),
+      title: `Reconciliation corrected ${drifted} order${drifted === 1 ? "" : "s"}`,
+      detail: "Last night's run found stored totals that didn't match their payments."
+    });
+  }
+}
+
+function stopWatchingPendingApprovals() {
+  if (pendingAlerts.unsub) {
+    pendingAlerts.unsub();
+    pendingAlerts.unsub = null;
+  }
+  if (pendingAlerts.cancellationUnsub) {
+    pendingAlerts.cancellationUnsub();
+    pendingAlerts.cancellationUnsub = null;
+  }
+  pendingAlerts.seeded = false;
+  pendingAlerts.count = 0;
+  pendingAlerts.cancellationSeeded = false;
+  pendingAlerts.cancellationCount = 0;
+  renderPendingBadge();
+}
+
 async function bootstrapDashboard() {
   state.products = await loadCollection("products", [where("active", "==", true)]);
   state.drivers = await loadCollection("drivers");
   const settings = await loadBusinessSettings();
   state.thresholds = mergeThresholds(settings.thresholds);
   document.getElementById("working-date").value = state.selectedDate;
+  document.getElementById("finance-from").value = state.financeFrom;
+  document.getElementById("finance-to").value = state.financeTo;
   await refreshDashboard();
+  await refreshFinanceSummary();
 }
 
 document.getElementById("login-form").addEventListener("submit", async (event) => {
@@ -1564,6 +2029,19 @@ document.getElementById("login-form").addEventListener("submit", async (event) =
 document.getElementById("working-date").addEventListener("change", async (event) => {
   state.selectedDate = event.target.value || todayKey();
   await refreshDashboard();
+});
+
+document.getElementById("finance-range-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const from = document.getElementById("finance-from").value;
+  const to = document.getElementById("finance-to").value;
+  if (!validFinanceRange(from, to)) {
+    setFinanceStatus("Choose a valid range where From is not after To.", true);
+    return;
+  }
+  state.financeFrom = from;
+  state.financeTo = to;
+  await withSubmitLock(event, refreshFinanceSummary, { busyLabel: "Updating..." });
 });
 
 document.getElementById("edit-order-form").addEventListener("submit", saveEditedOrder);
@@ -1596,12 +2074,20 @@ onAuthStateChanged(auth, async (user) => {
   const authView = document.getElementById("auth-view");
   const appView = document.getElementById("app-view");
   if (!user) {
+    stopWatchingPendingApprovals();
     authView.classList.remove("hidden");
     appView.classList.add("hidden");
     return;
   }
-  if (!(await requireRole(user, "owner"))) return;
+  if (!(await requireRole(user, "owner"))) {
+    stopWatchingPendingApprovals();
+    return;
+  }
   authView.classList.add("hidden");
   appView.classList.remove("hidden");
   await bootstrapDashboard();
+  watchPendingApprovals();
+  watchCancellationRequests();
+  // Fire-and-forget: it catches its own errors and must not block the board.
+  checkReconciliationHealth();
 });

@@ -44,8 +44,8 @@
 
       <section class="panel">
         <div class="personal-details-heading">
-          <h2>Personal details</h2>
-          <button id="update-account-details" class="secondary compact-button hidden" type="button">Update my account</button>
+          <h2>Contact details</h2>
+          <button id="update-account-details" class="secondary compact-button hidden" type="button">Save contact details</button>
         </div>
         <p id="update-account-status" class="muted personal-details-status" role="status" aria-live="polite"></p>
         <form id="public-order-form" class="form-grid pair-mobile">
@@ -55,16 +55,25 @@
           </label>
           <label>
             Phone
-            <input id="form-phone" name="phone" required minlength="6" maxlength="39" type="tel" pattern="(?=.*\d)[-+0-9 ()]{6,40}" title="Digits, spaces, +, -, ( ) only. At least one digit required." placeholder="0900 000 001">
+            <input id="form-phone" name="phone" required minlength="6" maxlength="39" type="tel" pattern="(?=.*\d)[-+0-9 ()]{6,40}" title="Include your country code, e.g. +84 for Vietnam. Vietnamese numbers may be typed as 090… and will be saved as +84…" placeholder="+84 905 123 456">
           </label>
-          <label class="span-2">
-            Address
-            <input id="form-address" name="address" required minlength="5" maxlength="499" type="text" placeholder="12 Nguyen Hue, Da Nang">
+          <div id="saved-address-control" class="span-2 saved-address-control" hidden>
+            <label>
+              Delivery address
+              <select id="saved-address-select" aria-describedby="saved-address-help"></select>
+            </label>
+            <p id="saved-address-help" class="muted" hidden></p>
+          </div>
+          <div id="delivery-address-editor" class="span-2 delivery-address-editor">
+            <label>
+              <span id="delivery-address-editor-label">Enter delivery address</span>
+              <input id="form-address" name="address" required minlength="5" maxlength="499" type="text" placeholder="12 Nguyen Hue, Da Nang">
+            </label>
             <span class="address-verify-actions">
               <button id="address-verify-button" class="ghost" type="button">Find on Google Maps</button>
               <span id="address-verify-status" class="muted" role="status" aria-live="polite">Confirm the delivery pin to help us find you.</span>
             </span>
-          </label>
+          </div>
           <div id="address-map-wrap" class="span-2 address-map-wrap" hidden>
             <div id="address-confirm-map" class="address-confirm-map" aria-label="Map showing the delivery location"></div>
             <div class="address-map-footer">
@@ -72,6 +81,22 @@
               <button id="address-reset-pin" class="ghost" type="button">Reset pin</button>
             </div>
           </div>
+          <fieldset id="address-save-options" class="span-2 address-save-options" hidden>
+            <legend>After this order</legend>
+            <p id="address-save-options-hint" class="muted"></p>
+            <label>
+              <input type="radio" name="addressSaveChoice" value="order_only">
+              <span><strong>Use for this order only</strong><small>Do not change my saved delivery addresses.</small></span>
+            </label>
+            <label id="address-save-additional-option">
+              <input type="radio" name="addressSaveChoice" value="additional">
+              <span><strong>Save as another address</strong><small>Keep my current primary address.</small></span>
+            </label>
+            <label>
+              <input type="radio" name="addressSaveChoice" value="primary">
+              <span><strong>Make this my primary address</strong><small>Use this address automatically for future orders.</small></span>
+            </label>
+          </fieldset>
           <label>
             Delivery date
             <input id="delivery-date" name="deliveryDate" required type="date">
@@ -118,26 +143,9 @@
 
     <dialog id="profile-save-dialog" class="edit-dialog profile-save-dialog" aria-labelledby="profile-save-title">
       <form id="profile-save-form" method="dialog">
-        <h3 id="profile-save-title" style="margin:0">Save to your profile?</h3>
+        <h3 id="profile-save-title" style="margin:0">Save contact details?</h3>
         <p class="muted" id="profile-save-hint" style="margin:6px 0 12px"></p>
         <div id="profile-save-fields" class="stack" style="gap:8px"></div>
-        <div id="profile-save-address-block" class="profile-save-address" hidden>
-          <div class="profile-save-address-heading">This delivery address is different from the one saved on your profile. Save it and pick which one to use by default.</div>
-          <label class="profile-save-address-option">
-            <input type="radio" name="primaryAddress" value="existing">
-            <span>
-              <strong>Keep current default</strong>
-              <span class="muted" id="profile-save-address-existing"></span>
-            </span>
-          </label>
-          <label class="profile-save-address-option">
-            <input type="radio" name="primaryAddress" value="submitted" checked>
-            <span>
-              <strong>Use this new address as default</strong>
-              <span class="muted" id="profile-save-address-submitted"></span>
-            </span>
-          </label>
-        </div>
         <p class="muted" id="profile-save-status" style="min-height:18px;margin:12px 0 0"></p>
         <div class="button-row top-gap" style="justify-content:flex-end">
           <button type="button" class="ghost" id="profile-save-cancel">Not now</button>

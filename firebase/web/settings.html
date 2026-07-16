@@ -29,6 +29,7 @@
             <a class="button-link secondary" href="./map.html">Map</a>
             <a class="button-link secondary" href="./receivables.html">Receivables</a>
             <a class="button-link secondary" href="./deposits.html">Deposits</a>
+            <a class="button-link secondary" href="./reports.html">Reconciliation</a>
             <button class="ghost" id="logout-button" type="button">Sign out</button>
           </div>
         </section>
@@ -145,6 +146,20 @@
             </div>
             <div class="span-2 muted" id="warehouse-coords" style="font-family:monospace;font-size:12px"></div>
           </form>
+        </section>
+
+        <section class="panel" id="product-inventory-panel">
+          <div class="order-top">
+            <div>
+              <span class="pill">Inventory phase 1</span>
+              <h2 style="margin:8px 0 0">Product stock &amp; cost</h2>
+            </div>
+          </div>
+          <p class="muted">Record the latest physical count and what one unit currently costs from the supplier. These figures are owner-only and are not stored on the public product catalog.</p>
+          <p class="muted"><strong>Manual for now:</strong> orders and purchases do not change stock automatically until phase 2. Update these numbers after a stock take.</p>
+          <p class="muted" id="inventory-products-status"></p>
+          <div id="inventory-products-list" class="stack"></div>
+          <p class="muted" id="inventory-products-empty" hidden>No products found.</p>
         </section>
 
         <section class="panel">

@@ -27,23 +27,41 @@
         <h2>Sign in</h2>
         <p class="muted" id="account-status"></p>
 
-        <div class="button-row">
-          <button class="primary" id="google-signin-button" type="button">Sign in with Google</button>
-          <span id="google-signin-status" class="muted"></span>
+        <div id="default-signin-options">
+          <div class="button-row">
+            <button class="primary" id="google-signin-button" type="button">Sign in with Google</button>
+            <span id="google-signin-status" class="muted"></span>
+          </div>
+
+          <div class="divider" style="margin:20px 0;text-align:center;color:var(--muted)">or get a sign-in link by email</div>
+
+          <form id="magic-link-form" class="form-grid">
+            <label class="span-2">
+              Email
+              <input id="signin-email" name="email" required type="email" autocomplete="email" placeholder="you@example.com">
+            </label>
+            <div class="span-2 button-row">
+              <button class="primary" type="submit" id="magic-link-button">Send me a sign-in link</button>
+            </div>
+            <p class="muted span-2" style="margin:0">No password needed. Open the email and tap the link. You can finish signing in on this or another device.</p>
+            <p class="muted span-2" id="signin-status"></p>
+          </form>
         </div>
 
-        <div class="divider" style="margin:20px 0;text-align:center;color:var(--muted)">or get a sign-in link by email</div>
-
-        <form id="magic-link-form" class="form-grid">
+        <form id="magic-link-confirm-form" class="form-grid hidden" aria-labelledby="magic-link-confirm-title">
+          <div class="span-2">
+            <h3 id="magic-link-confirm-title" style="margin:0 0 6px">Confirm your email</h3>
+            <p class="muted" style="margin:0">This link was opened on a different browser or device. Enter the same email address that received the sign-in link.</p>
+          </div>
           <label class="span-2">
-            Email
-            <input id="signin-email" name="email" required type="email" autocomplete="email" placeholder="you@example.com">
+            Email used for the sign-in link
+            <input id="magic-link-confirm-email" name="email" required type="email" autocomplete="email" placeholder="you@example.com">
           </label>
           <div class="span-2 button-row">
-            <button class="primary" type="submit" id="magic-link-button">Send me a sign-in link</button>
+            <button class="primary" type="submit" id="magic-link-confirm-button">Complete sign-in</button>
+            <button class="ghost" type="button" id="magic-link-start-over">Use another sign-in method</button>
           </div>
-          <p class="muted span-2" style="margin:0">No password needed. Open the email on this device and tap the link — you'll be signed in.</p>
-          <p class="muted span-2" id="signin-status"></p>
+          <p class="muted span-2" id="magic-link-confirm-status" aria-live="polite"></p>
         </form>
       </section>
 
@@ -61,10 +79,6 @@
             Phone
             <input id="profile-phone" minlength="6" maxlength="39" type="tel" pattern="(?=.*\d)[-+0-9 ()]{6,40}" title="Digits, spaces, +, -, ( ) only. At least one digit required." placeholder="0901 234 501">
           </label>
-          <label>
-            Area
-            <input id="profile-area" type="text" placeholder="Hai Chau / Son Tra / ...">
-          </label>
           <label class="span-2">
             Notes for the driver
             <textarea id="profile-notes" rows="3" placeholder="Second floor, call before arrival, empty pickup"></textarea>
@@ -78,16 +92,17 @@
 
         <section class="panel address-panel" id="addresses-panel" style="margin-top:20px">
           <h3 style="margin:0 0 6px;font-size:15px">Delivery addresses</h3>
-          <p class="muted" style="margin:0 0 12px;font-size:13px">The default gets prefilled on new orders. Add extras to switch between them quickly.</p>
+          <p class="muted" style="margin:0 0 12px;font-size:13px">The primary address is selected automatically on new orders. Every saved address keeps its confirmed pin, so switching addresses does not require another Maps check.</p>
           <div id="addresses-list" class="stack" style="gap:10px"></div>
           <form id="add-address-form" class="address-add-form" style="margin-top:14px">
             <input id="new-address-input" type="text" placeholder="Add another delivery address" minlength="5" maxlength="499" required>
             <button id="new-address-submit" class="secondary" type="submit">Find on map</button>
+            <button id="cancel-address-edit" class="ghost hidden" type="button">Cancel edit</button>
           </form>
           <div id="account-address-map-wrap" class="address-map-wrap" hidden>
             <div id="account-address-map" class="address-confirm-map" aria-label="Map showing the new delivery address"></div>
             <div class="address-map-footer">
-              <p class="muted address-map-help">Drag the pin to your exact entrance, then select “Save confirmed address”.</p>
+              <p class="muted address-map-help" id="account-address-map-help">Drag the pin to your exact entrance, then select “Save confirmed address”.</p>
               <button id="account-address-reset-pin" class="ghost" type="button">Reset pin</button>
             </div>
           </div>

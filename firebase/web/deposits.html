@@ -20,6 +20,7 @@
 
       <div id="app-view" class="hidden">
         <a class="cog-button floating-settings" href="./settings.html" title="Settings" aria-label="Settings">⚙</a>
+        <section class="hero mobile-page-context"><h1>Deposits</h1></section>
         <section class="hero admin-dock">
           <h1>Deposits</h1>
           <p class="muted">Containers currently with customers, per type. Oldest first. Mark as forfeit when a container is confirmed lost or destroyed.</p>
@@ -29,9 +30,12 @@
             <a class="button-link secondary" href="./orders.html">Orders</a>
             <a class="button-link secondary" href="./map.html">Map</a>
             <a class="button-link secondary" href="./receivables.html">Receivables</a>
-            <a class="button-link secondary" href="./deposits.html">Deposits</a>
+            <a class="button-link secondary" href="./deposits.html" aria-current="page">Deposits</a>
+            <a class="button-link secondary" href="./reports.html">Reconciliation</a>
           </div>
         </section>
+
+        <div id="deposit-summary-tiles" class="stats-grid" style="margin-bottom:18px"></div>
 
         <section class="panel">
           <div class="toolbar">

@@ -27,6 +27,19 @@ This folder now contains a runnable Firestore-backed replacement for the Sheets 
 
 ## Setup
 
+### Local emulator catalog
+
+After starting the emulators, seed the local product catalog once:
+
+```bash
+npm run seed:emulator
+```
+
+The command only accepts a localhost Firestore emulator and refuses non-local
+hosts. It is safe to rerun because products are merged by their stable IDs.
+The normal `npm run emulators` command imports `emulator-data` on startup and
+exports it on exit, preserving local test logins, products, and test orders.
+
 1. Copy this folder somewhere you want to run Node from.
 2. Run:
 

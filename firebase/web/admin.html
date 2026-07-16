@@ -30,15 +30,17 @@
 
       <div id="app-view" class="hidden">
         <a class="cog-button floating-settings" href="./settings.html" title="Settings" aria-label="Settings">⚙</a>
+        <section class="hero mobile-page-context"><h1>Admin dashboard</h1></section>
         <section class="hero admin-dock">
           <h1>Admin dashboard</h1>
           <div class="button-row">
-            <a class="button-link secondary" href="./admin.html">Dashboard</a>
+            <a class="button-link secondary" href="./admin.html" aria-current="page">Dashboard</a>
             <a class="button-link secondary" href="./customers.html">Customers</a>
             <a class="button-link secondary" href="./orders.html">Orders</a>
             <a class="button-link secondary" href="./map.html">Map</a>
             <a class="button-link secondary" href="./receivables.html">Receivables</a>
             <a class="button-link secondary" href="./deposits.html">Deposits</a>
+            <a class="button-link secondary" href="./reports.html">Reconciliation</a>
           </div>
           <div id="admin-toast" class="admin-dock-status" role="status" aria-live="polite" aria-atomic="true"></div>
         </section>
@@ -50,6 +52,29 @@
           <div id="hero-stats" class="stats-grid"></div>
           <div class="view-toggle" id="order-status-filter" style="margin-top:14px" role="group" aria-label="Filter orders by status"></div>
           <div id="today-board" class="compact-list" style="margin-top:14px"></div>
+        </section>
+
+        <section class="panel" id="finance-summary-panel">
+          <div class="date-header">
+            <div>
+              <span class="pill">Finance</span>
+              <h2 style="margin:8px 0 4px">Range summary</h2>
+              <p class="muted" style="margin:0">Separate from the delivery date above. Sales follow delivery dates; collections follow payment dates.</p>
+            </div>
+            <form id="finance-range-form" class="button-row" style="align-items:flex-end">
+              <label>
+                From
+                <input id="finance-from" type="date" required aria-label="Finance range start">
+              </label>
+              <label>
+                To
+                <input id="finance-to" type="date" required aria-label="Finance range end">
+              </label>
+              <button class="secondary" type="submit">Update summary</button>
+            </form>
+          </div>
+          <p class="muted" id="finance-status" role="status" aria-live="polite" style="min-height:18px;margin:12px 0 8px"></p>
+          <div id="finance-stats" class="stats-grid"></div>
         </section>
 
       </div>

@@ -30,6 +30,11 @@ let accountMapsPromise = null;
 let pendingAddressConfirmation = null;
 let accountAddressMap = null;
 let accountAddressMarker = null;
+let resolveMagicLinkEmail = null;
+// The saved address text currently being edited, or null when the form is in
+// "add" mode. The form is deliberately the only address editor on the page, so
+// both paths share one geocode-and-confirm flow.
+let editingAddressOriginal = null;
 
 function loadAccountMaps() {
   if (window.google?.maps) return Promise.resolve(window.google.maps);
@@ -49,8 +54,85 @@ function loadAccountMaps() {
 function resetPendingAddressConfirmation() {
   pendingAddressConfirmation = null;
   el("account-address-map-wrap")?.setAttribute("hidden", "");
+  updateAddressFormMode();
+}
+
+// Single place that decides what the address form looks like, because the
+// label depends on two independent things: add-vs-edit, and whether a pin has
+// been confirmed yet.
+function updateAddressFormMode() {
+  const editing = Boolean(editingAddressOriginal);
   const button = el("new-address-submit");
-  if (button) button.textContent = "Find on map";
+  if (button) {
+    button.textContent = pendingAddressConfirmation
+      ? "Save confirmed address"
+      : (editing ? "Find new pin on map" : "Find on map");
+  }
+  const input = el("new-address-input");
+  if (input) {
+    input.placeholder = editing ? "Update this delivery address" : "Add another delivery address";
+  }
+  el("cancel-address-edit")?.classList.toggle("hidden", !editing);
+}
+
+function beginEditAddress(text) {
+  if (!text) return;
+  editingAddressOriginal = text;
+  resetPendingAddressConfirmation();
+  const input = el("new-address-input");
+  if (input) {
+    input.value = text;
+    input.focus();
+    input.scrollIntoView({ block: "center", behavior: "smooth" });
+  }
+  updateAddressFormMode();
+  setStatus(el("addresses-status"), "Edit the address, then find it on the map to confirm the pin.");
+}
+
+function cancelEditAddress() {
+  editingAddressOriginal = null;
+  const input = el("new-address-input");
+  if (input) input.value = "";
+  resetPendingAddressConfirmation();
+  setStatus(el("addresses-status"), "");
+}
+
+function normalizeDeliveryAddress(value) {
+  return String(value || "").trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function cleanAddressLocation(address, location) {
+  const text = String(address || "").trim();
+  const lat = Number(location?.lat);
+  const lng = Number(location?.lng);
+  if (!text || !Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  return {
+    address: text,
+    lat,
+    lng,
+    formattedAddress: String(location?.formattedAddress || "").trim() || null,
+    geocodedAt: location?.geocodedAt || new Date().toISOString()
+  };
+}
+
+function savedAddressLocations(customer = state.customer) {
+  const byAddress = new Map();
+  (Array.isArray(customer?.addressLocations) ? customer.addressLocations : []).forEach((entry) => {
+    const clean = cleanAddressLocation(entry?.address, entry);
+    if (clean) byAddress.set(normalizeDeliveryAddress(clean.address), clean);
+  });
+  // Older records stored only the primary pin in `location`.
+  const primary = String(customer?.address || "").trim();
+  const legacyPrimary = cleanAddressLocation(primary, customer?.location);
+  if (legacyPrimary && !byAddress.has(normalizeDeliveryAddress(primary))) {
+    byAddress.set(normalizeDeliveryAddress(primary), legacyPrimary);
+  }
+  return Array.from(byAddress.values());
+}
+
+function savedLocationForAddress(address, entries = savedAddressLocations()) {
+  const key = normalizeDeliveryAddress(address);
+  return entries.find((entry) => normalizeDeliveryAddress(entry.address) === key) || null;
 }
 
 const CONTAINER_LABELS = {
@@ -482,7 +564,6 @@ function renderProfile() {
   el("profile-email").textContent = state.user?.email || "";
   el("profile-name").value = customer.name || "";
   el("profile-phone").value = customer.phone || "";
-  el("profile-area").value = customer.area || "";
   el("profile-notes").value = customer.notes || "";
   renderAddresses();
 }
@@ -495,13 +576,16 @@ function renderAddresses() {
   const additional = Array.isArray(customer.additionalAddresses)
     ? customer.additionalAddresses.map((a) => String(a || "").trim()).filter(Boolean)
     : [];
+  const locations = savedAddressLocations(customer);
 
   const rows = [];
   if (primary) {
-    rows.push({ text: primary, isPrimary: true });
+    rows.push({ text: primary, isPrimary: true, hasPin: !!savedLocationForAddress(primary, locations) });
   }
   additional.forEach((text) => {
-    if (text && text !== primary) rows.push({ text, isPrimary: false });
+    if (text && text !== primary) {
+      rows.push({ text, isPrimary: false, hasPin: !!savedLocationForAddress(text, locations) });
+    }
   });
 
   if (!rows.length) {
@@ -513,9 +597,11 @@ function renderAddresses() {
     <div class="address-card${row.isPrimary ? " address-card-primary" : ""}">
       <div class="address-card-body">
         ${row.isPrimary ? '<span class="badge pay-paid" style="margin-bottom:4px">Default</span>' : ""}
+        <span class="badge ${row.hasPin ? "pay-paid" : "pay-unpaid"}" style="margin-bottom:4px">${row.hasPin ? "Pin confirmed" : "Pin needs refresh"}</span>
         <div class="address-card-text">${escapeHtml(row.text)}</div>
       </div>
       <div class="address-card-actions">
+        <button type="button" class="ghost" data-address-edit="${escapeAttr(row.text)}">Edit</button>
         ${row.isPrimary
           ? ""
           : `<button type="button" class="ghost" data-address-primary="${escapeAttr(row.text)}">Set as default</button>`}
@@ -524,6 +610,9 @@ function renderAddresses() {
     </div>
   `).join("");
 
+  list.querySelectorAll("[data-address-edit]").forEach((btn) => {
+    btn.addEventListener("click", () => beginEditAddress(btn.dataset.addressEdit));
+  });
   list.querySelectorAll("[data-address-primary]").forEach((btn) => {
     btn.addEventListener("click", () => promoteAddress(btn.dataset.addressPrimary));
   });
@@ -541,22 +630,54 @@ function currentAddressSet() {
   return { primary, additional };
 }
 
-async function writeAddresses(nextPrimary, nextAdditional) {
+// Keep a pin for every saved address. `customer.location` remains a mirror of
+// the primary pin for older owner/driver screens, while `addressLocations`
+// carries the complete set used by the public order form.
+async function writeAddresses(nextPrimary, nextAdditional, options = {}) {
   if (!state.customerRef) return;
-  const cleanAdditional = Array.from(new Set(
-    (nextAdditional || [])
-      .map((a) => String(a || "").trim())
-      .filter((a) => a && a !== nextPrimary)
-  ));
-  await setDoc(state.customerRef, {
-    address: nextPrimary,
+  const primary = String(nextPrimary || "").trim();
+  const seen = new Set(primary ? [normalizeDeliveryAddress(primary)] : []);
+  const cleanAdditional = (nextAdditional || [])
+    .map((address) => String(address || "").trim())
+    .filter((address) => {
+      const key = normalizeDeliveryAddress(address);
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  const savedAddresses = [primary, ...cleanAdditional].filter(Boolean);
+  let locations = savedAddressLocations();
+  const confirmed = cleanAddressLocation(options.confirmedAddress, options.confirmedLocation);
+  if (confirmed) {
+    const confirmedKey = normalizeDeliveryAddress(confirmed.address);
+    locations = locations.filter((entry) => normalizeDeliveryAddress(entry.address) !== confirmedKey);
+    locations.push(confirmed);
+  }
+  const addressTextByKey = new Map(savedAddresses.map((address) => [normalizeDeliveryAddress(address), address]));
+  locations = locations
+    .filter((entry) => addressTextByKey.has(normalizeDeliveryAddress(entry.address)))
+    .map((entry) => ({ ...entry, address: addressTextByKey.get(normalizeDeliveryAddress(entry.address)) }));
+  const primaryLocation = savedLocationForAddress(primary, locations);
+  const payload = {
+    address: primary,
     additionalAddresses: cleanAdditional,
+    addressLocations: locations,
+    location: primaryLocation ? {
+      lat: primaryLocation.lat,
+      lng: primaryLocation.lng,
+      formattedAddress: primaryLocation.formattedAddress,
+      geocodedAt: primaryLocation.geocodedAt
+    } : null,
     updatedAt: serverTimestamp()
-  }, { merge: true });
+  };
+
+  await setDoc(state.customerRef, payload, { merge: true });
   state.customer = {
     ...(state.customer || {}),
-    address: nextPrimary,
-    additionalAddresses: cleanAdditional
+    address: primary,
+    additionalAddresses: cleanAdditional,
+    addressLocations: locations,
+    location: payload.location
   };
   renderAddresses();
 }
@@ -597,7 +718,62 @@ async function removeAddress(text) {
   }
 }
 
-async function handleAddAddress(event) {
+async function findPinFor(value, status) {
+  setStatus(status, "Searching Google Maps...");
+  const button = el("new-address-submit");
+  if (button) button.disabled = true;
+  try {
+    await loadAccountMaps();
+    const geocoder = new google.maps.Geocoder();
+    const match = await new Promise((resolve, reject) => {
+      geocoder.geocode({ address: value, region: "vn" }, (results, resultStatus) => {
+        if (resultStatus === "OK" && results?.[0]) resolve(results[0]);
+        else reject(new Error("We couldn't find that address. Add a district or nearby landmark and try again."));
+      });
+    });
+    const position = match.geometry.location;
+    if (match.partial_match) {
+      throw new Error("Google Maps only found a partial match. Add a district or nearby landmark and try again.");
+    }
+    const wrap = el("account-address-map-wrap");
+    wrap.hidden = false;
+    accountAddressMap = accountAddressMap || new google.maps.Map(el("account-address-map"), {
+      center: position,
+      zoom: 17,
+      streetViewControl: false,
+      mapTypeControl: false,
+      fullscreenControl: false
+    });
+    accountAddressMap.setCenter(position);
+    if (accountAddressMarker) accountAddressMarker.setMap(null);
+    accountAddressMarker = new google.maps.Marker({ map: accountAddressMap, position, draggable: true });
+    const formatted = match.formatted_address || null;
+    const capture = (pos) => {
+      pendingAddressConfirmation = {
+        address: value,
+        lat: pos.lat(),
+        lng: pos.lng(),
+        formattedAddress: formatted
+      };
+    };
+    capture(position);
+    accountAddressMarker.addListener("dragend", () => capture(accountAddressMarker.getPosition()));
+
+    const help = el("account-address-map-help");
+    if (help) {
+      help.textContent = "Drag the pin to your exact entrance, then select “Save confirmed address”. This saved delivery profile will reuse the pin on future orders.";
+    }
+    updateAddressFormMode();
+    setStatus(status, "Pin found. Check it, drag it if needed, then save.");
+  } catch (error) {
+    resetPendingAddressConfirmation();
+    setStatus(status, error.message || String(error), true);
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function handleAddressFormSubmit(event) {
   event.preventDefault();
   const input = el("new-address-input");
   if (!input) return;
@@ -608,66 +784,46 @@ async function handleAddAddress(event) {
     return;
   }
   const { primary, additional } = currentAddressSet();
-  if (value === primary || additional.includes(value)) {
+  const original = editingAddressOriginal;
+  const isEdit = Boolean(original);
+
+  // In edit mode, matching the address you are editing is not a clash — it is
+  // how you re-pin a default without retyping it.
+  const clashesWithSaved = value === primary || additional.includes(value);
+  if (clashesWithSaved && !(isEdit && value === original)) {
     setStatus(status, "That address is already saved.", true);
     return;
   }
+
   if (!pendingAddressConfirmation || pendingAddressConfirmation.address !== value) {
-    setStatus(status, "Searching Google Maps...");
-    const button = el("new-address-submit");
-    if (button) button.disabled = true;
-    try {
-      await loadAccountMaps();
-      const geocoder = new google.maps.Geocoder();
-      const match = await new Promise((resolve, reject) => {
-        geocoder.geocode({ address: value, region: "vn" }, (results, resultStatus) => {
-          if (resultStatus === "OK" && results?.[0]) resolve(results[0]);
-          else reject(new Error("We couldn't find that address. Add a district or nearby landmark and try again."));
-        });
-      });
-      const position = match.geometry.location;
-      if (match.partial_match) {
-        throw new Error("Google Maps only found a partial match. Add a district or nearby landmark and try again.");
-      }
-      const wrap = el("account-address-map-wrap");
-      wrap.hidden = false;
-      accountAddressMap = accountAddressMap || new google.maps.Map(el("account-address-map"), {
-        center: position,
-        zoom: 17,
-        streetViewControl: false,
-        mapTypeControl: false,
-        fullscreenControl: false
-      });
-      accountAddressMap.setCenter(position);
-      if (accountAddressMarker) accountAddressMarker.setMap(null);
-      accountAddressMarker = new google.maps.Marker({ map: accountAddressMap, position, draggable: true });
-      const capture = (pos) => {
-        pendingAddressConfirmation = { address: value, lat: pos.lat(), lng: pos.lng() };
-      };
-      capture(position);
-      accountAddressMarker.addListener("dragend", () => capture(accountAddressMarker.getPosition()));
-      if (button) button.textContent = "Save confirmed address";
-      setStatus(status, "Pin found. Check it, drag it if needed, then save.");
-      return;
-    } catch (error) {
-      resetPendingAddressConfirmation();
-      setStatus(status, error.message || String(error), true);
-      return;
-    } finally {
-      if (button) button.disabled = false;
-    }
+    await findPinFor(value, status);
+    return;
   }
 
-  setStatus(status, "Adding confirmed address...");
+  setStatus(status, isEdit ? "Saving address..." : "Adding confirmed address...");
   try {
-    if (!primary) {
-      await writeAddresses(value, additional);
+    const pin = {
+      lat: pendingAddressConfirmation.lat,
+      lng: pendingAddressConfirmation.lng,
+      formattedAddress: pendingAddressConfirmation.formattedAddress || null,
+      geocodedAt: new Date().toISOString()
+    };
+    if (isEdit && original === primary) {
+      await writeAddresses(value, additional, { confirmedAddress: value, confirmedLocation: pin });
+    } else if (isEdit) {
+      await writeAddresses(primary, additional.map((a) => (a === original ? value : a)), {
+        confirmedAddress: value,
+        confirmedLocation: pin
+      });
+    } else if (!primary) {
+      await writeAddresses(value, additional, { confirmedAddress: value, confirmedLocation: pin });
     } else {
-      await writeAddresses(primary, [...additional, value]);
+      await writeAddresses(primary, [...additional, value], { confirmedAddress: value, confirmedLocation: pin });
     }
     input.value = "";
+    editingAddressOriginal = null;
     resetPendingAddressConfirmation();
-    setStatus(status, "Confirmed address added.");
+    setStatus(status, isEdit ? "Address updated." : "Confirmed address added.");
   } catch (error) {
     setStatus(status, error.message || String(error), true);
   }
@@ -975,7 +1131,7 @@ async function handleGoogleSignIn() {
 
 // Where we stash the email between "send link" (this device) and "click link
 // in the email" (possibly a different browser). If missing on return (private
-// browsing, storage cleared, cross-device open) we prompt for it — Firebase
+// browsing, storage cleared, cross-device open) we ask for it in-page — Firebase
 // refuses signInWithEmailLink without the original email as an anti-hijack
 // check.
 const MAGIC_LINK_EMAIL_KEY = "vs.magicLinkEmail";
@@ -1004,7 +1160,8 @@ async function handleSendMagicLink(event) {
       try {
         window.localStorage.setItem(MAGIC_LINK_EMAIL_KEY, email);
       } catch (_) {
-        // Private mode / storage disabled — we'll fall back to prompt() on return.
+        // Private mode / storage disabled — the return page will show the
+        // in-page email confirmation form.
       }
       setStatus(
         el("signin-status"),
@@ -1014,6 +1171,42 @@ async function handleSendMagicLink(event) {
       setStatus(el("signin-status"), error.message || String(error), true);
     }
   }, { busyLabel: "Sending..." });
+}
+
+function showMagicLinkEmailConfirmation() {
+  el("default-signin-options")?.classList.add("hidden");
+  el("magic-link-confirm-form")?.classList.remove("hidden");
+  setStatus(el("magic-link-confirm-status"), "");
+  hideAppLoading();
+  window.setTimeout(() => el("magic-link-confirm-email")?.focus(), 0);
+  return new Promise((resolve) => {
+    resolveMagicLinkEmail = resolve;
+  });
+}
+
+function closeMagicLinkEmailConfirmation(email = "") {
+  el("magic-link-confirm-form")?.classList.add("hidden");
+  el("default-signin-options")?.classList.remove("hidden");
+  const resolve = resolveMagicLinkEmail;
+  resolveMagicLinkEmail = null;
+  if (resolve) resolve(String(email || "").trim());
+}
+
+function handleMagicLinkEmailConfirmation(event) {
+  event.preventDefault();
+  const input = el("magic-link-confirm-email");
+  const email = String(input?.value || "").trim();
+  if (!email || !input?.checkValidity()) {
+    input?.reportValidity();
+    setStatus(el("magic-link-confirm-status"), "Enter the email address that received this link.", true);
+    return;
+  }
+  setStatus(el("magic-link-confirm-status"), "Checking your sign-in link...");
+  closeMagicLinkEmailConfirmation(email);
+}
+
+function handleMagicLinkStartOver() {
+  closeMagicLinkEmailConfirmation("");
 }
 
 // Runs at page load. If Firebase recognizes the current URL as an email
@@ -1031,11 +1224,11 @@ async function tryCompleteEmailLinkSignIn() {
   }
   if (!email) {
     // Opened the link in a different browser than the one that sent it.
-    // Ask the user for the email to satisfy Firebase's anti-hijack check.
-    email = String(window.prompt("Confirm the email you asked us to send the link to:") || "").trim();
+    // Ask in-page for the email to satisfy Firebase's anti-hijack check.
+    email = await showMagicLinkEmailConfirmation();
   }
   if (!email) {
-    setStatus(el("signin-status"), "We need the email you sent the link to. Send a new link and try again.", true);
+    setStatus(el("signin-status"), "Sign-in link not completed. You can use Google or request a new email link.");
     // Strip the query params so a reload doesn't re-hit this branch with
     // the same (already-consumed on failure) code.
     window.history.replaceState({}, document.title, window.location.pathname);
@@ -1072,7 +1265,6 @@ async function handleSaveProfile(event) {
       await setDoc(state.customerRef, {
         name: el("profile-name").value.trim(),
         phone: phoneE164,
-        area: el("profile-area").value.trim() || null,
         notes: el("profile-notes").value.trim() || null,
         email: state.user.email || null,
         authUid: state.user.uid,
@@ -1092,8 +1284,11 @@ async function handleSignOut() {
 
 el("google-signin-button").addEventListener("click", handleGoogleSignIn);
 el("magic-link-form").addEventListener("submit", handleSendMagicLink);
+el("magic-link-confirm-form")?.addEventListener("submit", handleMagicLinkEmailConfirmation);
+el("magic-link-start-over")?.addEventListener("click", handleMagicLinkStartOver);
 el("profile-form").addEventListener("submit", handleSaveProfile);
-el("add-address-form")?.addEventListener("submit", handleAddAddress);
+el("add-address-form")?.addEventListener("submit", handleAddressFormSubmit);
+el("cancel-address-edit")?.addEventListener("click", cancelEditAddress);
 el("account-address-reset-pin")?.addEventListener("click", () => {
   resetPendingAddressConfirmation();
   setStatus(el("addresses-status"), "Pin reset — update the address if needed, then find it on the map again.");

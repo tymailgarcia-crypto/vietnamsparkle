@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "emulators": "firebase emulators:start --only auth,firestore,functions,hosting",
+    "emulators": "firebase emulators:start --only auth,firestore,functions,hosting --import=emulator-data --export-on-exit=emulator-data",
+    "seed:emulator": "node src/scripts/seedEmulatorProducts.js",
     "import:sheets": "node src/scripts/importSheetsJson.js",
     "set:claims": "node src/scripts/setUserClaims.js"
   },

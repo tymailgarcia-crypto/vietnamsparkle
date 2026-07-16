@@ -13,9 +13,11 @@ import { normalizePhoneE164VN, requireRole, withSubmitLock } from "./shared.js";
 
 const state = {
   customers: [],
+  insights: {},
   search: "",
-  area: "",
-  sort: "name-asc"
+  attention: "",
+  sort: "name-asc",
+  view: localStorage.getItem("customers-view") || "cards"
 };
 
 function el(id) {
@@ -53,11 +55,6 @@ function matchesSearch(customer) {
     .some((field) => String(field || "").toLowerCase().includes(q));
 }
 
-function matchesArea(customer) {
-  if (!state.area) return true;
-  return String(customer.area || "") === state.area;
-}
-
 function sortRows(rows) {
   const copy = rows.slice();
   switch (state.sort) {
@@ -74,24 +71,86 @@ function sortRows(rows) {
   }
 }
 
-function renderAreaOptions() {
-  const areas = Array.from(new Set(state.customers.map((c) => String(c.area || "")).filter(Boolean))).sort();
-  const select = el("area-filter");
-  const preserved = select.value;
-  select.innerHTML = '<option value="">All areas</option>'
-    + areas.map((area) => `<option value="${escapeHtml(area)}">${escapeHtml(area)}</option>`).join("");
-  if (preserved) select.value = preserved;
+function daysAgo(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return Math.max(0, Math.floor((Date.now() - date.getTime()) / 86400000));
+}
+
+function shortMoney(value) {
+  const amount = Number(value || 0);
+  if (amount >= 1000000) return `${(amount / 1000000).toFixed(amount % 1000000 ? 1 : 0)}m`;
+  if (amount >= 1000) return `${Math.round(amount / 1000)}k`;
+  return String(Math.round(amount));
+}
+
+function buildCustomerInsights(orders, depositEvents) {
+  const byCustomer = {};
+  const get = (id) => {
+    if (!byCustomer[id]) byCustomer[id] = { orders: [], outstanding: 0, lifetime: 0, containers: 0, oldestContainerDate: null };
+    return byCustomer[id];
+  };
+  orders.forEach((order) => {
+    if (!order.customerId || order.status === "cancelled") return;
+    const item = get(order.customerId);
+    item.orders.push(order);
+    item.outstanding += Math.max(0, Number(order.balanceDue || 0));
+    if (order.status === "delivered") item.lifetime += Number(order.subtotal || 0);
+  });
+  depositEvents.forEach((event) => {
+    if (!event.customerId) return;
+    const item = get(event.customerId);
+    const direction = event.eventType === "charged" ? 1 : ["refunded", "credited", "forfeited"].includes(event.eventType) ? -1 : 0;
+    item.containers += direction * Number(event.qty || 0);
+    const eventDate = event.eventDate || event.createdAt;
+    if (direction > 0 && eventDate && (!item.oldestContainerDate || String(eventDate) < item.oldestContainerDate)) {
+      item.oldestContainerDate = String(eventDate);
+    }
+  });
+  Object.values(byCustomer).forEach((item) => {
+    item.containers = Math.max(0, item.containers);
+    const dates = item.orders.map((o) => o.deliveryDate).filter(Boolean).sort();
+    item.lastOrderDate = dates[dates.length - 1] || null;
+    const gaps = dates.slice(1).map((date, index) => (new Date(date) - new Date(dates[index])) / 86400000).filter((gap) => gap > 0);
+    item.cadence = gaps.length ? Math.round(gaps.reduce((sum, gap) => sum + gap, 0) / gaps.length) : null;
+  });
+  return byCustomer;
+}
+
+function customerAttention(insight) {
+  const lastDays = daysAgo(insight.lastOrderDate);
+  const heldDays = daysAgo(insight.oldestContainerDate);
+  if (insight.outstanding > 0) return { tone: "danger", text: `${shortMoney(insight.outstanding)} VND needs collecting` };
+  if (insight.containers > 0 && heldDays >= 30) return { tone: "warning", text: `${insight.containers} container${insight.containers === 1 ? "" : "s"} held ${heldDays} days` };
+  if (insight.cadence && lastDays != null && lastDays >= insight.cadence) return { tone: "info", text: "Likely ready to reorder" };
+  if (lastDays != null && lastDays >= 60) return { tone: "muted", text: `No order for ${lastDays} days` };
+  return { tone: "good", text: "Nothing needs attention" };
+}
+
+function matchesAttention(customer) {
+  if (!state.attention) return true;
+  const attention = customerAttention(state.insights[customer.id] || {});
+  if (state.attention === "needs-attention") return attention.tone !== "good";
+  if (state.attention === "payment") return attention.tone === "danger";
+  if (state.attention === "containers") return attention.tone === "warning";
+  if (state.attention === "reorder") return attention.tone === "info";
+  if (state.attention === "inactive") return attention.tone === "muted";
+  if (state.attention === "clear") return attention.tone === "good";
+  return true;
 }
 
 function renderRows() {
   const tbody = el("customer-rows");
-  const filtered = sortRows(state.customers.filter((c) => matchesSearch(c) && matchesArea(c)));
-  setStatus(state.search || state.area
+  const cards = el("customer-cards");
+  const filtered = sortRows(state.customers.filter((c) => matchesSearch(c) && matchesAttention(c)));
+  setStatus(state.search || state.attention
     ? `Showing ${filtered.length} of ${state.customers.length} customers.`
     : `${state.customers.length} customer${state.customers.length === 1 ? "" : "s"} on file.`);
 
   if (!filtered.length) {
     tbody.innerHTML = `<tr><td colspan="6" class="muted" style="padding:20px;text-align:center">No matches. Adjust filters or clear the search.</td></tr>`;
+    cards.innerHTML = `<div class="card muted directory-empty">No matches. Adjust filters or clear the search.</div>`;
     return;
   }
 
@@ -116,19 +175,65 @@ function renderRows() {
       </tr>
     `;
   }).join("");
+
+  cards.innerHTML = filtered.map((customer) => {
+    const nameHref = `./customer.html?id=${encodeURIComponent(customer.id)}`;
+    const phoneHref = phoneDialHref(customer.phone);
+    const mapsHref = mapDirectionsHref(customer.address);
+    const insight = state.insights[customer.id] || { outstanding: 0, containers: 0, lifetime: 0 };
+    const attention = customerAttention(insight);
+    const lastDays = daysAgo(insight.lastOrderDate || customer.lastOrderAt);
+    const lastOrder = lastDays == null ? "Never" : lastDays === 0 ? "Today" : `${lastDays}d ago`;
+    return `
+      <article class="card directory-card">
+        <div class="directory-card-head">
+          <div><a class="directory-card-title" href="${nameHref}">${escapeHtml(customer.name || "Unknown")}</a><div class="muted">${escapeHtml(customer.area || "Area not set")}</div></div>
+          <span class="directory-count">${Number(customer.orderCount || 0)} order${Number(customer.orderCount || 0) === 1 ? "" : "s"}</span>
+        </div>
+        <div class="customer-attention customer-attention-${attention.tone}">${escapeHtml(attention.text)}</div>
+        <div class="customer-insight-grid">
+          <div><span>Balance</span><strong>${insight.outstanding ? `${shortMoney(insight.outstanding)} VND` : "Clear"}</strong></div>
+          <div><span>Containers</span><strong>${Number(insight.containers || 0)}</strong></div>
+          <div><span>Last order</span><strong>${escapeHtml(lastOrder)}</strong></div>
+        </div>
+        <div class="directory-address">${escapeHtml(customer.address || "No address")}</div>
+        <div class="customer-card-context"><span>${escapeHtml(customer.phone || "No phone")}</span><span>Lifetime ${shortMoney(insight.lifetime)} VND</span>${insight.cadence ? `<span>Usually every ${insight.cadence}d</span>` : ""}</div>
+        <div class="button-row directory-card-actions">
+          <a class="button-link primary" href="${nameHref}">Open customer</a>
+          ${phoneHref ? `<a class="button-link secondary" href="${phoneHref}">Call</a>` : ""}
+          ${mapsHref ? `<a class="button-link secondary" href="${mapsHref}" target="_blank" rel="noopener">Map</a>` : ""}
+        </div>
+      </article>`;
+  }).join("");
+}
+
+function setView(view) {
+  state.view = view === "list" ? "list" : "cards";
+  localStorage.setItem("customers-view", state.view);
+  el("customer-cards").classList.toggle("hidden", state.view !== "cards");
+  el("customer-list").classList.toggle("hidden", state.view !== "list");
+  el("customers-cards-view").classList.toggle("active", state.view === "cards");
+  el("customers-list-view").classList.toggle("active", state.view === "list");
 }
 
 async function loadCustomers() {
   setStatus("Loading customers...");
   try {
-    const snap = await getDocs(collection(db, "customers"));
+    const [snap, ordersSnap, depositsSnap] = await Promise.all([
+      getDocs(collection(db, "customers")),
+      getDocs(collection(db, "orders")),
+      getDocs(collection(db, "depositEvents"))
+    ]);
     // Archived docs are the tombstone left behind by a merge — kept for audit
     // but never shown in the main directory. To see one, navigate to it by
     // URL (e.g. from another archived stub's mergedInto link).
     state.customers = snap.docs
       .map((docSnap) => ({ id: docSnap.id, ...docSnap.data() }))
       .filter((c) => c.archived !== true);
-    renderAreaOptions();
+    state.insights = buildCustomerInsights(
+      ordersSnap.docs.map((item) => ({ id: item.id, ...item.data() })),
+      depositsSnap.docs.map((item) => item.data())
+    );
     renderRows();
   } catch (error) {
     setStatus(`Could not load customers: ${error.message || error}`);
@@ -139,8 +244,8 @@ el("search-input").addEventListener("input", (event) => {
   state.search = event.target.value.trim();
   renderRows();
 });
-el("area-filter").addEventListener("change", (event) => {
-  state.area = event.target.value;
+el("attention-filter").addEventListener("change", (event) => {
+  state.attention = event.target.value;
   renderRows();
 });
 el("sort-select").addEventListener("change", (event) => {
@@ -148,6 +253,9 @@ el("sort-select").addEventListener("change", (event) => {
   renderRows();
 });
 el("refresh-button").addEventListener("click", loadCustomers);
+el("customers-cards-view").addEventListener("click", () => setView("cards"));
+el("customers-list-view").addEventListener("click", () => setView("list"));
+setView(state.view);
 
 function checkForDuplicatePhone() {
   const rawPhone = el("new-customer-phone").value;
@@ -202,7 +310,8 @@ async function handleSaveNewCustomer(event) {
       statusNode.style.color = "";
       await setDoc(doc(db, "customers", customerId), {
         name: el("new-customer-name").value.trim(),
-        phone: rawPhone,
+        // E.164 only (Ty, 2026-07-16) — wa.me links break on local formats.
+        phone: e164,
         email: el("new-customer-email").value.trim() || null,
         area: el("new-customer-area").value.trim() || null,
         address: el("new-customer-address").value.trim(),
