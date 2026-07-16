@@ -6,6 +6,7 @@ import {
   getDoc,
   getDocs,
   onAuthStateChanged,
+  onSnapshot,
   query,
   serverTimestamp,
   signOut,
@@ -179,7 +180,7 @@ function makeInfoWindowHtml(order) {
   const phoneLine = phone
     ? `<div><a href="tel:${escapeHtml(phoneDigits(phone))}">${escapeHtml(phone)}</a></div>`
     : "";
-  const boardHref = `./admin.html?date=${encodeURIComponent(order.deliveryDate || "")}`;
+  const boardHref = `./order.html?id=${encodeURIComponent(order.id)}`;
   return `
     <div style="min-width:180px;max-width:240px;font-family:inherit">
       <strong>${escapeHtml(order.customerName || customer.name || "Unknown")}</strong>
@@ -292,7 +293,7 @@ function renderRows(orders) {
     const pinMark = hasPin
       ? `<span title="Pinned on map" style="color:${driverColor(order.assignedDriverId)}">●</span>`
       : `<span title="No pin — geocoding failed or address missing" class="muted">○</span>`;
-    const boardHref = `./admin.html?date=${encodeURIComponent(order.deliveryDate || "")}`;
+    const boardHref = `./order.html?id=${encodeURIComponent(order.id)}`;
     return `
       <tr>
         <td class="map-customer-name">${escapeHtml(order.customerName || customer.name || "Unknown")}</td>
@@ -536,8 +537,8 @@ async function loadPlannerSetup() {
 }
 
 async function loadOrderItemsForOrders(orders) {
-  state.orderItemsByOrderId = {};
-  if (!orders.length) return;
+  const itemsByOrderId = {};
+  if (!orders.length) return itemsByOrderId;
   const orderIds = orders.map((o) => o.id);
   for (let i = 0; i < orderIds.length; i += 30) {
     const chunk = orderIds.slice(i, i + 30);
@@ -547,26 +548,15 @@ async function loadOrderItemsForOrders(orders) {
     ));
     snap.docs.forEach((docSnap) => {
       const item = { id: docSnap.id, ...docSnap.data() };
-      if (!state.orderItemsByOrderId[item.orderId]) state.orderItemsByOrderId[item.orderId] = [];
-      state.orderItemsByOrderId[item.orderId].push(item);
+      if (!itemsByOrderId[item.orderId]) itemsByOrderId[item.orderId] = [];
+      itemsByOrderId[item.orderId].push(item);
     });
   }
+  return itemsByOrderId;
 }
 
-async function loadOrders() {
-  const filters = [];
-  if (state.dateFrom) filters.push(where("deliveryDate", ">=", state.dateFrom));
-  if (state.dateTo) filters.push(where("deliveryDate", "<=", state.dateTo));
-  const snap = filters.length
-    ? await getDocs(query(collection(db, "orders"), ...filters))
-    : await getDocs(collection(db, "orders"));
-  state.orders = snap.docs
-    .map((d) => ({ id: d.id, ...d.data() }))
-    .filter((o) => APPROVED_STATUSES.includes(o.status) || o.status === "delivered");
-}
-
-async function loadReferencedCustomers() {
-  const customerIds = Array.from(new Set(state.orders.map((o) => o.customerId).filter(Boolean)));
+async function loadReferencedCustomers(orders = state.orders) {
+  const customerIds = Array.from(new Set(orders.map((o) => o.customerId).filter(Boolean)));
   const toFetch = customerIds.filter((id) => !state.customers[id]);
   await Promise.all(toFetch.map(async (id) => {
     try {
@@ -684,22 +674,75 @@ async function backfillMissingLocations() {
   }
 }
 
-async function refresh() {
-  try {
-    setStatus("Loading orders...");
-    await loadOrders();
-    await Promise.all([
-      loadReferencedCustomers(),
-      loadOrderItemsForOrders(state.orders)
-    ]);
+let ordersUnsub = null;
+let ordersWatchGeneration = 0;
+let ordersApplySequence = 0;
+
+function ordersQueryForRange() {
+  const filters = [];
+  if (state.dateFrom) filters.push(where("deliveryDate", ">=", state.dateFrom));
+  if (state.dateTo) filters.push(where("deliveryDate", "<=", state.dateTo));
+  return filters.length ? query(collection(db, "orders"), ...filters) : collection(db, "orders");
+}
+
+function ordersFromSnapshot(snapshot) {
+  return snapshot.docs
+    .map((row) => ({ id: row.id, ...row.data() }))
+    .filter((order) => APPROVED_STATUSES.includes(order.status) || order.status === "delivered");
+}
+
+async function applyOrdersSnapshot(snapshot, generation) {
+  const requestId = ++ordersApplySequence;
+  const orders = ordersFromSnapshot(snapshot);
+  const [, itemsByOrderId] = await Promise.all([
+    loadReferencedCustomers(orders),
+    loadOrderItemsForOrders(orders)
+  ]);
+  if (generation !== ordersWatchGeneration || requestId !== ordersApplySequence) return;
+  state.orders = orders;
+  state.orderItemsByOrderId = itemsByOrderId;
+  render();
+  if (state.mapsReady) {
+    await backfillMissingLocations();
+    if (generation !== ordersWatchGeneration || requestId !== ordersApplySequence) return;
     render();
-    if (state.mapsReady) {
-      await backfillMissingLocations();
-      render();
-    }
-  } catch (error) {
-    setStatus(`Could not load: ${error.message || error}`);
   }
+}
+
+function stopOrdersWatch() {
+  ordersWatchGeneration += 1;
+  ordersApplySequence += 1;
+  if (ordersUnsub) {
+    ordersUnsub();
+    ordersUnsub = null;
+  }
+}
+
+function watchOrders() {
+  stopOrdersWatch();
+  const generation = ordersWatchGeneration;
+  setStatus("Loading orders and starting live updates...");
+  let settled = false;
+  return new Promise((resolve) => {
+    const settle = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+    ordersUnsub = onSnapshot(ordersQueryForRange(), (snapshot) => {
+      applyOrdersSnapshot(snapshot, generation)
+        .then(settle)
+        .catch((error) => {
+          if (generation === ordersWatchGeneration) setStatus(`Could not update map: ${error.message || error}`);
+          settle();
+        });
+    }, (error) => {
+      if (generation === ordersWatchGeneration) {
+        setStatus(`Live updates stopped: ${error.message || error}. Select Refresh to reconnect.`);
+      }
+      settle();
+    });
+  });
 }
 
 function initFilters() {
@@ -716,9 +759,9 @@ function initFilters() {
   el("map-date").addEventListener("change", (event) => {
     state.dateFrom = event.target.value;
     state.dateTo = event.target.value;
-    refresh();
+    watchOrders();
   });
-  el("refresh-button").addEventListener("click", refresh);
+  el("refresh-button").addEventListener("click", watchOrders);
   el("plan-trips-button").addEventListener("click", runPlanner);
 }
 
@@ -729,7 +772,7 @@ async function bootstrap() {
     el("map-config-needed").style.display = "block";
     el("map-canvas").style.display = "none";
     setStatus("Map is disabled until an API key is configured. List view still works below.");
-    await refresh();
+    await watchOrders();
     return;
   }
   try {
@@ -740,18 +783,22 @@ async function bootstrap() {
     el("map-canvas").style.display = "none";
     console.error("Maps SDK failed:", error);
   }
-  await refresh();
+  await watchOrders();
 }
 
 onAuthStateChanged(auth, async (user) => {
   const authView = el("auth-view");
   const appView = el("app-view");
   if (!user) {
+    stopOrdersWatch();
     authView.classList.remove("hidden");
     appView.classList.add("hidden");
     return;
   }
-  if (!(await requireRole(user, "owner"))) return;
+  if (!(await requireRole(user, "owner"))) {
+    stopOrdersWatch();
+    return;
+  }
   authView.classList.add("hidden");
   appView.classList.remove("hidden");
   el("auth-email").textContent = user.email || user.uid;

@@ -132,6 +132,30 @@ function renderRows() {
   });
 }
 
+function renderSummaryTiles() {
+  const tiles = el("deposit-summary-tiles");
+  if (!tiles) return;
+
+  const containerCount = state.rows.reduce((sum, row) => sum + Number(row.qty || 0), 0);
+  const depositTotal = state.rows.reduce((sum, row) => sum + Math.max(0, Number(row.amount || 0)), 0);
+  const atRiskCount = state.rows.reduce((sum, row) => {
+    return daysSince(row.since) >= state.thresholds.depositForfeitDays
+      ? sum + Number(row.qty || 0)
+      : sum;
+  }, 0);
+  const atRiskStyle = atRiskCount > 0 ? 'style="border:2px solid rgb(192,57,43)"' : "";
+
+  tiles.innerHTML = `
+    <div class="card" ${atRiskStyle}>
+      <span class="muted">Containers out</span>
+      <strong>${containerCount} · ${formatCurrency(depositTotal)}</strong>
+      ${atRiskCount > 0
+        ? `<div class="muted">${atRiskCount} held ≥${state.thresholds.depositForfeitDays} days</div>`
+        : ""}
+    </div>
+  `;
+}
+
 async function loadThresholdsFromSettings() {
   try {
     const snap = await getDoc(doc(db, "settings", "business"));
@@ -212,6 +236,7 @@ async function loadDeposits() {
       .sort((a, b) => String(a.since || "9999-12-31").localeCompare(String(b.since || "9999-12-31")));
 
     renderRows();
+    renderSummaryTiles();
   } catch (error) {
     setStatus(`Could not load deposits: ${error.message || error}`);
   }

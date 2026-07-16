@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Order record · Vietnam Sparkle</title>
+    <link rel="stylesheet" href="./assets/styles.css?v=order-card-20260716-1">
+  </head>
+  <body>
+    <main class="page has-admin-dock">
+      <section id="auth-view" class="auth-shell hidden"><div class="auth-card"><span class="pill">Owner sign-in required</span><h2>Sign in to view this order</h2><a class="button-link primary" href="./admin.html">Go to sign in</a></div></section>
+      <div id="app-view" class="hidden">
+        <a class="cog-button floating-settings" href="./settings.html" title="Settings" aria-label="Settings">⚙</a>
+        <section class="hero admin-dock">
+          <div class="button-row">
+            <a class="button-link secondary" href="./admin.html">Dashboard</a><a class="button-link secondary" href="./customers.html">Customers</a><a class="button-link secondary" href="./orders.html">Orders</a><a class="button-link secondary" href="./receivables.html">Receivables</a><a class="button-link secondary" href="./deposits.html">Deposits</a>
+          </div>
+        </section>
+        <section class="panel order-identity-panel">
+          <span class="pill order-record-label">ORDER</span>
+          <div class="order-number-hero">
+            <span>Order number</span>
+            <h1 id="order-headline">Loading order…</h1>
+          </div>
+          <p class="muted" id="order-subline"></p>
+        </section>
+        <p id="order-load-status" class="muted"></p>
+        <section id="order-summary" class="panel order-record-summary"></section>
+        <section class="panel order-invoice-section">
+          <div class="order-invoice-heading"><div><span class="pill">Document</span><h2>Invoice</h2></div><div class="button-row"><button id="order-invoice-download" class="primary" type="button" disabled>Download PDF</button><button id="order-invoice-email" class="secondary hidden" type="button">Email</button><a id="order-invoice-whatsapp" class="button-link secondary hidden" href="#" target="_blank" rel="noopener">WhatsApp</a></div></div>
+          <p id="order-invoice-status" class="muted"></p>
+          <div id="order-invoice-preview" class="order-invoice-preview"><div class="muted" style="padding:20px;text-align:center">Preparing invoice…</div></div>
+        </section>
+        <section class="panel"><h2>Items</h2><div class="customer-table-wrap"><table class="customer-table"><thead><tr><th>Item</th><th style="text-align:right">Qty</th><th style="text-align:right">Unit price</th><th style="text-align:right">Line total</th></tr></thead><tbody id="order-item-rows"></tbody></table></div></section>
+        <section class="panel"><h2>Financial summary</h2><div id="order-money" class="order-record-money"></div></section>
+        <section class="panel"><h2>Payment history</h2><div id="order-payments" class="stack"></div></section>
+        <section class="panel"><h2>Stored documents</h2><p class="muted">Invoices, order confirmations, and payment-proof photos that were actually uploaded for this order.</p><div id="order-documents" class="stack"></div></section>
+        <section class="panel"><h2>Container and deposit history</h2><div id="order-deposits" class="stack"></div></section>
+        <section class="panel"><h2>Returns</h2><div id="order-returns" class="stack"></div></section>
+        <section class="panel">
+          <div class="order-correction-heading"><div><span class="pill">Append only</span><h2>Correction note</h2></div></div>
+          <p class="muted">Explain a correction or exception without changing the original financial record. Saved notes cannot be edited or deleted.</p>
+          <form id="order-correction-form" class="order-correction-form">
+            <select id="order-correction-category" aria-label="Correction category"><option value="correction">Correction</option><option value="exception">Exception</option><option value="customer_request">Customer request</option><option value="internal_note">Internal compliance note</option></select>
+            <textarea id="order-correction-note" rows="3" minlength="10" maxlength="2000" required placeholder="What was incorrect or exceptional, why, and what action was taken?"></textarea>
+            <div class="button-row"><button class="primary" type="submit">Append correction</button><span id="order-correction-status" class="muted"></span></div>
+          </form>
+        </section>
+        <section class="panel"><h2>Audit timeline</h2><p class="muted">Newest activity first. Built from retained order, payment, document, deposit, return, and correction records.</p><div id="order-audit-timeline" class="order-audit-timeline"></div></section>
+        <section class="panel"><h2>Record metadata</h2><dl id="order-metadata" class="order-record-metadata"></dl><p class="muted compliance-note">This is a retained operational and financial record. Corrections should be recorded through normal payment, return, cancellation, or order-management actions rather than deleting the record.</p></section>
+      </div>
+    </main>
+    <script type="module" src="./assets/orderApp.js?v=order-card-20260716-1"></script>
+  </body>
+</html>

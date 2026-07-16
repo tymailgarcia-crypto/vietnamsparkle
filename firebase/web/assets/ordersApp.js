@@ -14,7 +14,8 @@ const state = {
   status: "",
   dateFrom: "",
   dateTo: "",
-  sort: "delivery-desc"
+  sort: "delivery-desc",
+  view: localStorage.getItem("orders-view") || "cards"
 };
 
 function el(id) {
@@ -80,6 +81,7 @@ function sortRows(rows) {
 
 function renderRows() {
   const tbody = el("order-rows");
+  const cards = el("order-cards");
   const filtered = sortRows(
     state.orders.filter((order) => matchesSearch(order) && matchesStatus(order) && matchesDate(order))
   );
@@ -90,6 +92,7 @@ function renderRows() {
 
   if (!filtered.length) {
     tbody.innerHTML = `<tr><td colspan="7" class="muted" style="padding:20px;text-align:center">No matches. Adjust filters or clear them.</td></tr>`;
+    cards.innerHTML = `<div class="card muted directory-empty">No matches. Adjust filters or clear them.</div>`;
     return;
   }
 
@@ -112,10 +115,45 @@ function renderRows() {
         <td><span class="badge pay-${escapeHtml(payStatus)}">${escapeHtml(humanizePaymentStatus(payStatus))}</span></td>
         <td style="text-align:right">${escapeHtml(formatCurrency(order.subtotal))}</td>
         <td style="text-align:right">${escapeHtml(formatCurrency(order.balanceDue))}</td>
-        <td class="orders-id-cell">${formatOrderId(order.id)}</td>
+        <td class="orders-id-cell"><a href="./order.html?id=${encodeURIComponent(order.id)}">${formatOrderId(order.id)}</a></td>
       </tr>
     `;
   }).join("");
+
+  cards.innerHTML = filtered.map((order) => {
+    const customerHref = order.customerId ? `./customer.html?id=${encodeURIComponent(order.customerId)}` : "";
+    const phoneHref = phoneDialHref(order.phone);
+    const status = order.status || "unknown";
+    const payStatus = order.paymentStatus || "unpaid";
+    const customerName = escapeHtml(order.customerName || "Unknown");
+    return `
+      <article class="card directory-card order-directory-card">
+        <div class="directory-card-head">
+          <div>${customerHref ? `<a class="directory-card-title" href="${customerHref}">${customerName}</a>` : `<strong class="directory-card-title">${customerName}</strong>`}<div class="muted">Delivery ${escapeHtml(order.deliveryDate || "not scheduled")}</div></div>
+          <span class="badge status-${escapeHtml(status)}">${escapeHtml(status)}</span>
+        </div>
+        <div class="directory-card-details">
+          <div><span class="muted">Subtotal</span><strong>${escapeHtml(formatCurrency(order.subtotal))}</strong></div>
+          <div><span class="muted">Balance</span><strong>${escapeHtml(formatCurrency(order.balanceDue))}</strong></div>
+        </div>
+        <div class="directory-address">${escapeHtml(order.address || "No delivery address")}</div>
+        <div class="directory-order-meta"><span class="badge pay-${escapeHtml(payStatus)}">${escapeHtml(humanizePaymentStatus(payStatus))}</span><a href="./order.html?id=${encodeURIComponent(order.id)}"><code>${escapeHtml(order.id)}</code></a></div>
+        <div class="button-row directory-card-actions">
+          <a class="button-link primary" href="./order.html?id=${encodeURIComponent(order.id)}">Open order</a>
+          ${customerHref ? `<a class="button-link secondary" href="${customerHref}">Customer</a>` : ""}
+          ${phoneHref ? `<a class="button-link secondary" href="${phoneHref}">Call</a>` : ""}
+        </div>
+      </article>`;
+  }).join("");
+}
+
+function setView(view) {
+  state.view = view === "list" ? "list" : "cards";
+  localStorage.setItem("orders-view", state.view);
+  el("order-cards").classList.toggle("hidden", state.view !== "cards");
+  el("order-list").classList.toggle("hidden", state.view !== "list");
+  el("orders-cards-view").classList.toggle("active", state.view === "cards");
+  el("orders-list-view").classList.toggle("active", state.view === "list");
 }
 
 function formatOrderId(orderId) {
@@ -154,6 +192,9 @@ el("sort-select").addEventListener("change", (event) => {
   renderRows();
 });
 el("refresh-button").addEventListener("click", loadOrders);
+el("orders-cards-view").addEventListener("click", () => setView("cards"));
+el("orders-list-view").addEventListener("click", () => setView("list"));
+setView(state.view);
 
 onAuthStateChanged(auth, async (user) => {
   const authView = el("auth-view");
