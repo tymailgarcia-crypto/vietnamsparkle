@@ -19,11 +19,13 @@ import {
   collection,
   deleteDoc,
   doc,
+  getCountFromServer,
   getDoc,
   getDocs,
   getFirestore,
   connectFirestoreEmulator,
   limit,
+  onSnapshot,
   orderBy,
   query,
   runTransaction,
@@ -46,9 +48,34 @@ import {
   ref as storageRef,
   uploadBytes
 } from "https://www.gstatic.com/firebasejs/12.0.0/firebase-storage.js";
-import { firebaseWebConfig } from "./firebaseWebConfig.js";
+import {
+  initializeAppCheck,
+  ReCaptchaEnterpriseProvider,
+  ReCaptchaV3Provider
+} from "https://www.gstatic.com/firebasejs/12.0.0/firebase-app-check.js";
+import { appCheckProviderType, appCheckSiteKey, firebaseWebConfig } from "./firebaseWebConfig.js";
 
 const app = initializeApp(firebaseWebConfig);
+
+// App Check attestation — inert until a reCAPTCHA site key lands in
+// firebaseWebConfig.js (see the staged rollout plan there and in ROADMAP).
+// Must run before the first callable/Firestore request so those carry tokens.
+// Enforcement is a separate, later step on the Functions side; initializing
+// here changes nothing about who is allowed to do what.
+if (appCheckSiteKey) {
+  if (location.hostname === "localhost" || location.hostname === "127.0.0.1") {
+    // Emulator/local pages mint a debug token instead of running reCAPTCHA.
+    // The token prints to the browser console; register it in the console's
+    // App Check → Debug tokens page only if local calls must pass PROD checks.
+    self.FIREBASE_APPCHECK_DEBUG_TOKEN = true;
+  }
+  initializeAppCheck(app, {
+    provider: appCheckProviderType === "v3"
+      ? new ReCaptchaV3Provider(appCheckSiteKey)
+      : new ReCaptchaEnterpriseProvider(appCheckSiteKey),
+    isTokenAutoRefreshEnabled: true
+  });
+}
 const auth = getAuth(app);
 const db = getFirestore(app);
 const functions = getFunctions(app);
@@ -88,6 +115,7 @@ export {
   deleteDoc,
   doc,
   functions,
+  getCountFromServer,
   getDoc,
   getDocs,
   getDownloadURL,
@@ -97,6 +125,7 @@ export {
   isSignInWithEmailLink,
   limit,
   onAuthStateChanged,
+  onSnapshot,
   orderBy,
   query,
   runTransaction,
