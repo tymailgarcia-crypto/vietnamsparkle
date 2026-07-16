@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Duplicate customers · Vietnam Sparkle</title>
+    <link rel="stylesheet" href="./assets/styles.css">
+  </head>
+  <body>
+    <main class="page has-admin-dock">
+      <section id="auth-view" class="auth-shell hidden">
+        <div class="auth-card">
+          <span class="pill">Owner sign-in required</span>
+          <h2>Sign in to review duplicates</h2>
+          <div class="button-row">
+            <a class="button-link primary" href="./admin.html">Go to sign in</a>
+          </div>
+        </div>
+      </section>
+
+      <div id="app-view" class="hidden">
+        <a class="cog-button floating-settings" href="./settings.html" title="Settings" aria-label="Settings">⚙</a>
+        <section class="hero mobile-page-context"><h1>Duplicate customers</h1></section>
+        <section class="hero admin-dock">
+          <h1>Duplicate customers</h1>
+          <p class="muted">Records sharing a phone number or email, mostly left over from the Sheets import. Pick the record to keep; the others are archived with a pointer, never deleted, and their order history moves onto the survivor.</p>
+          <div class="button-row">
+            <a class="button-link secondary" href="./admin.html">Dashboard</a>
+            <a class="button-link secondary" href="./customers.html">Customers</a>
+            <a class="button-link secondary" href="./orders.html">Orders</a>
+            <a class="button-link secondary" href="./map.html">Map</a>
+            <a class="button-link secondary" href="./receivables.html">Receivables</a>
+            <a class="button-link secondary" href="./deposits.html">Deposits</a>
+            <a class="button-link secondary" href="./reports.html">Reconciliation</a>
+          </div>
+        </section>
+
+        <div id="dup-summary-tiles" class="stats-grid" style="margin-bottom:18px"></div>
+
+        <section class="panel">
+          <div class="toolbar">
+            <div>
+              <h2>Possible duplicates</h2>
+              <p class="muted" id="list-status"></p>
+            </div>
+            <div class="button-row">
+              <button class="secondary" id="refresh-button" type="button">Rescan</button>
+            </div>
+          </div>
+          <div id="group-list" class="dup-groups"></div>
+        </section>
+      </div>
+
+      <dialog id="merge-dialog" class="edit-dialog">
+        <form id="merge-form" class="form-grid" style="min-width:min(560px,92vw)">
+          <h3 class="span-2" style="margin:0">Merge duplicates</h3>
+          <div class="span-2" id="merge-summary"></div>
+          <div class="span-2 hidden" id="merge-uid-warning">
+            <div class="card dup-danger-card">
+              <strong>This merge attaches a sign-in account to the surviving record.</strong>
+              <p class="muted" style="margin:6px 0 10px">Whoever controls that sign-in gets this customer's profile and full order history. If the record carrying the sign-in came from an online order that merely <em>quoted</em> this phone number, the account could belong to someone else entirely. Only continue if you recognise the sign-in as this customer's.</p>
+              <label class="dup-confirm-label">
+                <input type="checkbox" id="merge-uid-ack">
+                I am certain this sign-in belongs to this customer
+              </label>
+            </div>
+          </div>
+          <div class="span-2 button-row">
+            <button class="primary" type="submit" id="merge-confirm-button">Merge</button>
+            <button class="ghost" type="button" id="merge-cancel-button">Cancel</button>
+            <span class="muted" id="merge-status"></span>
+          </div>
+        </form>
+      </dialog>
+    </main>
+
+    <script type="module" src="./assets/duplicatesApp.js"></script>
+  </body>
+</html>
