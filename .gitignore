@@ -1,6 +1,11 @@
 # Dependencies — reinstall with `pnpm install` in firebase/ and firebase/functions/
 node_modules/
 
+# Live agent coordination board (see AGENTS.md). Describes in-flight work on one
+# machine: it would conflict in every commit and means nothing in history. Both
+# agents share the working directory, so the file on disk is already shared state.
+.agent-status.md
+
 # Secrets. The Firebase *web* config (apiKey, appId) in
 # firebase/web/assets/firebaseWebConfig.js is deliberately NOT ignored — those
 # ship in the browser bundle and are public by design; Firestore rules and API
