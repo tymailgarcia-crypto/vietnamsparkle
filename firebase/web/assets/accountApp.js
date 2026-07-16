@@ -23,7 +23,7 @@ import {
   where,
   writeBatch
 } from "./firebaseClient.js";
-import { buildCustomerId, formatCurrency, mergeThresholds, productImageUrl, THRESHOLD_DEFAULTS, withSubmitLock } from "./shared.js";
+import { buildCustomerId, formatCurrency, mergeThresholds, normalizePhoneE164VN, productImageUrl, THRESHOLD_DEFAULTS, withSubmitLock } from "./shared.js";
 import { mapsApiKey } from "./firebaseWebConfig.js";
 
 let accountMapsPromise = null;
@@ -1058,12 +1058,20 @@ async function tryCompleteEmailLinkSignIn() {
 async function handleSaveProfile(event) {
   event.preventDefault();
   if (!state.customerRef || !state.user) return;
+  const phoneInput = el("profile-phone");
+  const rawPhone = phoneInput.value.trim();
+  const phoneE164 = rawPhone ? normalizePhoneE164VN(rawPhone) : null;
+  if (rawPhone && !phoneE164) {
+    setStatus(el("profile-status"), "Phone must include the country code, e.g. +84 905 123 456.", true);
+    return;
+  }
+  if (phoneE164) phoneInput.value = phoneE164;
   await withSubmitLock(event, async () => {
     try {
       setStatus(el("profile-status"), "Saving...");
       await setDoc(state.customerRef, {
         name: el("profile-name").value.trim(),
-        phone: el("profile-phone").value.trim() || null,
+        phone: phoneE164,
         area: el("profile-area").value.trim() || null,
         notes: el("profile-notes").value.trim() || null,
         email: state.user.email || null,
