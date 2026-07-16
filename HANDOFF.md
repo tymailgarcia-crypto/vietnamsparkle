@@ -40,7 +40,7 @@ Still uncommitted, by owner:
 
 ## Console steps not done yet
 
-- **Enable "Email link (passwordless sign-in)"** on the Email/Password provider. Until then `sendSignInLinkToEmail` throws `auth/operation-not-allowed` and customers cannot sign in by email. **Still outstanding since 2026-07-15 — this blocks customer sign-in entirely.**
+- ~~**Enable "Email link (passwordless sign-in)"**~~ **Done — Ty enabled it 2026-07-16, verified by probing `accounts:sendOobCode` (`EMAIL_SIGNIN`) against production: it issues a code instead of throwing `auth/operation-not-allowed`.** Customer email sign-in is live end-to-end (provider + the in-page confirmation flow + deployed JS).
 - **Restrict the Maps API key** to HTTP referrers of the hosting domain. It is public by design (ships in the bundle); the referrer restriction is the only thing protecting it.
 - Storage needs no console step — the bucket and rules are deployed and verified.
 
