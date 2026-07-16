@@ -407,7 +407,9 @@ Shipped 2026-07-07:
 Still open (future):
 - Denormalized `nameTokens: string[]` + `phoneNormalized` for server-side search when the list grows past a few thousand.
 - External search (Algolia / Typesense) if we ever pass 10k customers.
-- Bulk-merge legacy customer duplicates (same phone imported as multiple docs).
+- ~~Bulk-merge legacy customer duplicates (same phone imported as multiple docs).~~ Mostly resolved 2026-07-15: `mergeCustomers` handles the pairwise case from the UI, and new duplicates stop forming (see "Customer identity, merge, and auth"). Still no **bulk** sweep for duplicates already sitting in the database — they surface one at a time. Note that same-phone duplicates can no longer be *created*, since the canonical id is `CUS-<E164 digits>`; the historical ones came from the Sheets import predating that rule.
+
+Note (2026-07-15): the table layout described above is being reworked into a card/list toggle with per-customer insight chips — in progress, uncommitted at time of writing.
 
 ### Order lookup
 
@@ -428,23 +430,22 @@ Still open (future):
 
 Goal: at any moment the owner can see per-customer: how many glass crates / 19 L jugs / 20 L jugs are currently in the customer's possession, and the deposit money outstanding for each.
 
-- Already have `depositEvents` (charged/refunded/credited) and `returns` (with `container_type`, `qty`, `condition`).
-- Need a materialized per-customer view: `sum(deposit charged) - sum(deposit refunded/credited)` by container type, `sum(qty out) - sum(qty returned)` by container type.
-- Surface this on the Customers tab as "outstanding containers" + "deposit balance".
-- Flag customers holding containers > 60 days as follow-up.
+- Already have `depositEvents` (charged/refunded/credited/forfeited) and `returns` (with `containerType`, `qty`, `condition`).
+- ~~Need a materialized per-customer view~~ Shipped 2026-07-08 as `/deposits.html` — one row per customer × container type with net qty, deposit outstanding, oldest charged date, and days held. Computed client-side on load, not materialized into summary docs (see Scale bottlenecks).
+- ~~Surface this on the Customers tab~~ **In progress** — `buildCustomerInsights` in `customersApp.js` (uncommitted at time of writing) puts containers held, outstanding balance, and an attention chip on each customer card.
+- ~~Flag customers holding containers > 60 days~~ Shipped — configurable via `depositWarningDays` (30, yellow) and `depositForfeitDays` (60, red).
 
 Open decisions:
-- **What happens when the driver does not pick up empties on a delivery?** Current model: deposit stays outstanding, no auto-refund. The system can't infer "customer expected pickup but driver forgot" from raw data — we only know what was actually logged. Options:
-  1. **Explicit driver pickup log** — driver marks "collected N empties of type X" alongside "delivered". No log ⇒ no return event ⇒ deposit stays. Clean, requires the driver flow.
-  2. **Customer-side flag** — customer taps "please pick up my empties" on the next order; owner sees the flag next to that delivery on the today board.
-  3. **Reminders** — after N days holding a container, nudge the customer to schedule a return / next order. Non-invasive.
-- Decision blocker: we don't yet have a driver-side UI in the Firebase build (only rules-level access). Option 1 needs that first.
+- ~~**What happens when the driver does not pick up empties on a delivery?**~~ **Resolved 2026-07-08** — option 1 in all but name. The delivery dialog's **Containers returned this trip** section is the explicit pickup log: the driver enters returned qty per type and picks Credit next order / Refund cash now / **Owner will decide later**. No entry ⇒ no event ⇒ deposit stays outstanding, which is exactly the "can't infer what wasn't logged" position this entry argued for. It works without a driver-side UI because the owner or driver drives the same dialog. Ty raised the same concern in his notes on 2026-07-07; same answer.
+- Still worth doing from the options list: **customer-side "please pick up my empties" flag** on the next order, so the owner sees intent on the today board rather than guessing. Cheap, and the containers panel on `/account.html` is the natural home.
 
 ### Payment status & receivables
 
-- Every order already has `balance_due` + `payment_status`.
-- Missing: aged receivables view (0–7 days, 8–30 days, 30+ days).
-- Missing: reminder workflow (send WhatsApp / Zalo message from the dashboard with pre-filled body + total due).
+**This section was entirely stale — both "missing" items shipped 2026-07-08. Corrected 2026-07-15.**
+
+- Every order already has `balanceDue` + `paymentStatus`.
+- ~~Missing: aged receivables view~~ Shipped as `/receivables.html`. Not bucketed into 0–7 / 8–30 / 30+ bands — it's a flat list sorted by age with a red days-since cell past `receivableOverdueDays` (default 7, configurable). Bands would be a presentation change, not new data, if the owner ever wants them.
+- ~~Missing: reminder workflow~~ Shipped as **Chase via WhatsApp** on each receivables row — pre-fills the customer's name, balance, and delivery date into a `wa.me` link.
 
 ## Growth & retention
 
@@ -452,12 +453,14 @@ Open decisions:
 
 Goal: understand each customer's rhythm well enough to prompt a reorder before they run dry.
 
+**In progress 2026-07-15** — uncommitted at time of writing. `loadCustomerInsights` in `customerApp.js` (single profile) and `buildCustomerInsights` in `customersApp.js` (directory) already compute cycle length from the gaps between delivery dates, days since last order, lifetime spend from delivered orders, outstanding balance, and containers held — surfaced as metrics plus a one-line attention chip ("X needs collecting" / "N containers held D days"). This covers most of the first bullet below.
+
 - Per customer, compute:
-  - Average days between orders (cycle length).
-  - Most-purchased SKU + quantity per order.
-  - Predicted next-order date.
-- Show "due soon" list on the today board: customers whose predicted next order falls in the next 3 days.
-- Aggregate view: top 20 customers by revenue, by frequency, by deposit exposure.
+  - ~~Average days between orders (cycle length).~~ In progress — `cadence` from sorted delivery-date gaps.
+  - Most-purchased SKU + quantity per order. Not started — needs `orderItems` joined per customer.
+  - Predicted next-order date. Not started — `lastOrderDate + cadence` is the obvious first cut, and both halves now exist.
+- Show "due soon" list on the today board: customers whose predicted next order falls in the next 3 days. Not started, and the highest-value piece — it's the only one that prompts an action rather than describing the past.
+- Aggregate view: top 20 customers by revenue, by frequency, by deposit exposure. Not started; overlaps the finance dashboard under "From Ty's notes".
 
 ### Recurring / subscription orders
 
@@ -495,8 +498,8 @@ Goal: for a new customer, form is fast and clear; for a returning customer, form
   - Trust cues: "already delivered X orders this month" or similar.
 
 Shipped 2026-07-07:
-- **Phone field now digit-validated.** HTML `pattern="(?=.*\d)[+0-9 ()\-]{6,40}"` on `type=tel` inputs in `/index.html` and `/account.html`, mirrored in `firestore.rules` (`isPublicOrderShape` regex on `d.phone`). A scripted client can't bypass it either.
-- **Contact channels visible in the hero.** WhatsApp / Zalo / Facebook buttons at the top of `/index.html`, always one tap away. URLs hardcoded to placeholders for now — change them once at handover.
+- **Phone field now digit-validated.** HTML `pattern="(?=.*\d)[+0-9 ()\-]{6,40}"` on `type=tel` inputs in `/index.html` and `/account.html`. A scripted client can't bypass it either — though **not** via `isPublicOrderShape` as this entry originally said: that rules helper was deleted on 2026-07-13 when public orders moved behind `submitPublicOrder`, which re-validates phone server-side with the same regex. Corrected 2026-07-15.
+- **Contact channels visible in the hero.** WhatsApp / Zalo / Facebook buttons at the top of `/index.html`, always one tap away. ~~URLs hardcoded to placeholders for now — change them once at handover.~~ Superseded 2026-07-08: they render from `settings/business.contact`, editable in `/settings.html`. No code change needed at handover.
 
 Shipped 2026-07-07 (part 2):
 - **Sticky totals bar on mobile** — under 760 px, the totals panel sticks to the bottom of the viewport with a compact 3-column layout so the running subtotal, deposit, and due amount are always visible while scrolling the catalog. Desktop unchanged.
@@ -607,6 +610,7 @@ Third-party review flagged nine correctness/security issues + four scale bottlen
 ### Scale bottlenecks — parked until we hit them
 
 - **Full-collection loads.** `/orders.html`, `/customers.html`, `/deposits.html`, `/receivables.html` load whole collections client-side. Fine to ~5k orders / ~2k customers on modern connections. Fix later with indexed pagination (`orderBy(deliveryDate).limit(50)` + `startAfter` cursor) and a normalized `phoneNormalized` field on customers for server-side phone search.
+  - **Getting heavier, not lighter (noted 2026-07-15).** The in-progress customer-insights work makes `/customers.html` load `customers` **+ all `orders` + all `depositEvents`** on every visit, because per-customer cadence and container balances are computed client-side from raw events. That is three full collections to render one directory page, and it grows with order history rather than customer count. It is the right call for now — correctness first, and the numbers are small — but this page will be the first to hurt, and it moves the summary-doc item below from "someday" to "the fix when it does".
 - **Deposit / receivables recomputed every load.** Summary docs `depositBalances/{customerId_containerType}` and `orderReceivablesSummary/aggregate` updated by Cloud Function triggers on `depositEvents` / `payments` writes. Removes the O(all-events) client-side aggregation.
 - **Browser-side geocoding.** Currently the map page geocodes missing addresses on load and caches on the customer doc. Fine at current volume. Long-term: Cloud Function trigger on customer writes that geocodes server-side. Also insulates the Maps API key from client exposure — right now the domain-restricted key sits in `firebaseWebConfig.js` (public JS). Domain restriction limits abuse but doesn't zero it.
 
