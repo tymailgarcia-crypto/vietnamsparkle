@@ -39,18 +39,27 @@ import {
   getFunctions,
   httpsCallable
 } from "https://www.gstatic.com/firebasejs/12.0.0/firebase-functions.js";
+import {
+  connectStorageEmulator,
+  getDownloadURL,
+  getStorage,
+  ref as storageRef,
+  uploadBytes
+} from "https://www.gstatic.com/firebasejs/12.0.0/firebase-storage.js";
 import { firebaseWebConfig } from "./firebaseWebConfig.js";
 
 const app = initializeApp(firebaseWebConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 const functions = getFunctions(app);
+const storage = getStorage(app);
 const isEmulatorMode = location.hostname === "localhost" || location.hostname === "127.0.0.1";
 
 if (isEmulatorMode) {
   connectAuthEmulator(auth, "http://127.0.0.1:9099", { disableWarnings: true });
   connectFirestoreEmulator(db, "127.0.0.1", 8080);
   connectFunctionsEmulator(functions, "127.0.0.1", 5001);
+  connectStorageEmulator(storage, "127.0.0.1", 9199);
 }
 
 async function signInWithGoogleForEnvironment() {
@@ -81,6 +90,7 @@ export {
   functions,
   getDoc,
   getDocs,
+  getDownloadURL,
   GoogleAuthProvider,
   httpsCallable,
   isEmulatorMode,
@@ -100,7 +110,10 @@ export {
   signInWithPopup,
   signOut,
   startAfter,
+  storage,
+  storageRef,
   updateDoc,
+  uploadBytes,
   where,
   writeBatch
 };

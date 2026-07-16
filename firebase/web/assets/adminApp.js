@@ -44,6 +44,11 @@ import {
   buildEmailShare,
   buildWhatsAppShare
 } from "./invoice.js";
+import {
+  ensureInvoicePdfUploaded,
+  uploadPaymentProof,
+  validateProofFile
+} from "./storageUploads.js";
 import { mapsApiKey } from "./firebaseWebConfig.js";
 
 const mergeCustomersFn = httpsCallable(functions, "mergeCustomers");
@@ -516,6 +521,23 @@ function mapDirectionsHref(address) {
   return `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(trimmed)}`;
 }
 
+// Proof photos attached to this order's payments. Reads state.payments, which
+// refreshDashboard already loads per order — no extra fetch. proofUrl is a
+// tokenized Storage URL, so the <img> loads without a signed-in Storage read.
+function renderProofThumbs(order) {
+  const proofs = state.payments.filter((p) => p.orderId === order.id && p.proofUrl);
+  if (!proofs.length) return "";
+  return `
+    <div class="proof-thumbs">
+      ${proofs.map((p) => `
+        <a href="${escapeHtml(p.proofUrl)}" target="_blank" rel="noopener" title="Payment proof — ${escapeHtml(formatCurrency(p.amount))}">
+          <img src="${escapeHtml(p.proofUrl)}" alt="Payment proof for ${escapeHtml(order.id)}" loading="lazy">
+        </a>
+      `).join("")}
+    </div>
+  `;
+}
+
 function renderOrderCompact(order) {
   const displayName = order.customerName || "Unknown customer";
   const nameCell = order.customerId
@@ -542,6 +564,7 @@ function renderOrderCompact(order) {
       <div class="where">${orderIdLink}</div>
       ${address ? `<div class="where">${escapeHtml(address)}</div>` : ""}
       <div class="where">${escapeHtml(driver)} · ${formatCurrency(order.subtotal + order.depositTotal)}</div>
+      ${renderProofThumbs(order)}
       ${cancellationBanner}
       <div class="compact-actions">
         ${cancellationActions}
@@ -1090,6 +1113,10 @@ async function openDeliveryPaymentDialog(order) {
   document.getElementById("delivery-payment-amount").value = Number(order.balanceDue || 0);
   document.getElementById("delivery-payment-method").value = "cash";
   document.getElementById("delivery-payment-reference").value = "";
+  // A file input keeps its selection across dialog opens — without this the
+  // next order's payment silently inherits the previous order's proof photo.
+  const proofInput = document.getElementById("delivery-payment-proof");
+  if (proofInput) proofInput.value = "";
   document.getElementById("delivery-deferral-reason").value = "customer_said_next_time";
   document.getElementById("delivery-follow-up").value = daysFromToday(state.thresholds.followUpDays);
   document.getElementById("delivery-deferral-notes").value = "";
@@ -1148,11 +1175,26 @@ async function saveDeliveryPayment(event) {
       }
       return;
     }
+    // The proof input only lives in the collected branch — a deferred payment
+    // moved no money, so there is nothing to photograph.
+    const proofInput = document.getElementById("delivery-payment-proof");
+    const proofFile = proofInput && proofInput.files && proofInput.files[0] ? proofInput.files[0] : null;
+    if (proofFile) {
+      const problem = validateProofFile(proofFile);
+      if (problem) {
+        if (statusNode) {
+          statusNode.textContent = problem;
+          statusNode.style.color = "var(--danger, #b3261e)";
+        }
+        return;
+      }
+    }
     paymentSnapshot = {
       collected: true,
       amount,
       method: document.getElementById("delivery-payment-method").value || "cash",
-      reference: document.getElementById("delivery-payment-reference").value.trim() || null
+      reference: document.getElementById("delivery-payment-reference").value.trim() || null,
+      proofFile
     };
   } else {
     paymentSnapshot = {
@@ -1195,6 +1237,27 @@ async function saveDeliveryPayment(event) {
         statusNode.textContent = "Saving...";
         statusNode.style.color = "";
       }
+      // Upload the proof before the transaction opens, for two reasons: an
+      // upload inside the closure would re-run on every Firestore retry and
+      // leave orphan copies, and a failed upload must abort the whole save
+      // rather than record a payment whose proof the owner believes attached.
+      let proofDocumentId = null;
+      let proofUrl = null;
+      if (paymentSnapshot.collected && paymentSnapshot.proofFile) {
+        if (statusNode) statusNode.textContent = "Uploading proof photo…";
+        const proof = await uploadPaymentProof({
+          orderId,
+          paymentId,
+          file: paymentSnapshot.proofFile
+        });
+        proofDocumentId = proof.documentId;
+        // Denormalized alongside proofDocumentId so the today board can render a
+        // thumbnail from state.payments, which it already loads. The alternative
+        // is a documents lookup per payment on every board render, and that page
+        // is already the one ROADMAP flags as first to hurt on load volume.
+        proofUrl = proof.downloadUrl;
+        if (statusNode) statusNode.textContent = "Saving...";
+      }
       // The transaction re-reads the order every retry, so newAmountPaid is
       // always computed against the freshest server value — a concurrent tab
       // recording a payment won't be silently overwritten.
@@ -1218,7 +1281,8 @@ async function saveDeliveryPayment(event) {
             amount: paymentSnapshot.amount,
             reference: paymentSnapshot.reference,
             receivedBy,
-            proofDocumentId: null,
+            proofDocumentId,
+            proofUrl,
             notes: "Collected at delivery",
             deferred: false,
             createdAt: now
@@ -1242,6 +1306,7 @@ async function saveDeliveryPayment(event) {
             reference: null,
             receivedBy,
             proofDocumentId: null,
+            proofUrl: null,
             notes: paymentSnapshot.notes,
             deferred: true,
             deferralReason: paymentSnapshot.reason,
@@ -1343,17 +1408,12 @@ async function openInvoiceDialog(order) {
     downloadBtn.disabled = false;
     downloadBtn.dataset.orderId = order.id;
 
+    // Both share buttons upload on click rather than here — previewing an
+    // invoice shouldn't push a PDF into Storage. They're shown/hidden purely on
+    // whether the customer has an email / phone to send to.
     const emailBtn = document.getElementById("invoice-email-button");
-    const mailto = buildEmailShare(ctx);
-    if (emailBtn) emailBtn.style.display = mailto ? "" : "none";
-
-    const share = buildWhatsAppShare(ctx);
-    if (share && whatsappBtn) {
-      whatsappBtn.href = share;
-      whatsappBtn.style.display = "";
-    } else if (whatsappBtn) {
-      whatsappBtn.style.display = "none";
-    }
+    if (emailBtn) emailBtn.style.display = buildEmailShare(ctx) ? "" : "none";
+    if (whatsappBtn) whatsappBtn.style.display = buildWhatsAppShare(ctx) ? "" : "none";
   } catch (error) {
     slot.innerHTML = `<div style="padding:24px;color:var(--danger)">Could not load invoice: ${escapeHtml(error.message || error)}</div>`;
   }
@@ -1377,23 +1437,53 @@ async function emailInvoice() {
   const ctx = invoiceState.currentCtx;
   const statusNode = document.getElementById("invoice-status");
   if (!ctx) return;
-  const mailto = buildEmailShare(ctx);
-  if (!mailto) {
+  if (!buildEmailShare(ctx)) {
     if (statusNode) statusNode.textContent = "No customer email on file.";
     return;
   }
-  try {
-    if (statusNode) statusNode.textContent = "Preparing PDF + opening email…";
-    const doc = await generateInvoicePdf(ctx);
-    doc.save(`invoice-${ctx.invoiceNumber}.pdf`);
-    // Small delay so the browser can start the download before the mailto:
-    // handler grabs focus — otherwise some browsers swallow the download.
-    await new Promise((r) => setTimeout(r, 400));
-    window.location.href = mailto;
-    if (statusNode) statusNode.textContent = "PDF downloaded. Attach it in the email compose window that just opened.";
-  } catch (error) {
-    if (statusNode) statusNode.textContent = `Email error: ${error.message || error}`;
+  await withSubmitLock(document.getElementById("invoice-email-button"), async () => {
+    try {
+      if (statusNode) statusNode.textContent = "Uploading PDF…";
+      const { downloadUrl } = await ensureInvoicePdfUploaded(ctx);
+      window.location.href = buildEmailShare(ctx, downloadUrl);
+      if (statusNode) statusNode.textContent = "Email opened with a link to the PDF. No attachment needed.";
+    } catch (error) {
+      if (statusNode) statusNode.textContent = `Email error: ${error.message || error}`;
+    }
+  }, { busyLabel: "Uploading…" });
+}
+
+async function whatsappInvoice() {
+  const ctx = invoiceState.currentCtx;
+  const statusNode = document.getElementById("invoice-status");
+  if (!ctx) return;
+  if (!buildWhatsAppShare(ctx)) {
+    if (statusNode) statusNode.textContent = "No customer phone on file.";
+    return;
   }
+  // The tab has to be opened synchronously inside the click handler — opening
+  // it after the upload await makes it a popup and the browser blocks it.
+  const tab = window.open("", "_blank", "noopener");
+  await withSubmitLock(document.getElementById("invoice-whatsapp-button"), async () => {
+    try {
+      if (statusNode) statusNode.textContent = "Uploading PDF…";
+      const { downloadUrl } = await ensureInvoicePdfUploaded(ctx);
+      const share = buildWhatsAppShare(ctx, downloadUrl);
+      if (tab) {
+        tab.location.href = share;
+        if (statusNode) statusNode.textContent = "WhatsApp opened with a link to the PDF.";
+      } else {
+        // Popup blocked. The upload already succeeded, so hand over the link
+        // rather than making the owner click through the whole flow again.
+        if (statusNode) {
+          statusNode.innerHTML = `Pop-up blocked — <a href="${escapeHtml(share)}" target="_blank" rel="noopener">open WhatsApp</a>.`;
+        }
+      }
+    } catch (error) {
+      if (tab) tab.close();
+      if (statusNode) statusNode.textContent = `WhatsApp error: ${error.message || error}`;
+    }
+  }, { busyLabel: "Uploading…" });
 }
 
 async function loadCollection(name, filters = []) {
@@ -1499,6 +1589,8 @@ const invoiceDownloadBtn = document.getElementById("invoice-download-button");
 if (invoiceDownloadBtn) invoiceDownloadBtn.addEventListener("click", downloadInvoice);
 const invoiceEmailBtn = document.getElementById("invoice-email-button");
 if (invoiceEmailBtn) invoiceEmailBtn.addEventListener("click", emailInvoice);
+const invoiceWhatsappBtn = document.getElementById("invoice-whatsapp-button");
+if (invoiceWhatsappBtn) invoiceWhatsappBtn.addEventListener("click", whatsappInvoice);
 
 onAuthStateChanged(auth, async (user) => {
   const authView = document.getElementById("auth-view");

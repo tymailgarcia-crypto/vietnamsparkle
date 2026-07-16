@@ -89,6 +89,11 @@
               Reference (optional)
               <input id="delivery-payment-reference" type="text" maxlength="199" placeholder="Bank reference or note">
             </label>
+            <label class="span-2">
+              Proof photo (optional)
+              <input id="delivery-payment-proof" type="file" accept="image/*" capture="environment">
+              <span class="muted" id="delivery-payment-proof-hint">Transfer screenshot or signed receipt. Max 10 MB.</span>
+            </label>
           </div>
 
           <div id="delivery-deferred-fields" class="span-2 form-grid hidden">
@@ -155,7 +160,7 @@
         <div class="button-row" style="margin-bottom:10px;flex-wrap:wrap;gap:8px">
           <button class="primary" type="button" id="invoice-download-button">Download PDF</button>
           <button class="secondary" type="button" id="invoice-email-button" style="display:none">Send via email</button>
-          <a class="button-link secondary" id="invoice-whatsapp-button" href="#" target="_blank" rel="noopener" style="display:none">Send via WhatsApp</a>
+          <button class="secondary" type="button" id="invoice-whatsapp-button" style="display:none">Send via WhatsApp</button>
           <span class="muted" id="invoice-status"></span>
         </div>
         <div id="invoice-preview-slot" style="max-height:70vh;overflow-y:auto;border:1px solid var(--line);border-radius:12px;background:#fff"></div>

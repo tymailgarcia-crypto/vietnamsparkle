@@ -1,0 +1,72 @@
+rules_version = '2';
+
+// Cloud Storage rules. Bucket: vietnamsparkle-36dfe.firebasestorage.app,
+// created 2026-07-16 in asia-east2 to match the Firestore region.
+//
+// READ THIS BEFORE RELAXING ANY read RULE.
+//
+// These rules govern the SDK path only. `getDownloadURL()` mints a URL of the
+// form .../o/<path>?alt=media&token=<uuid>, and that URL is readable by anyone
+// who holds it WITHOUT authentication — it bypasses these rules entirely. That
+// is deliberate and it is what makes invoice delivery work: the customer opens
+// a WhatsApp/email link with no account and no sign-in.
+//
+// The consequence: for anything under invoices/, the token IS the access
+// control, and every read rule below is only defence-in-depth against someone
+// guessing a *path*. Never put anything in this bucket that would be unsafe in
+// the hands of whoever the owner forwarded the link to. Revoking access means
+// deleting the object or rotating its token in the console — tightening a rule
+// here does nothing to a URL already sent.
+service firebase.storage {
+  match /b/{bucket}/o {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    // Same hazard as firestore.rules: customer tokens omit `role` entirely, so
+    // a bare request.auth.token.role raises an evaluation error rather than
+    // returning null. .get() returns the default cleanly. See the long comment
+    // at the top of firestore.rules.
+    function isOwner() {
+      return isSignedIn() && request.auth.token.get('role', null) == 'owner';
+    }
+
+    // Generated invoice/order-confirmation PDFs, one folder per order.
+    // Written by the owner from the invoice dialog; read by customers via the
+    // tokenized download URL (see the header comment — the rule below does not
+    // gate that path).
+    match /invoices/{orderId}/{fileName} {
+      allow read: if isOwner();
+      allow write: if isOwner()
+        && request.resource.size < 5 * 1024 * 1024
+        && request.resource.contentType == 'application/pdf';
+      allow delete: if isOwner();
+    }
+
+    // Payment-proof photos (bank-transfer screenshots, signed receipts).
+    //
+    // Owner-only, deliberately, even though payments/* in firestore.rules lets a
+    // driver create a payment on an order assigned to them. Every proof upload
+    // also writes a documents/{id} row, and /documents is owner-only — so
+    // granting a driver write here would let the file land and then fail the
+    // Firestore write, leaving an orphan blob and a payment with no proof. The
+    // two must be widened together.
+    //
+    // Nothing is lost today: the delivery dialog lives on admin.html, which is
+    // behind requireRole(user, 'owner'), so no driver can reach this path.
+    // When the driver-side view arrives (ROADMAP → Parking lot), widen BOTH
+    // this rule and /documents, and note that Storage rules cannot get() the
+    // parent order to re-check assignment the way payments/* does.
+    match /payment-proofs/{orderId}/{fileName} {
+      allow read: if isOwner();
+      allow write: if isOwner()
+        && request.resource.size < 10 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+      allow delete: if isOwner();
+    }
+
+    // Default deny. Anything not matched above has no client path in or out.
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

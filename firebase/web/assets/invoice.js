@@ -426,11 +426,23 @@ export async function generateInvoicePdf(ctx) {
   return doc;
 }
 
-// mailto: cannot attach files. The workflow this returns is a mailto: URL
-// with subject + body pre-filled; the caller downloads the PDF locally first
-// and the owner attaches it to the email in their client. Best we can do
-// without a mail service. Returns null when the customer has no email on file.
-export function buildEmailShare(ctx) {
+// mailto: cannot attach a file, and neither can a wa.me link — no amount of
+// encoding gets a PDF into either. Both share builders therefore carry a LINK
+// to the PDF instead, uploaded to Storage by the caller (see
+// storageUploads.js::uploadInvoicePdf) and passed in here as pdfUrl.
+//
+// pdfUrl is optional. Without it these still produce a useful message, and the
+// body falls back to the old "the PDF is downloading, attach it yourself"
+// instruction — that path is what a caller that hasn't been wired for upload
+// still gets, not a workflow worth choosing.
+function pdfLines(ctx, pdfUrl) {
+  if (pdfUrl) {
+    return [`Your ${ctx.isDraft ? "order confirmation" : "invoice"} (PDF): ${pdfUrl}`];
+  }
+  return [`The ${ctx.isDraft ? "order confirmation" : "invoice"} PDF is downloading to your device — please attach it before sending.`];
+}
+
+export function buildEmailShare(ctx, pdfUrl) {
   const order = ctx.order || {};
   const to = order.email || (ctx.customer && ctx.customer.email) || "";
   if (!to) return null;
@@ -440,7 +452,7 @@ export function buildEmailShare(ctx) {
   const lines = [
     `Hi ${order.customerName || ""},`,
     "",
-    `Please find your ${ctx.isDraft ? "order confirmation" : "invoice"} attached (PDF is downloading to your device — please attach it to this email before sending).`,
+    ...pdfLines(ctx, pdfUrl),
     "",
     `Order: ${order.id}`,
     `Delivery: ${order.deliveryDate || "TBD"}${order.deliveryWindow ? " (" + order.deliveryWindow + ")" : ""}`,
@@ -457,12 +469,13 @@ export function buildEmailShare(ctx) {
   return `mailto:${encodeURIComponent(to)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
 }
 
-export function buildWhatsAppShare(ctx) {
+export function buildWhatsAppShare(ctx, pdfUrl) {
   const order = ctx.order || {};
   const phone = String(order.phone || "").replace(/[^0-9+]/g, "").replace(/^\+/, "");
   if (!phone) return null;
   const lines = [
     `Hi ${order.customerName || ""}, here is your ${ctx.isDraft ? "order confirmation" : "invoice"} for ${order.id}.`,
+    ...(pdfUrl ? pdfLines(ctx, pdfUrl) : []),
     `Delivery: ${order.deliveryDate || "TBD"}${order.deliveryWindow ? " (" + order.deliveryWindow + ")" : ""}`,
     `Total: ${formatVnd(ctx.total)}`,
     ctx.balanceDue > 0 ? `Balance due: ${formatVnd(ctx.balanceDue)}` : `Paid in full — thank you!`,
@@ -470,4 +483,10 @@ export function buildWhatsAppShare(ctx) {
   ].filter(Boolean);
   const text = lines.join("\n");
   return `https://wa.me/${phone}?text=${encodeURIComponent(text)}`;
+}
+
+// jsPDF can hand back a Blob directly; generateInvoicePdf returns the doc so
+// callers can both save() it locally and upload the same bytes.
+export function invoicePdfBlob(pdfDoc) {
+  return pdfDoc.output("blob");
 }

@@ -22,6 +22,11 @@ import {
   buildEmailShare,
   buildWhatsAppShare
 } from "./invoice.js";
+import {
+  ensureInvoicePdfUploaded,
+  uploadPaymentProof,
+  validateProofFile
+} from "./storageUploads.js";
 
 const state = {
   rows: [],
@@ -242,6 +247,10 @@ function openRecordPaymentDialog(row) {
   el("record-payment-amount").value = Number(row.balanceDue || 0);
   el("record-payment-method").value = "cash";
   el("record-payment-reference").value = "";
+  // A file input keeps its selection across dialog opens — without this the
+  // next row's payment silently inherits the previous row's proof photo.
+  const proofInput = el("record-payment-proof");
+  if (proofInput) proofInput.value = "";
   const statusNode = el("record-payment-status");
   if (statusNode) {
     statusNode.textContent = "";
@@ -264,6 +273,16 @@ async function saveRecordPayment(event) {
     statusNode.style.color = "var(--danger, #b3261e)";
     return;
   }
+  const proofInput = el("record-payment-proof");
+  const proofFile = proofInput && proofInput.files && proofInput.files[0] ? proofInput.files[0] : null;
+  if (proofFile) {
+    const problem = validateProofFile(proofFile);
+    if (problem) {
+      statusNode.textContent = problem;
+      statusNode.style.color = "var(--danger, #b3261e)";
+      return;
+    }
+  }
   await withSubmitLock(event, async () => {
     try {
       statusNode.textContent = "Saving...";
@@ -271,6 +290,21 @@ async function saveRecordPayment(event) {
       const now = new Date().toISOString();
       const today = todayKey();
       const paymentId = buildPaymentId();
+      // Upload before the transaction opens: an upload inside the closure would
+      // re-run on every Firestore retry and leave orphan copies, and a failed
+      // upload must abort the save rather than record a payment whose proof the
+      // owner believes attached. Same shape as adminApp.js::saveDeliveryPayment.
+      let proofDocumentId = null;
+      let proofUrl = null;
+      if (proofFile) {
+        statusNode.textContent = "Uploading proof photo…";
+        const proof = await uploadPaymentProof({ orderId, paymentId, file: proofFile });
+        proofDocumentId = proof.documentId;
+        // Denormalized so the today board renders a thumbnail without a
+        // documents lookup per payment. See adminApp.js::saveDeliveryPayment.
+        proofUrl = proof.downloadUrl;
+        statusNode.textContent = "Saving...";
+      }
       // Transaction re-reads the order every retry so newAmountPaid is
       // computed against the fresh server value. Two owner tabs recording
       // payments on the same order can't silently overwrite each other.
@@ -291,7 +325,8 @@ async function saveRecordPayment(event) {
           amount,
           reference,
           receivedBy: auth.currentUser ? auth.currentUser.email : "owner",
-          proofDocumentId: null,
+          proofDocumentId,
+          proofUrl,
           notes: "Recorded from receivables page",
           deferred: false,
           createdAt: now
@@ -347,14 +382,11 @@ async function openInvoiceDialog(row) {
     await attachQrToPreview(ctx, slot);
     invoiceState.currentCtx = ctx;
     downloadBtn.disabled = false;
+    // Upload happens on share-click, not here — previewing shouldn't push a PDF
+    // into Storage. Mirrors openInvoiceDialog in adminApp.js.
     const emailBtn = el("invoice-email-button");
-    const mailto = buildEmailShare(ctx);
-    if (emailBtn) emailBtn.style.display = mailto ? "" : "none";
-    const share = buildWhatsAppShare(ctx);
-    if (share && whatsappBtn) {
-      whatsappBtn.href = share;
-      whatsappBtn.style.display = "";
-    }
+    if (emailBtn) emailBtn.style.display = buildEmailShare(ctx) ? "" : "none";
+    if (whatsappBtn) whatsappBtn.style.display = buildWhatsAppShare(ctx) ? "" : "none";
   } catch (error) {
     slot.innerHTML = `<div style="padding:24px;color:var(--danger)">Could not load invoice: ${escapeHtml(error.message || error)}</div>`;
   }
@@ -378,21 +410,49 @@ async function emailInvoice() {
   const ctx = invoiceState.currentCtx;
   const statusNode = el("invoice-status");
   if (!ctx) return;
-  const mailto = buildEmailShare(ctx);
-  if (!mailto) {
+  if (!buildEmailShare(ctx)) {
     if (statusNode) statusNode.textContent = "No customer email on file.";
     return;
   }
-  try {
-    if (statusNode) statusNode.textContent = "Preparing PDF + opening email…";
-    const pdf = await generateInvoicePdf(ctx);
-    pdf.save(`invoice-${ctx.invoiceNumber}.pdf`);
-    await new Promise((r) => setTimeout(r, 400));
-    window.location.href = mailto;
-    if (statusNode) statusNode.textContent = "PDF downloaded. Attach it in the email compose window that just opened.";
-  } catch (error) {
-    if (statusNode) statusNode.textContent = `Email error: ${error.message || error}`;
+  await withSubmitLock(el("invoice-email-button"), async () => {
+    try {
+      if (statusNode) statusNode.textContent = "Uploading PDF…";
+      const { downloadUrl } = await ensureInvoicePdfUploaded(ctx);
+      window.location.href = buildEmailShare(ctx, downloadUrl);
+      if (statusNode) statusNode.textContent = "Email opened with a link to the PDF. No attachment needed.";
+    } catch (error) {
+      if (statusNode) statusNode.textContent = `Email error: ${error.message || error}`;
+    }
+  }, { busyLabel: "Uploading…" });
+}
+
+async function whatsappInvoice() {
+  const ctx = invoiceState.currentCtx;
+  const statusNode = el("invoice-status");
+  if (!ctx) return;
+  if (!buildWhatsAppShare(ctx)) {
+    if (statusNode) statusNode.textContent = "No customer phone on file.";
+    return;
   }
+  // Opened synchronously — a window.open after the upload await is a popup and
+  // gets blocked. Same reasoning as adminApp.js::whatsappInvoice.
+  const tab = window.open("", "_blank", "noopener");
+  await withSubmitLock(el("invoice-whatsapp-button"), async () => {
+    try {
+      if (statusNode) statusNode.textContent = "Uploading PDF…";
+      const { downloadUrl } = await ensureInvoicePdfUploaded(ctx);
+      const share = buildWhatsAppShare(ctx, downloadUrl);
+      if (tab) {
+        tab.location.href = share;
+        if (statusNode) statusNode.textContent = "WhatsApp opened with a link to the PDF.";
+      } else if (statusNode) {
+        statusNode.innerHTML = `Pop-up blocked — <a href="${escapeHtml(share)}" target="_blank" rel="noopener">open WhatsApp</a>.`;
+      }
+    } catch (error) {
+      if (tab) tab.close();
+      if (statusNode) statusNode.textContent = `WhatsApp error: ${error.message || error}`;
+    }
+  }, { busyLabel: "Uploading…" });
 }
 
 el("search-input").addEventListener("input", (event) => {
@@ -410,6 +470,8 @@ const invoiceDownloadBtn = el("invoice-download-button");
 if (invoiceDownloadBtn) invoiceDownloadBtn.addEventListener("click", downloadInvoice);
 const invoiceEmailBtn = el("invoice-email-button");
 if (invoiceEmailBtn) invoiceEmailBtn.addEventListener("click", emailInvoice);
+const invoiceWhatsappBtn = el("invoice-whatsapp-button");
+if (invoiceWhatsappBtn) invoiceWhatsappBtn.addEventListener("click", whatsappInvoice);
 
 onAuthStateChanged(auth, async (user) => {
   const authView = el("auth-view");

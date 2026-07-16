@@ -1229,6 +1229,22 @@ textarea:focus {
   font-size: 13px;
 }
 
+.proof-thumbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.proof-thumbs img {
+  display: block;
+  width: 40px;
+  height: 40px;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+}
+
 .compact-order .compact-actions {
   display: flex;
   gap: 6px;
