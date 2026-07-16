@@ -13,22 +13,20 @@ service cloud.firestore {
     // default cleanly instead. Same reasoning as isCustomer() below, which
     // already guards for this.
     function isOwner() {
-      return isSignedIn() && request.auth.token.get('role', null) == 'owner';
+      return isSignedIn() && request.auth.token.get('role', '') == 'owner';
     }
     function isDriver() {
-      return isSignedIn() && request.auth.token.get('role', null) == 'driver';
+      return isSignedIn() && request.auth.token.get('role', '') == 'driver';
     }
     function myDriverId() {
       return request.auth.token.get('driverId', null);
     }
     function isCustomer() {
-      // A signed-in user with no owner/driver role. Custom-claim tokens omit
-      // the `role` key entirely for customer accounts, so we test both
-      // "key absent" and "key explicitly null" — v2 rules don't treat those
-      // as equivalent, and `role == null` alone silently denies every read
-      // for tokens that never had the claim set.
+      // Customer tokens omit `role`; owner/driver tokens store a string.
+      // Checking key presence avoids treating another explicit role value as
+      // a customer and avoids bare access on the normal role-less token.
       return isSignedIn()
-        && (!('role' in request.auth.token) || request.auth.token.role == null);
+        && !request.auth.token.keys().hasAny(['role']);
     }
     function myUid() {
       return request.auth.uid;
@@ -162,12 +160,13 @@ service cloud.firestore {
       // hasVerifiedEmail() is load-bearing: without it this branch hands the
       // profile to anyone who registers with the victim's address.
       allow read: if isOwner() || isDriver()
-        || (isCustomer() && resource.data.authUid == myUid())
+        || (isCustomer() && resource.data.get('authUid', '') == myUid())
         || (isCustomer()
             && hasVerifiedEmail()
-            && resource.data.authUid == null
-            && resource.data.email is string
-            && resource.data.email == request.auth.token.email);
+            // Missing authUid is deliberately not equivalent to explicit null.
+            && resource.data.keys().hasAll(['authUid'])
+            && resource.data.get('authUid', null) == null
+            && resource.data.get('email', '') == request.auth.token.email);
       // A customer may only create their OWN uid-keyed stub. Two constraints
       // matter here:
       //   - Pinning the doc id to CUS-<uid> stops id squatting: without it a
@@ -193,8 +192,9 @@ service cloud.firestore {
             && !request.resource.data.keys().hasAny(['archived', 'mergedInto', 'testFixture']));
       allow update: if isOwner()
         || (isCustomer()
-            && resource.data.authUid == myUid()
-            && request.resource.data.authUid == resource.data.authUid
+            && resource.data.get('authUid', '') == myUid()
+            && request.resource.data.get('authUid', '')
+                 == resource.data.get('authUid', '')
             // Merge tombstones are owner-managed state; a customer must not be
             // able to set or clear them on a doc they happen to own.
             && !request.resource.data.diff(resource.data).affectedKeys()
@@ -208,10 +208,12 @@ service cloud.firestore {
                     && request.resource.data.get('email', null) == request.auth.token.email)))
         || (isCustomer()
             && hasVerifiedEmail()
-            && resource.data.authUid == null
-            && resource.data.email is string
-            && resource.data.email == request.auth.token.email
-            && request.resource.data.authUid == myUid()
+            // Only an explicit authUid: null is claimable. A missing key stays
+            // blocked, so imported docs do not silently gain a claim path.
+            && resource.data.keys().hasAll(['authUid'])
+            && resource.data.get('authUid', null) == null
+            && resource.data.get('email', '') == request.auth.token.email
+            && request.resource.data.get('authUid', '') == myUid()
             && request.resource.data.diff(resource.data).affectedKeys()
                  .hasOnly(['authUid', 'updatedAt']));
       // Compliance: customer records tied to past transactions must be retained.
@@ -224,6 +226,22 @@ service cloud.firestore {
     match /products/{productId} {
       allow read: if true;
       allow write: if isOwner();
+    }
+
+    // Owner-only operational data. Supplier cost deliberately does NOT live on
+    // /products because product documents are public for the order catalog and
+    // Firestore cannot hide individual fields within an allowed document read.
+    match /inventory/{productId} {
+      allow read: if isOwner();
+      allow create, update: if isOwner();
+      allow delete: if false;
+    }
+
+    // Append-only stock ledger. Inventory totals can change, but the movement
+    // explaining each manual count or future sale/purchase must remain intact.
+    match /inventoryMovements/{movementId} {
+      allow read, create: if isOwner();
+      allow update, delete: if false;
     }
 
     match /drivers/{driverId} {
@@ -260,6 +278,17 @@ service cloud.firestore {
         || (isCustomer() && resource.data.authUid == myUid());
       allow write: if isOwner();
     }
+    // Append-only owner-authored corrections. These explain a historical
+    // record without rewriting or deleting the original transaction.
+    match /orderCorrections/{correctionId} {
+      allow read: if isOwner();
+      allow create: if isOwner()
+        && request.resource.data.get('orderId', null) is string
+        && request.resource.data.get('note', null) is string
+        && request.resource.data.get('note', '').size() >= 10
+        && request.resource.data.get('note', '').size() <= 2000;
+      allow update, delete: if false;
+    }
     match /purchases/{purchaseId}    { allow read, write: if isOwner(); }
     match /expenses/{expenseId}      { allow read, write: if isOwner(); }
     match /documents/{documentId}    { allow read, write: if isOwner(); }
@@ -285,11 +314,11 @@ service cloud.firestore {
 
     match /inquiries/{inquiryId} {
       allow read, update, delete: if isOwner();
-      allow create: if request.resource.data.name is string
-        && request.resource.data.name.size() > 0
-        && request.resource.data.name.size() < 200
-        && request.resource.data.phone is string
-        && request.resource.data.phone.size() < 40;
+      // No live browser writes this collection: the public form now uses the
+      // submitPublicOrder callable, the retired inquiry form writes to Sheets,
+      // and import/merge jobs use Admin SDK. Keep this legacy data owner-readable
+      // without leaving an unauthenticated spam/billing write path open.
+      allow create: if false;
     }
   }
 }

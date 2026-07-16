@@ -16,13 +16,24 @@ import {
   assertSucceeds
 } from "@firebase/rules-unit-testing";
 import { readFileSync } from "node:fs";
-import { doc, getDoc, setDoc, updateDoc } from "firebase/firestore";
+import {
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  query,
+  setDoc,
+  updateDoc,
+  where
+} from "firebase/firestore";
 
 const PROJECT_ID = "vietnamsparkle-rules-test";
 const VICTIM_EMAIL = "victim@example.test";
 const ATTACKER_UID = "attacker-uid";
 const VICTIM_UID = "victim-uid";
 const LEGACY_CUSTOMER_ID = "CUS-84901234567";
+const MISSING_AUTH_CUSTOMER_ID = "CUS-84902222222";
+const MISSING_EMAIL_CUSTOMER_ID = "CUS-84903333333";
 
 let passed = 0;
 let failed = 0;
@@ -92,6 +103,28 @@ async function seedLegacyProfile() {
   });
 }
 
+async function seedProfileWithoutAuthUid() {
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    await setDoc(doc(ctx.firestore(), "customers", MISSING_AUTH_CUSTOMER_ID), {
+      name: "Imported Without Auth Field",
+      email: "attacker@example.test",
+      phone: "0902222222",
+      orderCount: 3
+    });
+  });
+}
+
+async function seedProfileWithoutEmail() {
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    await setDoc(doc(ctx.firestore(), "customers", MISSING_EMAIL_CUSTOMER_ID), {
+      name: "Imported Without Email Field",
+      phone: "0903333333",
+      authUid: null,
+      orderCount: 2
+    });
+  });
+}
+
 console.log("\ncustomers rules\n");
 
 // --- The account-takeover the audit flagged -------------------------------
@@ -120,6 +153,19 @@ await it("verified owner of the email CAN read their unclaimed profile", async (
   );
 });
 
+await it("verified email query CAN find an explicitly unclaimed profile", async () => {
+  const snap = await assertSucceeds(
+    getDocs(query(
+      collection(verifiedVictim.firestore(), "customers"),
+      where("email", "==", VICTIM_EMAIL),
+      where("authUid", "==", null)
+    ))
+  );
+  if (snap.size !== 1 || snap.docs[0].id !== LEGACY_CUSTOMER_ID) {
+    throw new Error("findUnclaimedByEmail query did not return the legacy profile");
+  }
+});
+
 await it("verified owner of the email CAN claim their unclaimed profile", async () => {
   await assertSucceeds(
     updateDoc(doc(verifiedVictim.firestore(), "customers", LEGACY_CUSTOMER_ID), {
@@ -134,6 +180,38 @@ await it("verified but WRONG email cannot read someone else's unclaimed profile"
   await seedLegacyProfile();
   await assertFails(
     getDoc(doc(verifiedAttacker.firestore(), "customers", LEGACY_CUSTOMER_ID))
+  );
+});
+
+// --- Missing import fields fail cleanly without widening claim access ------
+
+await testEnv.clearFirestore();
+await seedProfileWithoutAuthUid();
+
+await it("matching verified email CANNOT read a profile whose authUid field is missing", async () => {
+  await assertFails(
+    getDoc(doc(verifiedAttacker.firestore(), "customers", MISSING_AUTH_CUSTOMER_ID))
+  );
+});
+
+await it("matching verified email CANNOT claim a profile whose authUid field is missing", async () => {
+  await assertFails(
+    updateDoc(doc(verifiedAttacker.firestore(), "customers", MISSING_AUTH_CUSTOMER_ID), {
+      authUid: ATTACKER_UID,
+      updatedAt: "2026-07-16T00:00:00Z"
+    })
+  );
+});
+
+await testEnv.clearFirestore();
+await seedProfileWithoutEmail();
+
+await it("verified customer CANNOT claim an unclaimed profile whose email field is missing", async () => {
+  await assertFails(
+    updateDoc(doc(verifiedAttacker.firestore(), "customers", MISSING_EMAIL_CUSTOMER_ID), {
+      authUid: ATTACKER_UID,
+      updatedAt: "2026-07-16T00:00:00Z"
+    })
   );
 });
 
@@ -231,6 +309,24 @@ await it("customer CANNOT reassign their doc to another uid", async () => {
   await assertFails(
     updateDoc(doc(verifiedAttacker.firestore(), "customers", `CUS-${ATTACKER_UID}`), {
       authUid: VICTIM_UID
+    })
+  );
+});
+
+await testEnv.clearFirestore();
+await testEnv.withSecurityRulesDisabled(async (ctx) => {
+  await setDoc(doc(ctx.firestore(), "customers", `CUS-${ATTACKER_UID}`), {
+    name: "Own Imported Doc",
+    phone: "0900000000",
+    authUid: ATTACKER_UID
+  });
+});
+
+await it("customer CAN update their own imported profile when email is absent", async () => {
+  await assertSucceeds(
+    updateDoc(doc(verifiedAttacker.firestore(), "customers", `CUS-${ATTACKER_UID}`), {
+      name: "Own Imported Doc Updated",
+      updatedAt: "2026-07-16T00:00:00Z"
     })
   );
 });
