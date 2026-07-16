@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Reconciliation · Vietnam Sparkle</title>
+    <link rel="stylesheet" href="./assets/styles.css">
+  </head>
+  <body>
+    <main class="page has-admin-dock">
+      <section id="auth-view" class="auth-shell hidden">
+        <div class="auth-card">
+          <span class="pill">Owner sign-in required</span>
+          <h2>Sign in to view reconciliation reports</h2>
+          <div class="button-row">
+            <a class="button-link primary" href="./admin.html">Go to sign in</a>
+          </div>
+        </div>
+      </section>
+
+      <div id="app-view" class="hidden">
+        <a class="cog-button floating-settings" href="./settings.html" title="Settings" aria-label="Settings">⚙</a>
+        <section class="hero mobile-page-context"><h1>Reconciliation</h1></section>
+        <section class="hero admin-dock">
+          <h1>Reconciliation</h1>
+          <p class="muted">The nightly job recomputes every order's money from its payments at 03:00. Anything it had to correct shows up here, newest first.</p>
+          <div class="button-row">
+            <a class="button-link secondary" href="./admin.html">Dashboard</a>
+            <a class="button-link secondary" href="./customers.html">Customers</a>
+            <a class="button-link secondary" href="./orders.html">Orders</a>
+            <a class="button-link secondary" href="./map.html">Map</a>
+            <a class="button-link secondary" href="./receivables.html">Receivables</a>
+            <a class="button-link secondary" href="./deposits.html">Deposits</a>
+            <a class="button-link secondary" href="./reports.html" aria-current="page">Reconciliation</a>
+          </div>
+        </section>
+
+        <div id="recon-summary-tiles" class="stats-grid" style="margin-bottom:18px"></div>
+
+        <section class="panel">
+          <div class="toolbar">
+            <div>
+              <h2>Recent runs</h2>
+              <p class="muted" id="list-status"></p>
+            </div>
+            <div class="button-row">
+              <label class="recon-filter">
+                <input id="drifted-only" type="checkbox">
+                Only runs with drift
+              </label>
+              <button class="secondary" id="refresh-button" type="button">Refresh</button>
+            </div>
+          </div>
+          <div id="run-list" class="recon-runs"></div>
+        </section>
+      </div>
+    </main>
+
+    <script type="module" src="./assets/reportsApp.js"></script>
+  </body>
+</html>
