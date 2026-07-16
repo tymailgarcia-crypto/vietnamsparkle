@@ -24,6 +24,10 @@ node_modules/
 .firebase/
 .firebaserc.local
 
+# Local emulator snapshot (--import/--export-on-exit target). Machine-local
+# test logins and fixture data; meaningless and bulky in history.
+firebase/emulator-data/
+
 # Logs (emulator, CLI debug output)
 *.log
 
