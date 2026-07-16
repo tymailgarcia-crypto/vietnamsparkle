@@ -83,6 +83,13 @@ function buildOrderId(prefix) {
 }
 
 // --- The callable ---
+//
+// App Check staging (see ROADMAP → App Check): once the web client ships with
+// a real reCAPTCHA site key AND the console's App Check metrics show live
+// traffic is verified, change the signature to
+//   onCall({ enforceAppCheck: true }, async (request) => …)
+// Doing that BEFORE the client step breaks public ordering for every visitor.
+// Deliberately no auth check here — anonymous ordering is the product.
 
 exports.submitPublicOrder = onCall(async (request) => {
   const data = request.data || {};
@@ -123,6 +130,14 @@ exports.submitPublicOrder = onCall(async (request) => {
   }
   if (!/^[+0-9 ()\-]{6,39}$/.test(phone) || !/\d/.test(phone)) {
     throw new HttpsError("invalid-argument", "Phone must be 6–39 characters with at least one digit.");
+  }
+  // Store E.164 only (Ty, 2026-07-16): wa.me/Zalo links break on local-format
+  // numbers, and CUS-<digits> ids assume the country code. Bare Vietnamese
+  // formats (090…, 84…, 9-digit mobiles) normalize automatically; any other
+  // country must arrive as +<code><number> or be rejected here.
+  const phoneE164 = normalizePhoneE164VN(phone);
+  if (!phoneE164) {
+    throw new HttpsError("invalid-argument", "Phone must include the country code, e.g. +84 905 123 456.");
   }
   if (address.length < 5 || address.length >= 500) {
     throw new HttpsError("invalid-argument", "Address must be 5–499 characters.");
@@ -206,7 +221,7 @@ exports.submitPublicOrder = onCall(async (request) => {
   }
 
   // ---- Canonical customer id (phone preferred) --------------------------
-  const customerId = buildCustomerId(phone) || (authUid ? `CUS-${authUid}` : null);
+  const customerId = buildCustomerId(phoneE164) || (authUid ? `CUS-${authUid}` : null);
   if (!customerId) {
     throw new HttpsError("invalid-argument", "Could not derive a customer id from the phone number.");
   }
@@ -221,7 +236,7 @@ exports.submitPublicOrder = onCall(async (request) => {
     sourceChannel: "website",
     customerId,
     customerName: name,
-    phone,
+    phone: phoneE164,
     // Prefer the signed-in email if we have it — it's verified.
     email: authEmail || (email || null),
     authUid: authUid || null,
