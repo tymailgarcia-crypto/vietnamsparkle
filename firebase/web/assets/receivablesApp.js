@@ -104,7 +104,7 @@ function renderRows() {
     const phoneCell = row.phone
       ? `<a href="tel:${phoneDigits(row.phone)}">${escapeHtml(row.phone)}</a>`
       : "";
-    const orderLink = `<a href="./admin.html?date=${encodeURIComponent(row.deliveryDate || "")}">${escapeHtml(row.id)}</a>`;
+    const orderLink = `<a href="./order.html?id=${encodeURIComponent(row.id)}">${escapeHtml(row.id)}</a>`;
     const chaseText = `Hi ${row.customerName || ""}, just a reminder that ${formatCurrency(row.balanceDue)} is still due from your order on ${row.deliveryDate || ""}. You can pay by cash on next delivery, bank transfer, or QR. Thanks!`;
     const chaseHref = whatsappHref(row.phone, chaseText);
     const chaseButton = chaseHref
@@ -170,72 +170,26 @@ async function loadReceivables() {
   }
 }
 
-async function renderNagTiles() {
+function renderNagTiles() {
   const tiles = el("receivables-nag-tiles");
   if (!tiles) return;
-  try {
-    const unpaid = state.rows;
-    const unpaidTotal = unpaid.reduce((s, o) => s + Number(o.balanceDue || 0), 0);
-    const oldestUnpaidDays = unpaid.reduce((max, o) => {
-      const d = o.deliveryDate;
-      if (!d) return max;
-      const days = Math.floor((Date.now() - new Date(d).getTime()) / 86400000);
-      return Math.max(max, days);
-    }, 0);
+  const unpaid = state.rows;
+  const unpaidTotal = unpaid.reduce((s, o) => s + Number(o.balanceDue || 0), 0);
+  const oldestUnpaidDays = unpaid.reduce((max, o) => {
+    const d = o.deliveryDate;
+    if (!d) return max;
+    const days = Math.floor((Date.now() - new Date(d).getTime()) / 86400000);
+    return Math.max(max, days);
+  }, 0);
+  const unpaidClass = oldestUnpaidDays >= 3 ? 'style="border:2px solid rgb(192,57,43)"' : "";
 
-    const depositsSnap = await getDocs(collection(db, "depositEvents"));
-    const perPair = {};
-    depositsSnap.docs.forEach((docSnap) => {
-      const e = docSnap.data();
-      const cid = e.customerId;
-      const type = String(e.containerType || "other");
-      if (!cid) return;
-      const key = `${cid}|${type}`;
-      if (!perPair[key]) perPair[key] = { qty: 0, amount: 0, since: null };
-      const qty = Number(e.qty || 0);
-      const amount = Number(e.amount || 0);
-      if (e.eventType === "charged") {
-        perPair[key].qty += qty;
-        perPair[key].amount += amount;
-        if (e.eventDate && (!perPair[key].since || e.eventDate < perPair[key].since)) {
-          perPair[key].since = e.eventDate;
-        }
-      } else if (["refunded", "credited", "forfeited"].includes(e.eventType)) {
-        perPair[key].qty -= qty;
-        perPair[key].amount -= amount;
-      }
-    });
-    let containerCount = 0;
-    let depositTotal = 0;
-    let atRiskCount = 0;
-    Object.values(perPair).forEach((row) => {
-      if (row.qty > 0) {
-        containerCount += row.qty;
-        depositTotal += Math.max(0, row.amount);
-        if (row.since) {
-          const days = Math.floor((Date.now() - new Date(row.since).getTime()) / 86400000);
-          if (days >= 60) atRiskCount += row.qty;
-        }
-      }
-    });
-
-    const unpaidClass = oldestUnpaidDays >= 3 ? 'style="border:2px solid rgb(192,57,43)"' : "";
-    const atRiskClass = atRiskCount > 0 ? 'style="border:2px solid rgb(192,57,43)"' : "";
-    tiles.innerHTML = `
-      <div class="card" ${unpaidClass}>
-        <span class="muted">Unpaid</span>
-        <strong>${unpaid.length} · ${formatCurrency(unpaidTotal)}</strong>
-        ${oldestUnpaidDays > 0 ? `<div class="muted">Oldest ${oldestUnpaidDays}d</div>` : ""}
-      </div>
-      <a class="card" ${atRiskClass} href="./deposits.html" style="text-decoration:none;color:inherit">
-        <span class="muted">Containers out</span>
-        <strong>${containerCount} · ${formatCurrency(depositTotal)}</strong>
-        ${atRiskCount > 0 ? `<div class="muted">${atRiskCount} held &gt;60 days</div>` : ""}
-      </a>
-    `;
-  } catch (error) {
-    tiles.innerHTML = `<div class="card muted">Could not load outstanding totals: ${error.message || error}</div>`;
-  }
+  tiles.innerHTML = `
+    <div class="card" ${unpaidClass}>
+      <span class="muted">Unpaid</span>
+      <strong>${unpaid.length} · ${formatCurrency(unpaidTotal)}</strong>
+      ${oldestUnpaidDays > 0 ? `<div class="muted">Oldest ${oldestUnpaidDays}d</div>` : ""}
+    </div>
+  `;
 }
 
 function openRecordPaymentDialog(row) {
