@@ -632,6 +632,14 @@ Everything above needs to eventually be picked up by the customer's own team / F
   - Custom domain instructions for their preferred registrar.
 - **Ty's decision, 2026-07-16: the whole database gets wiped before handover.** Consequences for prioritization: legacy-data cleanups (Sheets-era duplicates, local-format phone fields, the `authUid` string-or-null migration's data half) are **not worth automating** — the duplicates sweep on `/duplicates.html` and manual merges cover the interim, and the wipe retires the backlog. Anything that only exists to repair imported data should be weighed against this.
 
+## Owner nav: mobile finance burger (shipped 2026-07-17)
+
+Ty: "finances and reconciliation should not live in the bottom hero on the phone but rather in a dropdown burger menu." Adding the Reconciliation link had pushed the fixed bottom dock's 3-column grid to a third row on phones.
+
+- **`assets/dockMenu.js`** (one script line on every dock page, `order.html` included) moves the Receivables / Deposits / Reconciliation links into a `.dock-menu` wrapper with a **"☰ Finance"** toggle. The panel pops **upward** from the bottom dock, closes on outside click and Escape, and carries `aria-expanded`/`aria-haspopup`. When the current page lives inside the menu, the collapsed toggle takes over the active-page highlight (`holds-current`).
+- **Desktop is untouched by construction**: the wrapper and panel are `display: contents`, so the links remain ordinary inline children of the button row in their original order, and the toggle is `display: none` outside the mobile media query. All styling in the `.dock-menu` block at the tail of `styles.css`.
+- Verified signed-in in the emulator at 375px (dock down from 3 rows to 2 — 98px; panel on-screen, links visible, toggle highlight on `/receivables.html`) and at 1280px (all seven links inline on one row, original order, toggle hidden). First verification pass was against a signed-out page where every rect measures zero — re-run signed in; worth remembering when asserting layout.
+
 ## App Check on submitPublicOrder (staged; client scaffolding shipped 2026-07-16)
 
 `submitPublicOrder` must accept anonymous callers — that is the product — so it is the one internet-facing write path left after the inquiries closure, and its only abuse control is `maxInstances: 10`. App Check (invisible reCAPTCHA attestation) closes the trivial script-spam/billing vector. **The rollout order is load-bearing: enforcing before the client ships breaks public ordering for every visitor.**

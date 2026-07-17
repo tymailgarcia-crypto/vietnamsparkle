@@ -2431,3 +2431,57 @@ button.success-locked:disabled {
   height: 16px;
   margin: 0;
 }
+
+/* --- Owner-dock finance burger (dockMenu.js) ----------------------------- */
+/* Desktop: wrapper and panel are `display: contents`, so the finance links
+   stay ordinary inline children of the dock's button row and nothing moves.
+   Mobile (the fixed bottom dock): the links collapse behind a toggle whose
+   panel pops UP from the dock. */
+
+.dock-menu,
+.dock-menu-panel {
+  display: contents;
+}
+
+.dock-menu-toggle {
+  display: none;
+}
+
+@media (max-width: 960px), (hover: none) and (pointer: coarse) {
+  .admin-dock .button-row {
+    position: relative;
+  }
+
+  .dock-menu-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+  }
+
+  .admin-dock button.dock-menu-toggle.holds-current {
+    border-color: #ffffff;
+    background: #ffffff;
+    color: var(--brand);
+    font-weight: 800;
+    box-shadow: 0 4px 12px rgba(15, 33, 57, 0.2);
+  }
+
+  .dock-menu-panel {
+    display: none;
+  }
+
+  .dock-menu.is-open .dock-menu-panel {
+    display: grid;
+    position: absolute;
+    z-index: 1002;
+    right: 0;
+    bottom: calc(100% + 10px);
+    width: min(240px, 70vw);
+    gap: 6px;
+    padding: 10px;
+    border-radius: 14px;
+    background: var(--brand-dark);
+    box-shadow: 0 14px 34px rgba(15, 33, 57, 0.35);
+  }
+}
