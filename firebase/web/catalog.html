@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Product builder · Vietnam Sparkle</title>
+    <link rel="stylesheet" href="./assets/styles.css">
+  </head>
+  <body>
+    <main class="page has-admin-dock">
+      <section id="auth-view" class="auth-shell hidden">
+        <div class="auth-card">
+          <span class="pill">Owner sign-in required</span>
+          <h2>Sign in to manage the catalog</h2>
+          <div class="button-row">
+            <a class="button-link primary" href="./admin.html">Go to sign in</a>
+          </div>
+        </div>
+      </section>
+
+      <div id="app-view" class="hidden">
+        <a class="cog-button floating-settings" href="./settings.html" title="Settings" aria-label="Settings">⚙</a>
+        <section class="hero mobile-page-context"><h1>Product builder</h1></section>
+        <section class="hero admin-dock">
+          <h1>Product builder</h1>
+          <p class="muted">What customers can order, at what price and deposit. Prices apply to future orders only — past orders keep their totals. Products are retired, never deleted, so order history stays intact.</p>
+          <div class="button-row">
+            <a class="button-link secondary" href="./admin.html">Dashboard</a>
+            <a class="button-link secondary" href="./customers.html">Customers</a>
+            <a class="button-link secondary" href="./orders.html">Orders</a>
+            <a class="button-link secondary" href="./map.html">Map</a>
+            <a class="button-link secondary" href="./receivables.html">Receivables</a>
+            <a class="button-link secondary" href="./deposits.html">Deposits</a>
+            <a class="button-link secondary" href="./reports.html">Reconciliation</a>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="toolbar">
+            <div>
+              <h2>Customer storefront</h2>
+              <p class="muted" style="margin:0">How the catalog looks on the public order page.</p>
+            </div>
+            <div class="button-row" role="radiogroup" aria-label="Customer catalog layout">
+              <button class="secondary" id="layout-cards-button" type="button" aria-pressed="false">Cards</button>
+              <button class="secondary" id="layout-list-button" type="button" aria-pressed="false">List</button>
+              <a class="button-link secondary" href="./index.html" target="_blank" rel="noopener">Preview store</a>
+              <span class="muted" id="layout-status" role="status" aria-live="polite"></span>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="toolbar">
+            <div>
+              <h2>Products</h2>
+              <p class="muted" id="list-status"></p>
+            </div>
+            <div class="button-row">
+              <button class="primary" id="add-product-button" type="button">Add product</button>
+              <button class="secondary" id="refresh-button" type="button">Refresh</button>
+            </div>
+          </div>
+          <div id="product-list" class="catalog-admin-list"></div>
+          <details id="retired-wrap" class="catalog-retired" style="margin-top:16px">
+            <summary class="muted">Retired products (<span id="retired-count">0</span>)</summary>
+            <div id="retired-list" class="catalog-admin-list" style="margin-top:10px"></div>
+          </details>
+        </section>
+      </div>
+
+      <dialog id="product-dialog" class="edit-dialog">
+        <form id="product-form" class="form-grid" style="min-width:min(560px,92vw)">
+          <h3 class="span-2" style="margin:0" id="product-dialog-title">Add product</h3>
+          <input type="hidden" id="product-id">
+          <label class="span-2">
+            Product name
+            <input id="product-name" type="text" required minlength="2" maxlength="199" placeholder="Thach Bich 19L jug">
+          </label>
+          <label>
+            Price (VND)
+            <input id="product-price" type="number" required min="0" step="1000">
+          </label>
+          <label>
+            Deposit per unit (VND)
+            <input id="product-deposit" type="number" min="0" step="1000" value="0">
+          </label>
+          <label>
+            Storefront column
+            <select id="product-category">
+              <option value="glass">Glass bottle water</option>
+              <option value="jug">Large water jugs</option>
+              <option value="addon">Extra items</option>
+            </select>
+          </label>
+          <label>
+            Returnable container
+            <select id="product-container-type">
+              <option value="">None — not returnable</option>
+              <option value="glass_crate">Glass crate</option>
+              <option value="18_9l_jug">18.9 L jug</option>
+              <option value="19l_jug">19 L jug</option>
+              <option value="20l_jug">20 L jug</option>
+            </select>
+          </label>
+          <label>
+            Unit label
+            <input id="product-unit-label" type="text" maxlength="60" placeholder="per crate / per jug">
+          </label>
+          <label>
+            Sort order
+            <input id="product-sort" type="number" min="0" step="1" placeholder="lower shows first">
+          </label>
+          <label class="span-2">
+            Image URL
+            <input id="product-image-url" type="url" maxlength="499" placeholder="https://…  (leave empty to use the automatic photo match)">
+          </label>
+          <div class="span-2 catalog-image-preview" id="product-image-preview" hidden>
+            <img id="product-image-preview-img" alt="Product image preview">
+            <span class="muted" id="product-image-preview-note"></span>
+          </div>
+          <label class="span-2">
+            Notes shown to customers
+            <input id="product-notes" type="text" maxlength="499" placeholder="24 × 450ml; returnable crate">
+          </label>
+          <div class="span-2 button-row">
+            <button class="primary" type="submit" id="product-save-button">Save product</button>
+            <button class="ghost" type="button" id="product-cancel-button">Discard</button>
+            <span class="muted" id="product-status"></span>
+          </div>
+        </form>
+      </dialog>
+    </main>
+
+    <script type="module" src="./assets/catalogApp.js"></script>
+    <script type="module" src="./assets/dockMenu.js"></script>
+  </body>
+</html>

@@ -121,6 +121,11 @@ const PRODUCT_IMAGE_MATCHERS = [
 ];
 
 export function productImageUrl(productOrName) {
+  // A per-product imageUrl (set in the /catalog.html builder) always wins;
+  // the name-matcher below is the legacy fallback for docs without one.
+  if (typeof productOrName === "object" && productOrName?.imageUrl) {
+    return String(productOrName.imageUrl);
+  }
   const name = typeof productOrName === "string"
     ? productOrName
     : String(productOrName?.productName || "");

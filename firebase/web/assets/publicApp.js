@@ -468,6 +468,7 @@ function renderCatalog() {
   Object.values(categoryTargets).forEach((node) => {
     node.innerHTML = "";
   });
+  applyCatalogLayout();
 
   state.products.forEach((product) => {
     const key = productCategoryKey(product);
@@ -504,7 +505,11 @@ function renderCatalog() {
 
 async function loadProducts() {
   const snapshot = await getDocs(query(collection(db, "products"), where("active", "==", true)));
-  state.products = snapshot.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() }));
+  state.products = snapshot.docs
+    .map((docSnap) => ({ id: docSnap.id, ...docSnap.data() }))
+    // sortOrder is owner-set in /catalog.html; unset sorts last, ties by name.
+    .sort((a, b) => (Number(a.sortOrder ?? 9999) - Number(b.sortOrder ?? 9999))
+      || String(a.productName || "").localeCompare(String(b.productName || "")));
   renderCatalog();
   renderTotals();
 }
@@ -1219,12 +1224,23 @@ async function handleHeroGoogleSignIn() {
   }
 }
 
+// Owner-chosen customer catalog layout, set from /catalog.html and stored on
+// settings/business.catalogLayout: "cards" (default) or "list".
+function applyCatalogLayout() {
+  const list = state.catalogLayout === "list";
+  Object.values(categoryTargets).forEach((node) => {
+    if (node) node.classList.toggle("catalog-list-mode", list);
+  });
+}
+
 async function loadContactChannels() {
   const container = document.getElementById("contact-channels");
   if (!container) return;
   try {
     const snap = await getDoc(doc(db, "settings", "business"));
     const settings = snap.exists() ? snap.data() : {};
+    state.catalogLayout = settings.catalogLayout === "list" ? "list" : "cards";
+    applyCatalogLayout();
     const contact = settings.contact || {};
     const links = [
       contact.whatsapp

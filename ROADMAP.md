@@ -327,7 +327,14 @@ Goal: replace the ad-hoc "check the storage room and reorder" workflow with a pr
 
 ### Product catalog upgrades
 
-Current `/products/{id}` has: `productName`, `category`, `containerType`, `unitLabel`, `unitPrice`, `defaultDepositAmount`, `active`, `notes`.
+Shipped 2026-07-17 — **the product builder** (`/catalog.html` + `assets/catalogApp.js`), Ty's ask: "product builder like an ecommerce store… its own page… top right hamburger on phone with settings… switch between layout for customer (cards, list)."
+- **Owner CRUD over `/products`** — until this page the only writers were the Sheets import script and the Firestore console; a price change needed a developer, which was untenable for handover. Rules already said `write: if isOwner()`; no rules change. New products mint `P-<SLUG>` ids with a collision check. **Retire, never delete** — `active: false` keeps order history resolving; a retired section allows "put back on sale". Guards: `containerType` is a fixed select (it keys the deposit ledger), and a non-zero deposit requires a container type. Price edits are safe by design: `submitPublicOrder` re-prices server-side and past orders store their own totals.
+- **Per-product `imageUrl`** with live preview — `productImageUrl()` in shared.js now prefers it, with the legacy name-regex matcher as fallback. `sortOrder` (lower first, unset last) now drives the public catalog order.
+- **Customer storefront layout switch** — `settings/business.catalogLayout` (`"cards"` default | `"list"`), set from the builder, read by `publicApp.js`, which toggles `catalog-list-mode` on the category columns; list mode renders compact thumb/name/price/stepper rows. Ordering verified working in list mode.
+- **Top-right ☰ owner menu** (`dockMenu.js::initTopMenu`) — the floating ⚙ cog on every owner page becomes a menu holding **Settings** and **Product builder**; the existing settings anchor is moved into the panel so each page keeps exactly one settings link with zero markup changes. Current page gets the highlight. This is the home for owner tools that don't belong in the bottom nav dock.
+- Verified in the emulator signed-in: add through the dialog (duplicate id blocked, deposit-without-container blocked), edit, retire/restore, layout switch reflected on the live public page, ☰ menu navigation on a 375px viewport. Still open from the original list below: `sku`, `supplierId`, `reorderThreshold` — they belong to the suppliers/purchases phase; image *upload* to Storage is a deliberate later step (touches guarded `storage.rules`).
+
+Current `/products/{id}` has: `productName`, `category`, `containerType`, `unitLabel`, `unitPrice`, `defaultDepositAmount`, `active`, `notes` — plus, since 2026-07-17: `imageUrl`, `sortOrder`.
 
 Add:
 - `costPrice` — what we pay the supplier per unit today. **Privacy correction from the original plan:** this now lives on owner-only `/inventory/{productId}`, not `/products/{id}`. Product documents are public so customers can build the order catalog, and Firestore cannot hide an individual cost field inside an otherwise readable document.

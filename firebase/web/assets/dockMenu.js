@@ -63,3 +63,65 @@ function initDockMenu() {
 }
 
 initDockMenu();
+
+// Top-right owner menu (Ty, 2026-07-17): the floating ⚙ cog becomes a ☰
+// menu holding Settings and the Product builder, so tool pages that don't
+// belong in the bottom nav dock still have a consistent home. The existing
+// settings anchor is MOVED into the panel (relabeled), so every page keeps
+// exactly one settings link and no markup had to change.
+function initTopMenu() {
+  const cog = document.querySelector("a.cog-button.floating-settings");
+  if (!cog || cog.closest(".top-menu")) return;
+
+  const wrap = document.createElement("div");
+  wrap.className = "floating-settings top-menu";
+  cog.parentNode.insertBefore(wrap, cog);
+
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "cog-button top-menu-toggle";
+  toggle.setAttribute("aria-haspopup", "true");
+  toggle.setAttribute("aria-expanded", "false");
+  toggle.setAttribute("aria-label", "Owner tools menu");
+  toggle.textContent = "☰";
+
+  const panel = document.createElement("div");
+  panel.className = "top-menu-panel";
+
+  cog.classList.remove("cog-button", "floating-settings");
+  cog.className = "button-link secondary";
+  cog.textContent = "⚙ Settings";
+  cog.removeAttribute("title");
+
+  const catalogLink = document.createElement("a");
+  catalogLink.className = "button-link secondary";
+  catalogLink.href = "./catalog.html";
+  catalogLink.textContent = "🛒 Product builder";
+
+  if (/settings\.html$/.test(location.pathname)) cog.setAttribute("aria-current", "page");
+  if (/catalog\.html$/.test(location.pathname)) catalogLink.setAttribute("aria-current", "page");
+
+  panel.appendChild(cog);
+  panel.appendChild(catalogLink);
+  wrap.appendChild(toggle);
+  wrap.appendChild(panel);
+
+  const close = () => {
+    wrap.classList.remove("is-open");
+    toggle.setAttribute("aria-expanded", "false");
+  };
+  toggle.addEventListener("click", (event) => {
+    event.stopPropagation();
+    const opening = !wrap.classList.contains("is-open");
+    wrap.classList.toggle("is-open", opening);
+    toggle.setAttribute("aria-expanded", String(opening));
+  });
+  document.addEventListener("click", (event) => {
+    if (!wrap.contains(event.target)) close();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") close();
+  });
+}
+
+initTopMenu();
