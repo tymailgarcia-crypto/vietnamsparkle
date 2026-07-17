@@ -143,6 +143,14 @@
 
         <div id="tab-containers" data-tab-panel="containers" class="hidden">
           <p class="muted top-gap" style="margin-top:0">Return empties on your next delivery. The driver will refund or credit the deposit.</p>
+          <div id="pickup-request-card" class="card hidden" style="margin:0 0 14px">
+            <strong id="pickup-request-title"></strong>
+            <p class="muted" id="pickup-request-hint" style="margin:6px 0 10px"></p>
+            <div class="button-row">
+              <button id="pickup-request-button" class="secondary" type="button"></button>
+              <span class="muted" id="pickup-request-status" role="status" aria-live="polite"></span>
+            </div>
+          </div>
           <div id="container-summary" class="stack"></div>
         </div>
       </section>

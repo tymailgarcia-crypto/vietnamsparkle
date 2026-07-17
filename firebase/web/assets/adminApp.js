@@ -78,6 +78,7 @@ const state = {
   orderItems: [],
   payments: [],
   depositEvents: [],
+  customersById: {},
   thresholds: { ...THRESHOLD_DEFAULTS },
   selectedDate: initialSelectedDate(),
   statusFilter: "all",
@@ -689,12 +690,16 @@ function renderOrderCompact(order) {
   const address = order.address || "";
   const driver = driverName(order.assignedDriverId);
   const orderIdLink = `<a class="muted" style="font-family:monospace;font-size:11px" href="./order.html?id=${encodeURIComponent(order.id)}">${escapeHtml(order.id)}</a>`;
+  const pickupBadge = state.customersById?.[order.customerId]?.emptiesPickupRequested === true
+    ? `<span class="badge" title="Requested from the customer's account page" style="background:rgba(11,122,99,0.14);color:#0b7a63;font-weight:700">♻ Pick up empties</span>`
+    : "";
   return `
     <div class="compact-order">
       <div class="top">
         <div class="who">${nameCell}</div>
         <span class="badge status-${escapeHtml(order.status)}">${escapeHtml(order.status)}</span>
       </div>
+      ${pickupBadge ? `<div class="where">${pickupBadge}</div>` : ""}
       <div class="where">${orderIdLink}</div>
       ${address ? `<div class="where">${escapeHtml(address)}</div>` : ""}
       <div class="where">${escapeHtml(driver)} · ${formatCurrency(order.subtotal + order.depositTotal)}</div>
@@ -1271,6 +1276,9 @@ async function openDeliveryPaymentDialog(order) {
     statusNode.textContent = "";
     statusNode.style.color = "";
   }
+  // Remembered so a successful delivery can clear the customer's
+  // "pick up my empties" request — the visit it asked for has happened.
+  deliveryDialogState.customerId = order.customerId || null;
   dialog.showModal();
 
   try {
@@ -1281,6 +1289,13 @@ async function openDeliveryPaymentDialog(order) {
   } catch (error) {
     const help = document.getElementById("delivery-containers-help");
     if (help) help.textContent = `Could not load container balance: ${error.message || error}`;
+  }
+
+  if (state.customersById?.[order.customerId]?.emptiesPickupRequested === true) {
+    const help = document.getElementById("delivery-containers-help");
+    if (help) {
+      help.innerHTML = `<strong style="color:#0b7a63">♻ The customer asked for an empties pickup this delivery.</strong> ${escapeHtml(help.textContent)}`;
+    }
   }
 }
 
@@ -1490,6 +1505,18 @@ async function saveDeliveryPayment(event) {
           });
         }
       });
+      // The delivery this pickup request asked for has now happened — clear
+      // the flag so it doesn't nag on the next order. Best-effort and outside
+      // the transaction: a courtesy flag must never fail a delivery save, and
+      // if this write loses a race the customer can simply flag again.
+      const dialogCustomerId = deliveryDialogState.customerId;
+      if (dialogCustomerId && state.customersById?.[dialogCustomerId]?.emptiesPickupRequested === true) {
+        updateDoc(doc(db, "customers", dialogCustomerId), {
+          emptiesPickupRequested: false,
+          emptiesPickupRequestedAt: null,
+          updatedAt: now
+        }).catch((error) => console.warn("Could not clear empties-pickup flag:", error));
+      }
       document.getElementById("delivery-payment-dialog").close();
       await refreshDashboard();
     } catch (error) {
@@ -1669,6 +1696,22 @@ async function refreshDashboard() {
   });
   state.orderItems = items;
   state.depositEvents = deposits;
+
+  // Join the customer docs for today's orders — currently only for the
+  // "pick up my empties" flag, which lives on the customer (intent isn't
+  // tied to one order). One read per unique customer on the board; a board
+  // day is a handful of customers, so no chunked query needed. Best-effort:
+  // a failed read just means no badge, never a broken board.
+  const uniqueCustomerIds = [...new Set(state.orders.map((o) => o.customerId).filter(Boolean))];
+  const customerSnaps = await Promise.all(uniqueCustomerIds.map(async (id) => {
+    try {
+      const snap = await getDoc(doc(db, "customers", id));
+      return snap.exists() ? { id, ...snap.data() } : null;
+    } catch (_) {
+      return null;
+    }
+  }));
+  state.customersById = Object.fromEntries(customerSnaps.filter(Boolean).map((c) => [c.id, c]));
 
   renderHero();
   renderOrderBoard();

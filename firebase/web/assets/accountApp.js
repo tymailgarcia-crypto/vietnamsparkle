@@ -454,6 +454,60 @@ function renderContainerSummary(rows) {
   }).join("");
 }
 
+// "Please pick up my empties" (Ty, 2026-07-17). The flag lives on the
+// customer doc — not an order — because intent isn't tied to an order
+// existing yet. The customers update rule blacklists owner-managed keys
+// rather than whitelisting fields, so a signed-in customer may set these two
+// keys on their own doc without any rules change. The today board and the
+// delivery dialog read it; marking the order delivered clears it (adminApp).
+function renderPickupRequest(hasContainers) {
+  const card = el("pickup-request-card");
+  if (!card) return;
+  const requested = state.customer?.emptiesPickupRequested === true;
+  // No customer doc yet, or nothing to pick up and nothing to cancel: hide.
+  if (!state.customerRef || (!hasContainers && !requested)) {
+    card.classList.add("hidden");
+    return;
+  }
+  card.classList.remove("hidden");
+  el("pickup-request-title").textContent = requested
+    ? "✓ Pickup requested"
+    : "Have empties ready to return?";
+  el("pickup-request-hint").textContent = requested
+    ? "The driver will be told to collect your empties on the next delivery. You can cancel if plans change."
+    : "Tell us once, and the driver will plan to collect your empties on the next delivery.";
+  el("pickup-request-button").textContent = requested
+    ? "Cancel pickup request"
+    : "Request pickup on next delivery";
+}
+
+async function togglePickupRequest(event) {
+  const statusNode = el("pickup-request-status");
+  if (!state.customerRef) return;
+  const requesting = state.customer?.emptiesPickupRequested !== true;
+  await withSubmitLock(event.currentTarget, async () => {
+    try {
+      statusNode.textContent = "Saving…";
+      await updateDoc(state.customerRef, {
+        emptiesPickupRequested: requesting,
+        emptiesPickupRequestedAt: requesting ? new Date().toISOString() : null,
+        updatedAt: new Date().toISOString()
+      });
+      state.customer = {
+        ...(state.customer || {}),
+        emptiesPickupRequested: requesting,
+        emptiesPickupRequestedAt: requesting ? new Date().toISOString() : null
+      };
+      statusNode.textContent = requesting ? "Saved — the driver will know." : "Request cancelled.";
+    } catch (error) {
+      statusNode.textContent = `Could not save: ${error.message || error}`;
+    }
+  });
+  // AFTER the lock: withSubmitLock restores the button's pre-click label in
+  // its finally, so a render inside the lock gets clobbered.
+  renderPickupRequest(true);
+}
+
 function shortProductLabel(name) {
   const n = String(name || "").trim();
   if (!n) return "?";
@@ -1046,7 +1100,9 @@ async function loadAccountData() {
   renderBalanceSummary(orders);
   renderOrders(orders);
   renderReorderList(orders);
-  renderContainerSummary(summarizeContainers(depositEvents, returns));
+  const containerRows = summarizeContainers(depositEvents, returns);
+  renderContainerSummary(containerRows);
+  renderPickupRequest(containerRows.some((row) => row.qty > 0));
   updateLoadMoreButtons();
   setStatus(
     el("account-status"),
@@ -1300,6 +1356,7 @@ el("new-address-input")?.addEventListener("input", () => {
     setStatus(el("addresses-status"), "Address changed — find it on the map again.");
   }
 });
+el("pickup-request-button")?.addEventListener("click", togglePickupRequest);
 el("signout-button").addEventListener("click", handleSignOut);
 const heroSignoutBtn = el("hero-signout-button");
 if (heroSignoutBtn) heroSignoutBtn.addEventListener("click", handleSignOut);

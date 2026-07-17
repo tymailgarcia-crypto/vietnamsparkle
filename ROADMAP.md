@@ -11,6 +11,8 @@ A one-owner-first delivery ops system for a Da Nang water business, with just en
 - The books survive a Vietnamese tax review without a scramble.
 - The system will eventually be handed to the customer's own Firebase project and domain.
 
+- **Shipped 2026-07-17 (mobile delivery date visibility).** The public order form now gives Delivery date, Delivery window, and existing full-span fields the full mobile grid width. The native date control grows from about 165px to 295px on a 375px viewport, so the selected date is readable without opening the picker.
+
 ## Payment collection gate (shipped 2026-07-08)
 
 The problem this solves: the owner is laid back and loses money because "paid" was a status flip, delivery and collection were decoupled, and there was no forcing function.
@@ -452,7 +454,7 @@ Goal: at any moment the owner can see per-customer: how many glass crates / 19 L
 
 Open decisions:
 - ~~**What happens when the driver does not pick up empties on a delivery?**~~ **Resolved 2026-07-08** — option 1 in all but name. The delivery dialog's **Containers returned this trip** section is the explicit pickup log: the driver enters returned qty per type and picks Credit next order / Refund cash now / **Owner will decide later**. No entry ⇒ no event ⇒ deposit stays outstanding, which is exactly the "can't infer what wasn't logged" position this entry argued for. It works without a driver-side UI because the owner or driver drives the same dialog. Ty raised the same concern in his notes on 2026-07-07; same answer.
-- Still worth doing from the options list: **customer-side "please pick up my empties" flag** on the next order, so the owner sees intent on the today board rather than guessing. Cheap, and the containers panel on `/account.html` is the natural home.
+- ~~**Customer-side "please pick up my empties" flag**~~ **Shipped 2026-07-17.** Lives on the **customer doc** (`emptiesPickupRequested` + `…At`), not an order — intent isn't tied to an order existing yet, and the customers update rule blacklists owner-managed keys rather than whitelisting fields, so a signed-in customer sets it on their own doc with **no rules change**. Surfaces: (1) a card on the `/account.html` Containers tab — request/cancel toggle, shown only when the customer holds containers or already has a request; (2) a green **"♻ Pick up empties"** badge on the today-board order card (`adminApp.refreshDashboard` now joins customer docs for the day's orders — one `getDoc` per unique customer, best-effort so a failed read means a missing badge, never a broken board); (3) a highlighted line atop the delivery dialog's containers section. **Marking the order delivered auto-clears the flag** (best-effort write after the transaction — a courtesy flag must never fail a delivery save). Verified end-to-end in the emulator: customer toggle through the real rules, badge + dialog highlight, delivery with a credited return clearing the flag. One repeat gotcha for the next agent: a page-URL cache-bust does NOT bust module subresources under the hosting emulator — `fetch(url, {cache:'reload'})` the module, then reload.
 
 ### Payment status & receivables
 
