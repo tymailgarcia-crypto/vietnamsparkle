@@ -139,6 +139,33 @@ export async function uploadPaymentProof({ orderId, paymentId, file }) {
   return { documentId, downloadUrl, storagePath: path };
 }
 
+// Uploads a product catalog photo from /catalog.html. Timestamped object per
+// upload: replacing a photo mints a new URL and the old blob stays behind,
+// consistent with the bucket's no-cleanup policy (ROADMAP → Storage → still
+// open) — and it means a cached storefront page keeps rendering its image.
+// The tokenized downloadUrl lands on products/{id}.imageUrl, which is how the
+// PUBLIC storefront reads it (tokens bypass storage.rules by design; product
+// photos are public content anyway).
+export async function uploadProductImage({ productId, file }) {
+  const product = safeSegment(productId, "unknown-product");
+  const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
+  const path = `product-images/${product}/photo-${stamp}.${extensionFor(file)}`;
+  const fileRef = storageRef(storage, path);
+  await uploadBytes(fileRef, file, { contentType: file.type || "image/jpeg" });
+  const downloadUrl = await getDownloadURL(fileRef);
+  const documentId = await recordDocument({
+    entityType: "product",
+    entityId: productId,
+    documentType: "product_image",
+    downloadUrl,
+    storagePath: path,
+    contentType: file.type || null,
+    sizeBytes: file.size,
+    notes: null
+  });
+  return { documentId, downloadUrl, storagePath: path };
+}
+
 // Rules cap these; checking client-side too turns a permission-denied stack
 // trace into a sentence the owner can act on.
 export const MAX_PROOF_BYTES = 10 * 1024 * 1024;

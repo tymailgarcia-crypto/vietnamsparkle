@@ -18,6 +18,7 @@ import {
   slugify,
   withSubmitLock
 } from "./shared.js";
+import { uploadProductImage, validateProofFile } from "./storageUploads.js";
 
 // Product builder (Ty, 2026-07-17). Owner CRUD over /products — until this
 // page, the only writers were the Sheets import script and the Firestore
@@ -151,6 +152,50 @@ function updateImagePreview() {
     : "Automatic photo match on the name — set a URL to override.";
 }
 
+// Photo upload: runs immediately on file pick and drops the tokenized
+// download URL into the Image URL field, so "Save product" persists it like
+// any hand-typed URL. For a NOT-yet-saved product the id is derived from the
+// name (it's deterministic, P-<slug>), so the blob files under the right
+// prefix without a save-first dance. If the owner renames before saving, the
+// blob path keeps the old slug — cosmetic only, the token URL is what's
+// stored and it never depends on the final doc id.
+async function handleImageFilePick(event) {
+  const input = event.currentTarget;
+  const hint = el("product-image-file-hint");
+  const file = input.files && input.files[0];
+  if (!file) return;
+  const problem = validateProofFile(file);
+  if (problem) {
+    hint.textContent = problem;
+    hint.style.color = "var(--danger, #b3261e)";
+    input.value = "";
+    return;
+  }
+  const productId = el("product-id").value.trim()
+    || (slugify(el("product-name").value) ? `P-${slugify(el("product-name").value).toUpperCase()}` : "");
+  if (!productId) {
+    hint.textContent = "Type the product name first, then pick the photo.";
+    hint.style.color = "var(--danger, #b3261e)";
+    input.value = "";
+    return;
+  }
+  try {
+    hint.style.color = "";
+    hint.textContent = "Uploading…";
+    input.disabled = true;
+    const { downloadUrl } = await uploadProductImage({ productId, file });
+    el("product-image-url").value = downloadUrl;
+    updateImagePreview();
+    hint.textContent = "Uploaded — the URL above now points at your photo. Save to keep it.";
+  } catch (error) {
+    hint.textContent = `Upload failed: ${error.message || error}`;
+    hint.style.color = "var(--danger, #b3261e)";
+  } finally {
+    input.disabled = false;
+    input.value = "";
+  }
+}
+
 function openProductDialog(product) {
   const isEdit = !!product;
   el("product-dialog-title").textContent = isEdit ? `Edit — ${product.productName || product.id}` : "Add product";
@@ -167,6 +212,13 @@ function openProductDialog(product) {
   const statusNode = el("product-status");
   statusNode.textContent = "";
   statusNode.style.color = "";
+  const fileInput = el("product-image-file");
+  if (fileInput) fileInput.value = "";
+  const fileHint = el("product-image-file-hint");
+  if (fileHint) {
+    fileHint.textContent = "Uploads immediately and fills the URL above. Max 10 MB.";
+    fileHint.style.color = "";
+  }
   updateImagePreview();
   el("product-dialog").showModal();
 }
@@ -284,6 +336,7 @@ el("refresh-button").addEventListener("click", loadProducts);
 el("product-form").addEventListener("submit", saveProduct);
 el("product-cancel-button").addEventListener("click", () => el("product-dialog").close());
 el("product-image-url").addEventListener("input", updateImagePreview);
+el("product-image-file").addEventListener("change", handleImageFilePick);
 el("product-name").addEventListener("input", updateImagePreview);
 el("layout-cards-button").addEventListener("click", (e) => setLayout("cards", e.currentTarget));
 el("layout-list-button").addEventListener("click", (e) => setLayout("list", e.currentTarget));

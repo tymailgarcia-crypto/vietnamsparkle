@@ -125,9 +125,38 @@ await it("customer CANNOT delete financial evidence", async () => {
   await assertFails(deleteObject(at(customer, "payment-proofs/ORD-1/PAY-1.jpg")));
 });
 
+console.log("\nproduct-images/");
+
+await it("owner CAN upload a product photo", async () => {
+  await assertSucceeds(uploadBytes(at(owner, "product-images/P-TEST/photo-1.jpg"), jpg(), JPG_META));
+});
+
+await it("owner CANNOT upload a non-image as a product photo", async () => {
+  await assertFails(uploadBytes(at(owner, "product-images/P-TEST/sneaky.pdf"), pdf(), PDF_META));
+});
+
+await it("owner CANNOT upload a product photo over 10 MB", async () => {
+  await assertFails(uploadBytes(at(owner, "product-images/P-TEST/huge.jpg"), jpg(10 * 1024 * 1024 + 1), JPG_META));
+});
+
+await it("customer CANNOT upload a product photo", async () => {
+  await assertFails(uploadBytes(at(customer, "product-images/P-TEST/vandal.jpg"), jpg(), JPG_META));
+});
+
+await it("driver CANNOT upload a product photo", async () => {
+  await assertFails(uploadBytes(at(driver, "product-images/P-TEST/nope.jpg"), jpg(), JPG_META));
+});
+
+// The PUBLIC storefront loads product photos through the tokenized download
+// URL, which bypasses rules by design — the SDK path stays owner-only like
+// every other prefix.
+await it("anonymous CANNOT read a product photo via the SDK path", async () => {
+  await assertFails(getBytes(at(anon, "product-images/P-TEST/photo-1.jpg")));
+});
+
 console.log("\ndefault deny");
 
-await it("owner CANNOT write outside the two known prefixes", async () => {
+await it("owner CANNOT write outside the three known prefixes", async () => {
   await assertFails(uploadBytes(at(owner, "random/whatever.jpg"), jpg(), JPG_META));
 });
 

@@ -64,6 +64,21 @@ service firebase.storage {
       allow delete: if isOwner();
     }
 
+    // Product catalog photos, uploaded from /catalog.html (owner-only page).
+    // The PUBLIC storefront renders these via the tokenized download URL
+    // stored on products/{id}.imageUrl — which bypasses these rules by design
+    // (see header) and is exactly right here: product photos are public
+    // content. The read rule below is the same defence-in-depth as the other
+    // prefixes. Replacing a photo uploads a new timestamped object; the old
+    // blob stays, consistent with the no-cleanup-policy note in ROADMAP.
+    match /product-images/{productId}/{fileName} {
+      allow read: if isOwner();
+      allow write: if isOwner()
+        && request.resource.size < 10 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+      allow delete: if isOwner();
+    }
+
     // Default deny. Anything not matched above has no client path in or out.
     match /{allPaths=**} {
       allow read, write: if false;
