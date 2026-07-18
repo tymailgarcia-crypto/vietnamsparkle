@@ -8,6 +8,11 @@
 // function is the only thing standing between a stranger and someone else's
 // order history. Hence a test.
 //
+// Since 2026-07-17 the SAME predicate also gates the email write in
+// upsertCustomerFromOrder — planting the orderer's email onto an unproven doc
+// was a second takeover key (see email-propagation-takeover.test.mjs). The
+// source-level checks at the bottom pin that both writes stay behind it.
+//
 // Imported by regex rather than by `import` because adminApp.js pulls in the
 // Firebase web SDK at module load, which needs a browser.
 
@@ -90,6 +95,31 @@ expect(
   "empty-string authUid is falsy, links nothing",
   canLinkAuthUidToCustomer({ authUid: "" }, null),
   false
+);
+
+// --- Source-level guards: both authUid and email must stay gated -----------
+//
+// The truth table above proves the PREDICATE is correct. These prove
+// upsertCustomerFromOrder actually routes both sensitive writes through it,
+// so a future edit can't silently reintroduce the unguarded `payload.email`.
+
+console.log("\nupsertCustomerFromOrder write gating (source)\n");
+
+function expectSource(name, cond) {
+  expect(name, !!cond, true);
+}
+
+expectSource(
+  "authUid write is gated by canLinkAuthUid",
+  /if \(canLinkAuthUid\) payload\.authUid = order\.authUid;/.test(src)
+);
+expectSource(
+  "email write is gated by canLinkAuthUid (not the bare `if (order.email)`)",
+  /if \(order\.email && canLinkAuthUid\) payload\.email = order\.email;/.test(src)
+);
+expectSource(
+  "the unguarded email write is gone",
+  !/if \(order\.email\) payload\.email = order\.email;/.test(src)
 );
 
 console.log(`\n${passed} passed, ${failed} failed\n`);

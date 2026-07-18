@@ -300,7 +300,18 @@ async function upsertCustomerFromOrder(order) {
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp()
   };
-  if (order.email) payload.email = order.email;
+  // email is gated by the SAME ownership proof as authUid, and for the same
+  // reason. order.email is the signed-in orderer's verified token email
+  // (submitPublicOrder: `email: authEmail || ...`). Writing it onto a doc the
+  // orderer cannot prove they own re-opens the 2026-07-15 takeover through the
+  // `email` key: the customers claim rule honours a stored-email match, so a
+  // planted email later hands the profile + order history to whoever owns that
+  // email. Reproduced in rules-tests/email-propagation-takeover.test.mjs.
+  // Safe cases (canLinkAuthUid true): a brand-new doc, or one already owned by
+  // this uid. Everything else keeps its stored email untouched — the same
+  // posture 2026-07-15 chose for authUid (anonymous-then-sign-in customers link
+  // via foldSelfServeStubInto or an owner merge, not via an unproven phone).
+  if (order.email && canLinkAuthUid) payload.email = order.email;
   if (canLinkAuthUid) payload.authUid = order.authUid;
   await setDoc(ref, payload, { merge: true });
   return { customerId, createdNew: !existingData, linkedAuthUid: canLinkAuthUid };
