@@ -300,6 +300,26 @@ service cloud.firestore {
         && request.resource.data.get('note', '').size() <= 2000;
       allow update, delete: if false;
     }
+
+    // Cancellation & refund cases. Server-written ONLY: every state transition
+    // (submitOrderCancellation / resolveOrderCancellation / recordOrderRefund /
+    // attachRefundEvidence / resolveLegacyCancellation) runs in a Cloud Function
+    // on the Admin SDK, which bypasses these rules. Clients get scoped read and
+    // NO write path — same posture as reconciliationEvents, but with a
+    // customer-own read so a signed-in customer can see their own refund status.
+    // `authUid` mirrors the parent order (null for a guest order, which no
+    // customer branch can match). .get() default, not bare access, so a case
+    // that somehow omits the key denies cleanly instead of raising. Because no
+    // client can write any field, no field-level immutability rule is needed —
+    // the immutability of a case lives in the callable transitions and the
+    // append-only /payments + create-only /refund-proofs it links to.
+    // See CANCELLATION-REFUND-PLAN.md.
+    match /orderCancellations/{caseId} {
+      allow read: if isOwner()
+        || (isCustomer() && resource.data.get('authUid', '') == myUid());
+      allow write: if false;
+    }
+
     match /purchases/{purchaseId}    { allow read, write: if isOwner(); }
     match /expenses/{expenseId}      { allow read, write: if isOwner(); }
     match /documents/{documentId}    { allow read, write: if isOwner(); }

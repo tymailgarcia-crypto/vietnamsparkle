@@ -64,6 +64,32 @@ service firebase.storage {
       allow delete: if isOwner();
     }
 
+    // Refund evidence for cancellation refunds: bank-transfer screenshots and
+    // photographed signed cash acknowledgments. One folder per order, one object
+    // named for its refundId. See CANCELLATION-REFUND-PLAN.md.
+    //
+    // CREATE-ONLY + immutable: `resource == null` permits the first write only,
+    // so a finalized proof can never be overwritten or deleted through the SDK —
+    // a refund audit trail must not be editable. No update, no delete branch.
+    // The callable (attachRefundEvidence) records the stored object's
+    // generation/hash in Firestore as the tamper check.
+    //
+    // Owner-only SDK read, same as payment-proofs. A customer sees their own
+    // refund receipt through the tokenized getDownloadURL stored on the case /
+    // refund payment — that URL bypasses these rules by design (see header),
+    // exactly like invoice delivery. There is deliberately no customer read
+    // branch: Storage rules here cannot get() the parent order to resolve its
+    // authUid (same limitation noted on payment-proofs), and the token is the
+    // customer's access path.
+    match /refund-proofs/{orderId}/{refundId} {
+      allow read: if isOwner();
+      allow create: if isOwner()
+        && resource == null
+        && request.resource.size < 10 * 1024 * 1024
+        && (request.resource.contentType.matches('image/.*')
+            || request.resource.contentType == 'application/pdf');
+    }
+
     // Product catalog photos, uploaded from /catalog.html (owner-only page).
     // The PUBLIC storefront renders these via the tokenized download URL
     // stored on products/{id}.imageUrl — which bypasses these rules by design

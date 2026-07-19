@@ -39,6 +39,12 @@ const { onDocumentWritten } = require("firebase-functions/firestore");
 const { logger, setGlobalOptions } = require("firebase-functions");
 const { getApp, initializeApp } = require("firebase-admin/app");
 const { getFirestore, FieldValue, FieldPath } = require("firebase-admin/firestore");
+const {
+  vnd,
+  computeRefundRequired,
+  refundStatusFor,
+  computeReductionCancellation
+} = require("./cancellationMath");
 
 setGlobalOptions({ region: "us-central1", maxInstances: 10 });
 
@@ -333,7 +339,10 @@ exports.nightlyReconcileOrderMath = onSchedule(
       status: "running"
     });
 
-    const stats = { scanned: 0, skipped: 0, drifted: 0, fixed: 0, failed: 0 };
+    const stats = {
+      scanned: 0, skipped: 0, drifted: 0, fixed: 0, failed: 0,
+      caseScanned: 0, caseFixed: 0, caseFailed: 0
+    };
 
     let paymentsByOrder;
     try {
@@ -397,6 +406,42 @@ exports.nightlyReconcileOrderMath = onSchedule(
 
       if (snap.size < pageSize) break;
       cursor = snap.docs[snap.docs.length - 1];
+    }
+
+    // Case-refund backstop. reconcileOnPaymentWrite settles cases in real time
+    // but is fire-and-forget (it logs and swallows on failure), and the order
+    // sweep above skips cancelled orders — so without this pass a cancelled
+    // order's case would have no nightly safety net if a trigger fire was
+    // dropped. Re-settle every approved case that still has an open refund.
+    // One equality filter + orderBy(__name__) is served by the automatic
+    // single-field index, so this needs no composite index.
+    let caseCursor = null;
+    while (true) {
+      let cq = db().collection("orderCancellations")
+        .where("decisionStatus", "==", "approved")
+        .orderBy(FieldPath.documentId())
+        .limit(pageSize);
+      if (caseCursor) cq = cq.startAfter(caseCursor);
+      const csnap = await cq.get();
+      if (csnap.empty) break;
+      for (const caseDoc of csnap.docs) {
+        const c = caseDoc.data() || {};
+        if (!(Number(c.refundRequired || 0) > 0)) continue;
+        if (c.refundStatus !== "pending" && c.refundStatus !== "partial") continue;
+        stats.caseScanned += 1;
+        try {
+          const changed = await reconcileCaseRefund(caseDoc.id, {});
+          if (changed) stats.caseFixed += 1;
+        } catch (err) {
+          stats.caseFailed += 1;
+          logger.error("nightlyReconcileOrderMath: case fix failed", {
+            caseId: caseDoc.id,
+            error: String((err && err.message) || err)
+          });
+        }
+      }
+      if (csnap.size < pageSize) break;
+      caseCursor = csnap.docs[csnap.docs.length - 1];
     }
 
     await runRef.set({
@@ -657,6 +702,78 @@ async function reconcileOne(orderId, runId, opts = {}) {
   });
 }
 
+// Recompute a cancellation case's refund settlement from the immutable negative
+// payments linked to it. This is the case-ledger sibling of reconcileOne — and
+// it deliberately does NOT live inside reconcileOne, which returns early on a
+// cancelled order (a FULL-cancellation refund lands on a cancelled order, so
+// reconcileOne would never see it). refundRemaining is ALWAYS recomputed from
+// the payments, never incremented, so a duplicate trigger fire is a no-op.
+// Idempotent + transactional. See CANCELLATION-REFUND-PLAN.md.
+async function reconcileCaseRefund(caseId, opts = {}) {
+  return db().runTransaction(async (tx) => {
+    const caseRef = db().doc(`orderCancellations/${caseId}`);
+    const caseSnap = await tx.get(caseRef);
+    if (!caseSnap.exists) return false;
+    const c = caseSnap.data() || {};
+    // Only an approved case settles. A requested/dismissed case owes nothing.
+    if (c.decisionStatus !== "approved") return false;
+    const required = Number(c.refundRequired || 0);
+    if (!(required > 0)) return false;
+
+    // Re-sum the immutable negative refund payments linked to THIS case. The
+    // tx.get(query) locks the read set so a payment landing mid-transaction is
+    // included, exactly as reconcileOne does for order payments.
+    const paySnap = await tx.get(
+      db().collection("payments").where("cancellationCaseId", "==", caseId)
+    );
+    let refunded = 0;
+    paySnap.forEach((d) => {
+      const amt = Number((d.data() || {}).amount || 0);
+      if (Number.isFinite(amt) && amt < 0) refunded += -amt;
+    });
+
+    const remaining = Math.max(0, required - refunded);
+    const status = remaining <= 0 ? "paid" : (refunded > 0 ? "partial" : "pending");
+    // recordOrderRefund rejects over-refunds at write time, but a console /
+    // Admin-SDK write cannot be rejected after the fact — clamp remaining at 0
+    // but surface the anomaly rather than swallowing it.
+    const overRefunded = refunded > required;
+
+    const storedRemaining = Number(c.refundRemaining || 0);
+    const storedStatus = String(c.refundStatus || "");
+    if (storedRemaining === remaining && storedStatus === status && !overRefunded) {
+      return false;
+    }
+
+    tx.update(caseRef, {
+      refundRemaining: remaining,
+      refundStatus: status,
+      reconciledAt: FieldValue.serverTimestamp(),
+      updatedAt: new Date().toISOString()
+    });
+
+    if (opts.eventSource) {
+      // A refund payment reconciled the case outside the recordOrderRefund
+      // callable (a console/Admin-SDK write), or an over-refund was detected.
+      // Same owner-read sink as the order path — worth investigating.
+      tx.set(db().collection("reconciliationEvents").doc(), {
+        caseId,
+        orderId: c.orderId || null,
+        kind: "case-refund",
+        before: { refundRemaining: storedRemaining, refundStatus: storedStatus },
+        after: { refundRemaining: remaining, refundStatus: status },
+        refundRequired: required,
+        refundedSum: refunded,
+        overRefunded,
+        source: opts.eventSource,
+        at: FieldValue.serverTimestamp()
+      });
+    }
+
+    return true;
+  });
+}
+
 // --- Real-time reconciliation on payment write ---------------------------
 //
 // The nightly job is the full-collection backstop; this catches drift within
@@ -681,20 +798,694 @@ exports.reconcileOnPaymentWrite = onDocumentWritten(
     const before = event.data && event.data.before && event.data.before.exists
       ? event.data.before.data() : null;
     const orderId = String((after && after.orderId) || (before && before.orderId) || "");
-    if (!orderId) return;
-    try {
-      const fixed = await reconcileOne(orderId, null, { eventSource: "payment-write" });
-      if (fixed) {
-        logger.error("reconcileOnPaymentWrite: corrected order drift", {
+    const caseId = String((after && after.cancellationCaseId) || (before && before.cancellationCaseId) || "");
+
+    // Branch 1 — active-order money. Unchanged. reconcileOne is a no-op on a
+    // cancelled order (it returns early), which is exactly right: a full
+    // cancellation freezes the order and the case owns settlement below.
+    if (orderId) {
+      try {
+        const fixed = await reconcileOne(orderId, null, { eventSource: "payment-write" });
+        if (fixed) {
+          logger.error("reconcileOnPaymentWrite: corrected order drift", {
+            orderId,
+            paymentId: event.params.paymentId
+          });
+        }
+      } catch (err) {
+        logger.error("reconcileOnPaymentWrite order failed", {
           orderId,
-          paymentId: event.params.paymentId
+          error: String((err && err.message) || err)
         });
       }
-    } catch (err) {
-      logger.error("reconcileOnPaymentWrite failed", {
-        orderId,
-        error: String((err && err.message) || err)
-      });
+    }
+
+    // Branch 2 — cancellation-case settlement. A refund payment carries a
+    // cancellationCaseId; this re-settles the case EVEN WHEN its order is
+    // cancelled (where Branch 1 is intentionally a no-op). Independent of Branch
+    // 1 so a partial-cancel refund updates both the active order and the case
+    // exactly once each. See CANCELLATION-REFUND-PLAN.md.
+    if (caseId) {
+      try {
+        const changed = await reconcileCaseRefund(caseId, { eventSource: "payment-write" });
+        if (changed) {
+          logger.error("reconcileOnPaymentWrite: corrected case refund", {
+            caseId,
+            paymentId: event.params.paymentId
+          });
+        }
+      } catch (err) {
+        logger.error("reconcileOnPaymentWrite case failed", {
+          caseId,
+          error: String((err && err.message) || err)
+        });
+      }
     }
   }
 );
+
+// --- Cancellation & refund callables -------------------------------------
+//
+// The state machine (approval is one transaction; cases own refund obligations;
+// refunds are immutable negative /payments) lives in CANCELLATION-REFUND-PLAN.md.
+// This slice implements the invariant-bearing paths: full cancellation,
+// reduction-only partial cancellation, the request→approve/dismiss flow, and the
+// refund lifecycle with over-refund rejection. Deferred to a follow-up (all
+// additive, none change these invariants): attachRefundEvidence,
+// resolveLegacyCancellation, mixed add/remove partial (re-pricing new products),
+// and depositEvents `charge_reversed` reversal (needs per-container-type
+// modelling against the order's existing charged events — getting it wrong
+// corrupts the "containers you hold" ledger, so it lands on its own).
+
+function requireOwner(request) {
+  const role = request.auth && request.auth.token ? request.auth.token.role : null;
+  if (role !== "owner") throw new HttpsError("permission-denied", "Owner only.");
+  return request.auth.uid;
+}
+
+// Runs the atomic approval: re-reads the order/items/payments/sibling cases,
+// applies the full or reduction-partial mutation, and writes the approved case —
+// all in ONE transaction, so an approved case can never coexist with an
+// unmutated order. Idempotent: a second approval of the same caseId is a no-op.
+async function applyApprovalTransaction(input) {
+  const {
+    orderId, caseId, kind, reason, remainingItems,
+    requestedBy, requestedByRole, requestedAt, decidedBy
+  } = input;
+
+  return db().runTransaction(async (tx) => {
+    // ---- READS (all before any write) ----
+    const orderRef = db().doc(`orders/${orderId}`);
+    const orderSnap = await tx.get(orderRef);
+    if (!orderSnap.exists) throw new HttpsError("not-found", "Order not found.");
+    const order = orderSnap.data() || {};
+
+    const caseRef = db().doc(`orderCancellations/${caseId}`);
+    const caseSnap = await tx.get(caseRef);
+    if (caseSnap.exists) {
+      const ec = caseSnap.data() || {};
+      // Idempotency FIRST — before the order-status guards. A re-run of an
+      // already-approved full cancellation would otherwise trip the
+      // "order already cancelled" guard on the very order this case cancelled.
+      if (ec.decisionStatus === "approved") return { caseId, status: "already_approved" };
+      if (ec.decisionStatus === "dismissed") throw new HttpsError("failed-precondition", "This cancellation was dismissed.");
+    }
+
+    if (order.status === "delivered") {
+      throw new HttpsError("failed-precondition", "A delivered order cannot be cancelled — use a return/refund.");
+    }
+    if (order.status === "cancelled") {
+      throw new HttpsError("failed-precondition", "Order is already cancelled.");
+    }
+    if (order.status === "out_for_delivery") {
+      throw new HttpsError("failed-precondition", "Return the order to assignment before cancelling.");
+    }
+
+    const itemsSnap = await tx.get(db().collection("orderItems").where("orderId", "==", orderId));
+    const currentItems = itemsSnap.docs.map((d) => ({ _ref: d.ref, ...(d.data() || {}) }));
+
+    const paySnap = await tx.get(db().collection("payments").where("orderId", "==", orderId));
+    let netPayments = 0;
+    paySnap.forEach((d) => {
+      const a = Number((d.data() || {}).amount || 0);
+      if (Number.isFinite(a)) netPayments += a;
+    });
+
+    // Sibling cases on the same order. Single-field query (no composite index);
+    // filter to still-open approved obligations in code.
+    const sibSnap = await tx.get(db().collection("orderCancellations").where("orderId", "==", orderId));
+    let siblingOpen = 0;
+    sibSnap.forEach((d) => {
+      if (d.id === caseId) return;
+      const c = d.data() || {};
+      if (c.decisionStatus === "approved" && (c.refundStatus === "pending" || c.refundStatus === "partial")) {
+        siblingOpen += Number(c.refundRemaining || 0);
+      }
+    });
+
+    // Resolve per-unit deposit from canonical products (orderItems don't store
+    // it). Read in the read phase so the snapshot is accurate for both kinds.
+    const productIds = Array.from(new Set(currentItems.map((i) => String(i.productId)).filter(Boolean)));
+    const prodSnaps = await Promise.all(productIds.map((id) => tx.get(db().doc(`products/${id}`))));
+    const depositByProduct = {};
+    prodSnaps.forEach((ps) => {
+      if (ps.exists) depositByProduct[ps.id] = Number((ps.data() || {}).defaultDepositAmount || 0);
+    });
+
+    // ---- COMPUTE ----
+    const beforeItems = currentItems.map((i) => ({
+      productId: String(i.productId || ""),
+      name: String(i.productName || ""),
+      qty: vnd(i.quantity),
+      unitPrice: vnd(i.unitPrice),
+      depositPerUnit: vnd(depositByProduct[String(i.productId)] || 0)
+    }));
+    const beforeSnapshot = {
+      status: order.status,
+      subtotal: vnd(order.subtotal),
+      depositTotal: vnd(order.depositTotal),
+      amountPaid: vnd(order.amountPaid),
+      balanceDue: vnd(order.balanceDue),
+      items: beforeItems
+    };
+
+    let revisedSubtotal;
+    let revisedDepositTotal;
+    let lineDeltas;
+    let afterItemsSnapshot;
+    let rewriteItems = null;
+    let afterStatus;
+
+    if (kind === "full") {
+      revisedSubtotal = 0;
+      revisedDepositTotal = 0;
+      lineDeltas = beforeItems.map((i) => ({
+        productId: i.productId, name: i.name, fromQty: i.qty, toQty: 0,
+        delta: -i.qty, unitPrice: i.unitPrice, depositPerUnit: i.depositPerUnit
+      }));
+      afterItemsSnapshot = [];
+      afterStatus = "cancelled";
+    } else {
+      const desired = {};
+      (remainingItems || []).forEach((r) => {
+        desired[String(r.productId)] = Math.floor(Number(r.quantity) || 0);
+      });
+      let red;
+      try {
+        red = computeReductionCancellation(
+          currentItems.map((i) => ({
+            productId: i.productId, productName: i.productName,
+            quantity: i.quantity, unitPrice: i.unitPrice
+          })),
+          desired,
+          depositByProduct
+        );
+      } catch (err) {
+        // Increases / new products are edits, not cancellations.
+        throw new HttpsError("invalid-argument", String((err && err.message) || err));
+      }
+      if (!red.lineDeltas.length) {
+        throw new HttpsError("failed-precondition", "A partial cancellation must reduce at least one item.");
+      }
+      revisedSubtotal = Math.max(0, vnd(order.subtotal) - red.subtotalRemoved);
+      revisedDepositTotal = Math.max(0, vnd(order.depositTotal) - red.depositRemoved);
+      lineDeltas = red.lineDeltas;
+      rewriteItems = red.afterItems;
+      afterItemsSnapshot = red.afterItems.map((i) => ({
+        productId: i.productId, name: i.productName, qty: i.quantity,
+        unitPrice: i.unitPrice, depositPerUnit: i.depositPerUnit
+      }));
+      afterStatus = order.status; // stays active
+    }
+
+    const revisedTotal = revisedSubtotal + revisedDepositTotal;
+    const refundRequired = computeRefundRequired(netPayments, revisedTotal, siblingOpen);
+    const nowIso = new Date().toISOString();
+
+    // ---- WRITES ----
+    if (kind === "full") {
+      tx.update(orderRef, {
+        status: "cancelled",
+        cancellationReason: reason,
+        cancelledAt: nowIso,
+        cancelledBy: requestedByRole === "customer" ? "owner_via_request" : "owner",
+        cancellationCaseId: caseId,
+        updatedAt: nowIso
+      });
+    } else {
+      // Rewrite orderItems: delete the current set, write the surviving set —
+      // mirrors the existing Edit flow's delete-then-write. amountPaid is
+      // re-derived from the fresh payment sum so the order stays self-consistent.
+      currentItems.forEach((i) => tx.delete(i._ref));
+      rewriteItems.forEach((line) => {
+        tx.set(db().doc(`orderItems/${buildOrderId("ITEM")}`), {
+          orderId,
+          authUid: order.authUid || null,
+          productId: line.productId,
+          productName: line.productName,
+          quantity: line.quantity,
+          unitPrice: line.unitPrice,
+          lineTotal: line.lineTotal,
+          depositPerUnit: line.depositPerUnit
+        });
+      });
+      const newAmountPaid = vnd(netPayments);
+      const newBalance = revisedTotal - newAmountPaid;
+      tx.update(orderRef, {
+        subtotal: revisedSubtotal,
+        depositTotal: revisedDepositTotal,
+        amountPaid: newAmountPaid,
+        balanceDue: newBalance,
+        paymentStatus: paymentStatusFor(newAmountPaid, newBalance),
+        partialCancellationCaseId: caseId,
+        updatedAt: nowIso
+      });
+    }
+
+    tx.set(caseRef, {
+      orderId,
+      customerId: order.customerId || null,
+      authUid: order.authUid || null,
+      kind,
+      decisionStatus: "approved",
+      refundStatus: refundRequired > 0 ? "pending" : "not_required",
+      evidenceStatus: refundRequired > 0 ? "missing" : "not_required",
+      requestedBy: requestedBy || decidedBy,
+      requestedByRole: requestedByRole || "owner",
+      requestedAt: requestedAt || nowIso,
+      reason,
+      decidedBy: decidedBy || requestedBy,
+      decidedAt: nowIso,
+      decisionNote: null,
+      before: beforeSnapshot,
+      after: {
+        status: afterStatus,
+        subtotal: revisedSubtotal,
+        depositTotal: revisedDepositTotal,
+        items: afterItemsSnapshot
+      },
+      lineDeltas,
+      netPaymentsAtDecision: vnd(netPayments),
+      revisedOrderTotal: revisedTotal,
+      refundRequired,
+      refundRemaining: refundRequired,
+      source: "app",
+      legacyOutcome: null,
+      createdAt: (caseSnap.exists && caseSnap.data().createdAt) || nowIso,
+      updatedAt: nowIso
+    });
+
+    return { caseId, status: "approved", kind, refundRequired };
+  });
+}
+
+// Owner applies a cancellation immediately; a customer records a cancellation
+// REQUEST (no order mutation). Idempotent on caseId = `${orderId}-cx-${clientRequestId}`.
+exports.submitOrderCancellation = onCall(async (request) => {
+  const uid = request.auth ? request.auth.uid : null;
+  if (!uid) throw new HttpsError("unauthenticated", "Sign in first.");
+  const role = request.auth.token ? request.auth.token.role : null;
+
+  const data = request.data || {};
+  const orderId = String(data.orderId || "");
+  const kind = String(data.kind || "");
+  const reason = String(data.reason || "").trim();
+  const clientRequestId = String(data.clientRequestId || "");
+  if (!orderId) throw new HttpsError("invalid-argument", "orderId is required.");
+  if (kind !== "full" && kind !== "partial") throw new HttpsError("invalid-argument", "kind must be 'full' or 'partial'.");
+  if (reason.length < 3 || reason.length > 2000) throw new HttpsError("invalid-argument", "Provide a reason (3–2000 characters).");
+  if (!/^[A-Za-z0-9_-]{8,120}$/.test(clientRequestId)) throw new HttpsError("invalid-argument", "clientRequestId must be a stable 8–120 char token.");
+  const caseId = `${orderId}-cx-${clientRequestId}`;
+
+  if (role === "owner") {
+    let remainingItems = null;
+    if (kind === "partial") {
+      remainingItems = Array.isArray(data.remainingItems) ? data.remainingItems : null;
+      if (!remainingItems) throw new HttpsError("invalid-argument", "remainingItems is required for a partial cancellation.");
+    }
+    return applyApprovalTransaction({
+      orderId, caseId, kind, reason, remainingItems,
+      requestedBy: uid, requestedByRole: "owner", requestedAt: new Date().toISOString(), decidedBy: uid
+    });
+  }
+
+  // Customer path — a REQUEST only, no mutation. (An unpaid pending_approval
+  // order still cancels via the existing direct client write; this callable is
+  // for requesting cancellation of an already-approved order they own.)
+  return db().runTransaction(async (tx) => {
+    const orderRef = db().doc(`orders/${orderId}`);
+    const orderSnap = await tx.get(orderRef);
+    if (!orderSnap.exists) throw new HttpsError("not-found", "Order not found.");
+    const order = orderSnap.data() || {};
+    if (order.authUid !== uid) throw new HttpsError("permission-denied", "Not your order.");
+    if (order.status === "delivered" || order.status === "cancelled") {
+      throw new HttpsError("failed-precondition", "This order can no longer be cancelled.");
+    }
+    const caseRef = db().doc(`orderCancellations/${caseId}`);
+    const caseSnap = await tx.get(caseRef);
+    if (caseSnap.exists) return { caseId, status: caseSnap.data().decisionStatus || "requested" };
+
+    const nowIso = new Date().toISOString();
+    tx.set(caseRef, {
+      orderId,
+      customerId: order.customerId || null,
+      authUid: order.authUid || null,
+      kind: "full",
+      decisionStatus: "requested",
+      refundStatus: "not_required",
+      evidenceStatus: "not_required",
+      requestedBy: uid,
+      requestedByRole: "customer",
+      requestedAt: nowIso,
+      reason,
+      decidedBy: null,
+      decidedAt: null,
+      decisionNote: null,
+      before: null,
+      after: null,
+      lineDeltas: [],
+      netPaymentsAtDecision: 0,
+      revisedOrderTotal: 0,
+      refundRequired: 0,
+      refundRemaining: 0,
+      source: "app",
+      legacyOutcome: null,
+      createdAt: nowIso,
+      updatedAt: nowIso
+    });
+    // Mirror the existing unscoped request flags so the dashboard banner shows.
+    tx.update(orderRef, {
+      cancellationRequested: true,
+      cancellationRequestReason: reason,
+      cancellationRequestedAt: nowIso,
+      cancellationCaseId: caseId,
+      updatedAt: nowIso
+    });
+    return { caseId, status: "requested" };
+  });
+});
+
+// Owner approves (runs the atomic mutation) or dismisses a cancellation request.
+exports.resolveOrderCancellation = onCall(async (request) => {
+  const uid = requireOwner(request);
+  const data = request.data || {};
+  const caseId = String(data.caseId || "");
+  const decision = String(data.decision || "");
+  const decisionNote = data.decisionNote != null ? String(data.decisionNote).slice(0, 2000) : null;
+  if (!caseId) throw new HttpsError("invalid-argument", "caseId is required.");
+  if (decision !== "approve" && decision !== "dismiss") throw new HttpsError("invalid-argument", "decision must be 'approve' or 'dismiss'.");
+
+  const caseSnap = await db().doc(`orderCancellations/${caseId}`).get();
+  if (!caseSnap.exists) throw new HttpsError("not-found", "Cancellation case not found.");
+  const c = caseSnap.data() || {};
+  if (c.decisionStatus === "approved") throw new HttpsError("failed-precondition", "Already approved.");
+  if (c.decisionStatus === "dismissed") throw new HttpsError("failed-precondition", "Already dismissed.");
+
+  const nowIso = new Date().toISOString();
+
+  if (decision === "dismiss") {
+    await db().doc(`orderCancellations/${caseId}`).set({
+      decisionStatus: "dismissed",
+      decidedBy: uid,
+      decidedAt: nowIso,
+      decisionNote,
+      updatedAt: nowIso
+    }, { merge: true });
+    if (c.orderId) {
+      await db().doc(`orders/${c.orderId}`).set({
+        cancellationRequested: FieldValue.delete(),
+        cancellationRequestReason: FieldValue.delete(),
+        cancellationRequestedAt: FieldValue.delete(),
+        updatedAt: nowIso
+      }, { merge: true });
+    }
+    return { caseId, status: "dismissed" };
+  }
+
+  // approve → run the atomic mutation, converting the request into an approved case.
+  const kind = c.kind === "partial" ? "partial" : "full";
+  let remainingItems = null;
+  if (kind === "partial") {
+    remainingItems = Array.isArray(data.remainingItems) ? data.remainingItems : null;
+    if (!remainingItems) throw new HttpsError("invalid-argument", "remainingItems is required to approve a partial cancellation.");
+  }
+  const res = await applyApprovalTransaction({
+    orderId: c.orderId,
+    caseId,
+    kind,
+    reason: c.reason || decisionNote || "Approved cancellation",
+    remainingItems,
+    requestedBy: c.requestedBy || uid,
+    requestedByRole: c.requestedByRole || "customer",
+    requestedAt: c.requestedAt,
+    decidedBy: uid
+  });
+  if (c.orderId) {
+    await db().doc(`orders/${c.orderId}`).set({
+      cancellationRequested: FieldValue.delete(),
+      cancellationRequestReason: FieldValue.delete(),
+      cancellationRequestedAt: FieldValue.delete(),
+      updatedAt: nowIso
+    }, { merge: true });
+  }
+  return res;
+});
+
+// Records a refund as an immutable negative /payments entry linked to the case.
+// Deterministic payment id makes a retry idempotent; over-refunds are rejected.
+async function recordOrderRefundImpl(uid, data) {
+  const caseId = String(data.caseId || "");
+  const refundId = String(data.refundId || "");
+  const amount = vnd(data.amount);
+  const method = String(data.method || "");
+  const paidAt = String(data.paidAt || new Date().toISOString().slice(0, 10));
+  const reference = data.reference != null ? String(data.reference).slice(0, 300) : null;
+  const note = data.note != null ? String(data.note).slice(0, 2000) : null;
+  const ALLOWED = ["refund_bank", "refund_qr", "refund_cash", "refund_wallet"];
+  if (!caseId) throw new HttpsError("invalid-argument", "caseId is required.");
+  if (!/^[A-Za-z0-9_-]{4,120}$/.test(refundId)) throw new HttpsError("invalid-argument", "refundId must be a stable 4–120 char token.");
+  if (!(amount > 0)) throw new HttpsError("invalid-argument", "Refund amount must be a positive integer.");
+  if (!ALLOWED.includes(method)) throw new HttpsError("invalid-argument", "Invalid refund method.");
+
+  return db().runTransaction(async (tx) => {
+    const caseRef = db().doc(`orderCancellations/${caseId}`);
+    const caseSnap = await tx.get(caseRef);
+    if (!caseSnap.exists) throw new HttpsError("not-found", "Cancellation case not found.");
+    const c = caseSnap.data() || {};
+    if (c.decisionStatus !== "approved") throw new HttpsError("failed-precondition", "Refunds require an approved cancellation.");
+    const required = vnd(c.refundRequired);
+    if (!(required > 0)) throw new HttpsError("failed-precondition", "This cancellation owes no refund.");
+
+    const paymentId = `${caseId}-refund-${refundId}`;
+    const paySnap = await tx.get(db().collection("payments").where("cancellationCaseId", "==", caseId));
+    let alreadyRefunded = 0;
+    let duplicate = false;
+    paySnap.forEach((d) => {
+      if (d.id === paymentId) duplicate = true;
+      const a = Number((d.data() || {}).amount || 0);
+      if (Number.isFinite(a) && a < 0) alreadyRefunded += -a;
+    });
+    if (duplicate) return { caseId, refundId, status: "already_recorded" };
+    if (alreadyRefunded + amount > required) {
+      throw new HttpsError("failed-precondition", `Over-refund: ${alreadyRefunded + amount} exceeds the required ${required}.`);
+    }
+
+    const nowIso = new Date().toISOString();
+    tx.set(db().doc(`payments/${paymentId}`), {
+      orderId: c.orderId || null,
+      customerId: c.customerId || null,
+      authUid: c.authUid || null,
+      cancellationCaseId: caseId,
+      refundId,
+      paymentDate: paidAt,
+      method,
+      amount: -amount,
+      reference,
+      receivedBy: uid,
+      proofDocumentId: null,
+      proofUrl: null,
+      notes: note || "Cancellation refund",
+      deferred: false,
+      createdAt: nowIso
+    });
+
+    const refundedNow = alreadyRefunded + amount;
+    const remaining = Math.max(0, required - refundedNow);
+    const refundStatus = remaining <= 0 ? "paid" : "partial";
+    tx.update(caseRef, {
+      refundRemaining: remaining,
+      refundStatus,
+      // Recorded without evidence stays "missing" (Proof-missing queue) — the
+      // ledger moved but the refund is not presented as verified to the customer.
+      evidenceStatus: c.evidenceStatus === "complete" ? "complete" : "missing",
+      updatedAt: nowIso
+    });
+
+    return { caseId, refundId, status: "recorded", remaining, refundStatus };
+  });
+}
+
+exports.recordOrderRefund = onCall(async (request) => {
+  const uid = requireOwner(request);
+  return recordOrderRefundImpl(uid, request.data || {});
+});
+
+// Links an uploaded proof object (bank screenshot / photographed signed cash
+// acknowledgment) to a recorded refund and marks the case's evidenceStatus. The
+// object itself is written to Storage by the owner client under the create-only
+// refund-proofs/ prefix (storage.rules enforces owner-only + immutability); this
+// records that object's path/URL and the owner-observed generation/hash
+// immutably on the case (server-only collection). Independent server-side
+// re-hash of the object is a future hardening — noted in CANCELLATION-REFUND-PLAN.md.
+async function attachRefundEvidenceImpl(uid, data) {
+  const caseId = String(data.caseId || "");
+  const refundId = String(data.refundId || "");
+  const storagePath = String(data.storagePath || "");
+  const downloadUrl = data.downloadUrl != null ? String(data.downloadUrl).slice(0, 2000) : null;
+  const generation = data.generation != null ? String(data.generation).slice(0, 64) : null;
+  const md5Hash = data.md5Hash != null ? String(data.md5Hash).slice(0, 128) : null;
+  const proofKind = String(data.proofKind || "");
+  if (!caseId) throw new HttpsError("invalid-argument", "caseId is required.");
+  if (!/^[A-Za-z0-9_-]{4,120}$/.test(refundId)) throw new HttpsError("invalid-argument", "refundId must be a stable 4–120 char token.");
+  if (proofKind !== "electronic" && proofKind !== "cash") throw new HttpsError("invalid-argument", "proofKind must be 'electronic' or 'cash'.");
+  if (!storagePath.startsWith("refund-proofs/")) throw new HttpsError("invalid-argument", "storagePath must be under refund-proofs/.");
+
+  return db().runTransaction(async (tx) => {
+    const caseRef = db().doc(`orderCancellations/${caseId}`);
+    const caseSnap = await tx.get(caseRef);
+    if (!caseSnap.exists) throw new HttpsError("not-found", "Cancellation case not found.");
+    const c = caseSnap.data() || {};
+    if (c.decisionStatus !== "approved") throw new HttpsError("failed-precondition", "Evidence requires an approved cancellation.");
+
+    // The refund the evidence covers must actually exist.
+    const paySnap = await tx.get(db().collection("payments").where("cancellationCaseId", "==", caseId));
+    const refundIdsWithPayment = new Set();
+    let matched = false;
+    paySnap.forEach((d) => {
+      const p = d.data() || {};
+      const a = Number(p.amount || 0);
+      if (a < 0 && p.refundId) {
+        refundIdsWithPayment.add(String(p.refundId));
+        if (String(p.refundId) === refundId) matched = true;
+      }
+    });
+    if (!matched) throw new HttpsError("failed-precondition", "No recorded refund with that refundId to attach evidence to.");
+
+    const existing = Array.isArray(c.refundEvidence) ? c.refundEvidence : [];
+    const dupe = existing.find((e) => e && e.refundId === refundId
+      && (e.storagePath === storagePath || (generation && e.generation === generation)));
+    if (dupe) return { caseId, refundId, status: "already_attached", entries: existing.length };
+
+    const nowIso = new Date().toISOString();
+    const entry = { refundId, storagePath, downloadUrl, generation, md5Hash, proofKind, attachedBy: uid, attachedAt: nowIso };
+    const evidence = existing.concat([entry]);
+    // Complete once every recorded refund has at least one evidence entry.
+    const covered = new Set(evidence.map((e) => e && e.refundId));
+    const allCovered = Array.from(refundIdsWithPayment).every((id) => covered.has(id));
+
+    tx.update(caseRef, {
+      refundEvidence: evidence,
+      evidenceStatus: allCovered ? "complete" : "missing",
+      updatedAt: nowIso
+    });
+    return { caseId, refundId, status: "attached", evidenceStatus: allCovered ? "complete" : "missing", entries: evidence.length };
+  });
+}
+
+exports.attachRefundEvidence = onCall(async (request) => {
+  const uid = requireOwner(request);
+  return attachRefundEvidenceImpl(uid, request.data || {});
+});
+
+// Resolves a legacy_imported case (created by the future backfill) with an
+// explicit, evidenced outcome — never a silent "write off what we owe".
+//   refunded_off_system: the owner attests a refund happened outside the app;
+//     writes an immutable negative refund payment LINKED to the case (so the
+//     reconciler counts it) and attests the case.
+//   payment_not_real: an imported positive payment was a data artifact; writes an
+//     immutable reversing payment tagged to the ORDER ONLY (NOT the case — it is
+//     an order correction, not a refund, so reconcileCaseRefund must not count
+//     it) plus a permanent note.
+async function resolveLegacyCancellationImpl(uid, data) {
+  const caseId = String(data.caseId || "");
+  const outcome = String(data.outcome || "");
+  const amount = vnd(data.amount);
+  const details = String(data.details || "").trim();
+  const legacyMethod = data.method != null ? String(data.method).slice(0, 80) : null;
+  const paidAt = String(data.paidAt || new Date().toISOString().slice(0, 10));
+  if (!caseId) throw new HttpsError("invalid-argument", "caseId is required.");
+  if (outcome !== "refunded_off_system" && outcome !== "payment_not_real") {
+    throw new HttpsError("invalid-argument", "outcome must be 'refunded_off_system' or 'payment_not_real'.");
+  }
+  if (!(amount > 0)) throw new HttpsError("invalid-argument", "amount must be a positive integer.");
+  if (details.length < 3) throw new HttpsError("invalid-argument", "details are required (>= 3 chars).");
+
+  return db().runTransaction(async (tx) => {
+    const caseRef = db().doc(`orderCancellations/${caseId}`);
+    const caseSnap = await tx.get(caseRef);
+    if (!caseSnap.exists) throw new HttpsError("not-found", "Cancellation case not found.");
+    const c = caseSnap.data() || {};
+    if (c.source !== "legacy_imported") throw new HttpsError("failed-precondition", "Only legacy-imported cases use this operation.");
+    if (c.legacyOutcome) {
+      // Idempotent on the same outcome; a different outcome on an already-resolved
+      // case is a conflict, not a silent overwrite.
+      if (c.legacyOutcome === outcome) return { caseId, outcome, status: "already_resolved" };
+      throw new HttpsError("failed-precondition", "This legacy case is already resolved with a different outcome.");
+    }
+
+    const paymentId = `${caseId}-legacy-${outcome}`;
+    const existing = await tx.get(db().doc(`payments/${paymentId}`));
+    if (existing.exists) return { caseId, outcome, status: "already_resolved" };
+
+    const nowIso = new Date().toISOString();
+    const isRefund = outcome === "refunded_off_system";
+    tx.set(db().doc(`payments/${paymentId}`), {
+      orderId: c.orderId || null,
+      customerId: c.customerId || null,
+      authUid: c.authUid || null,
+      // Only an off-system refund is a case refund the reconciler should count.
+      cancellationCaseId: isRefund ? caseId : null,
+      correctsCaseId: isRefund ? null : caseId,
+      paymentDate: paidAt,
+      method: isRefund ? "refund_legacy" : "adjustment",
+      amount: -amount,
+      reference: null,
+      receivedBy: uid,
+      legacyMethod,
+      proofDocumentId: null,
+      proofUrl: null,
+      notes: (isRefund ? "Legacy off-system refund attested: " : "Legacy phantom payment reversed: ") + details,
+      deferred: false,
+      createdAt: nowIso
+    });
+
+    const patch = {
+      legacyOutcome: outcome,
+      decisionNote: details,
+      evidenceStatus: "legacy_attested",
+      updatedAt: nowIso
+    };
+    if (isRefund) {
+      // The attested off-system refund is a case-tagged negative payment, so keep
+      // the case consistent with what reconcileCaseRefund will recompute from it:
+      // adopt the attested amount as the requirement when none was recorded, and
+      // derive remaining/status from required vs the amount just refunded.
+      const required0 = vnd(c.refundRequired);
+      const newRequired = required0 > 0 ? required0 : amount;
+      patch.refundRequired = newRequired;
+      patch.refundRemaining = Math.max(0, newRequired - amount);
+      patch.refundStatus = refundStatusFor(newRequired, amount);
+    } else {
+      // The imported payment was never real, so there is no overpayment to
+      // return. Zero the requirement too, or reconcileCaseRefund (which trusts
+      // the stored refundRequired) would flip the case back to pending — the
+      // reversal is tagged to the order only, not the case.
+      patch.refundRequired = 0;
+      patch.refundRemaining = 0;
+      patch.refundStatus = "not_required";
+    }
+    tx.update(caseRef, patch);
+    return { caseId, outcome, status: "resolved" };
+  });
+}
+
+exports.resolveLegacyCancellation = onCall(async (request) => {
+  const uid = requireOwner(request);
+  return resolveLegacyCancellationImpl(uid, request.data || {});
+});
+
+// Test-only surface for the functions-emulator behavioral suite
+// (cancellation.emulator.test.js). Guarded so `firebase deploy` — which loads
+// this module to discover triggers — never sees it. These are plain functions
+// with no endpoint, so discovery would ignore them anyway; the guard removes all
+// doubt. applyApprovalTransaction backs submit-owner and resolve-approve;
+// reconcileCaseRefund backs the payment-write trigger and the nightly backstop.
+if (process.env.NODE_ENV === "test" || process.env.FUNCTIONS_EMULATOR === "true") {
+  exports._cancellationTestApi = () => ({
+    applyApprovalTransaction,
+    reconcileCaseRefund,
+    recordOrderRefundImpl,
+    attachRefundEvidenceImpl,
+    resolveLegacyCancellationImpl
+  });
+}
