@@ -23,7 +23,7 @@
         <section class="hero mobile-page-context"><h1>Reconciliation</h1></section>
         <section class="hero admin-dock">
           <h1>Reconciliation</h1>
-          <p class="muted">The nightly job recomputes every order's money from its payments at 03:00. Anything it had to correct shows up here, newest first.</p>
+          <p class="muted">Every order's money is recomputed from its payments — in real time the instant a payment changes, and again in a full nightly sweep at 03:00. Anything either one had to correct shows up here, newest first.</p>
           <div class="button-row">
             <a class="button-link secondary" href="./admin.html">Dashboard</a>
             <a class="button-link secondary" href="./customers.html">Customers</a>
@@ -52,6 +52,16 @@
             </div>
           </div>
           <div id="run-list" class="recon-runs"></div>
+        </section>
+
+        <section class="panel">
+          <div class="toolbar">
+            <div>
+              <h2>Real-time corrections</h2>
+              <p class="muted" id="event-status"></p>
+            </div>
+          </div>
+          <div id="event-list" class="recon-runs"></div>
         </section>
       </div>
     </main>

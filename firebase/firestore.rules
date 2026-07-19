@@ -258,7 +258,18 @@ service cloud.firestore {
             && get(/databases/$(database)/documents/orders/$(request.resource.data.orderId)).data.assignedDriverId == myDriverId()
             && request.resource.data.amount is number
             && request.resource.data.amount >= 0);
-      allow update, delete: if isOwner();
+      // Append-only: a payment is an immutable financial record. The order's
+      // amountPaid/balanceDue is the running sum of these docs, and the nightly
+      // reconciler (functions/index.js) trusts that sum as truth — so a silent
+      // edit or delete would shift the official balance with nothing to flag it.
+      // Correct a mistake by writing a NEW reversing payment (a negative-amount
+      // adjustment line the owner can create), never by rewriting history. Same
+      // posture as /orderCorrections above. Safe against the delivery flow's
+      // deterministic `${orderId}-deposit-credit` id: both delivery dialogs block
+      // a re-run once the order is delivered (orderApp.js + adminApp.js), so that
+      // line is only ever created, never updated. Admin-SDK writers (the
+      // mergeCustomers re-key, the reconciler) bypass these rules entirely.
+      allow update, delete: if false;
     }
     match /depositEvents/{eventId} {
       allow read: if isOwner()
@@ -310,6 +321,15 @@ service cloud.firestore {
         allow read: if isOwner();
         allow write: if false;
       }
+    }
+
+    // Real-time corrections written by the reconcileOnPaymentWrite trigger
+    // (functions/index.js) via Admin SDK. Owner-read, no client write — same
+    // posture as reconciliationReports. Kept separate from reconciliationReports
+    // so the dashboard's stale-cron detection (newest report age) is unaffected.
+    match /reconciliationEvents/{eventId} {
+      allow read: if isOwner();
+      allow write: if false;
     }
 
     match /inquiries/{inquiryId} {

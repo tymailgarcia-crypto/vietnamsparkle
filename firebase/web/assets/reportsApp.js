@@ -16,6 +16,7 @@ import { escapeHtml, formatCurrency, requireRole } from "./shared.js";
 
 const RUN_LIMIT = 30;
 const DRIFT_LIMIT = 200;
+const EVENT_LIMIT = 100;
 
 // The job runs daily at 03:00 Asia/Ho_Chi_Minh. Past this much silence,
 // something is wrong with the schedule rather than with the data.
@@ -25,7 +26,9 @@ const state = {
   runs: [],
   drifts: {},
   expanded: {},
-  driftedOnly: false
+  driftedOnly: false,
+  events: [],
+  eventsError: null
 };
 
 function el(id) {
@@ -293,6 +296,98 @@ async function toggleRun(runId) {
   renderRuns();
 }
 
+// Real-time corrections written by the reconcileOnPaymentWrite trigger. Unlike
+// the nightly runs these are a flat list keyed only by time — each row is one
+// order the trigger had to correct the instant a payment changed.
+function renderEvents() {
+  const listNode = el("event-list");
+  const statusNode = el("event-status");
+  if (!listNode) return;
+
+  if (state.eventsError) {
+    if (statusNode) statusNode.textContent = "";
+    listNode.innerHTML = `<p class="muted" style="padding:20px;text-align:center;color:var(--danger)">${escapeHtml(state.eventsError)}</p>`;
+    return;
+  }
+
+  const events = state.events;
+  if (statusNode) {
+    statusNode.textContent = events.length
+      ? `${events.length} correction${events.length === 1 ? "" : "s"} made outside the nightly run`
+      : "";
+  }
+
+  if (!events.length) {
+    listNode.innerHTML = `<p class="muted" style="padding:20px;text-align:center">No real-time corrections. Every payment write left its order already balanced — which is how it should be.</p>`;
+    return;
+  }
+
+  const body = events.map((ev) => {
+    const before = ev.before || {};
+    const after = ev.after || {};
+    const orderHref = `./order.html?id=${encodeURIComponent(ev.orderId || "")}`;
+    return `
+      <tr class="recon-drift-row">
+        <td data-label="When">${escapeHtml(formatRunTime(toDate(ev.at)))}</td>
+        <td data-label="Order" class="recon-drift-order">
+          <a href="${orderHref}"><code>${escapeHtml(ev.orderId || "")}</code></a>
+        </td>
+        <td data-label="Payments">${Number(ev.paymentsCount || 0)}</td>
+        <td data-label="Paid — was">${escapeHtml(formatCurrency(before.amountPaid))}</td>
+        <td data-label="Paid — now" class="recon-drift-after">
+          ${escapeHtml(formatCurrency(after.amountPaid))} ${moneyDelta(before.amountPaid, after.amountPaid)}
+        </td>
+        <td data-label="Balance — was">${escapeHtml(formatCurrency(before.balanceDue))}</td>
+        <td data-label="Balance — now" class="recon-drift-after">
+          ${escapeHtml(formatCurrency(after.balanceDue))} ${moneyDelta(before.balanceDue, after.balanceDue)}
+        </td>
+        <td data-label="Status">
+          <span class="muted">${escapeHtml(before.paymentStatus || "—")}</span>
+          → <strong>${escapeHtml(after.paymentStatus || "—")}</strong>
+        </td>
+      </tr>
+    `;
+  }).join("");
+
+  listNode.innerHTML = `
+    <p class="muted" style="margin:0 0 12px">These orders were corrected the instant a payment changed, outside the nightly run. Because an in-app payment updates its order in the same step, a correction here points at a payment added another way — a data import or a console edit — and is worth a look.</p>
+    <div class="customer-table-wrap">
+      <table class="customer-table recon-drift-table">
+        <thead>
+          <tr>
+            <th>When</th>
+            <th>Order</th>
+            <th>Payments</th>
+            <th>Paid — was</th>
+            <th>Paid — now</th>
+            <th>Balance — was</th>
+            <th>Balance — now</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>${body}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+async function loadEvents() {
+  const statusNode = el("event-status");
+  if (statusNode) statusNode.textContent = "Loading…";
+  try {
+    const snap = await getDocs(query(
+      collection(db, "reconciliationEvents"),
+      orderBy("at", "desc"),
+      limit(EVENT_LIMIT)
+    ));
+    state.events = snap.docs.map((d) => ({ id: d.id, ...(d.data() || {}) }));
+    state.eventsError = null;
+  } catch (error) {
+    state.eventsError = `Could not load real-time corrections: ${error.message || error}`;
+  }
+  renderEvents();
+}
+
 async function loadRuns() {
   setStatus("Loading runs…");
   try {
@@ -312,6 +407,7 @@ async function loadRuns() {
 el("refresh-button").addEventListener("click", () => {
   state.drifts = {};
   loadRuns();
+  loadEvents();
 });
 el("drifted-only").addEventListener("change", (event) => {
   state.driftedOnly = event.target.checked;
@@ -329,5 +425,5 @@ onAuthStateChanged(auth, async (user) => {
   if (!(await requireRole(user, "owner"))) return;
   authView.classList.add("hidden");
   appView.classList.remove("hidden");
-  await loadRuns();
+  await Promise.all([loadRuns(), loadEvents()]);
 });

@@ -12,6 +12,13 @@
 //     order from the actual sum of its payments docs. Any drift is fixed in
 //     a Firestore transaction and logged to reconciliationReports/{runId}.
 //
+//   reconcileOnPaymentWrite — Firestore trigger (asia-east2) that reconciles a
+//     single order the instant one of its payments is written, so drift is
+//     corrected in seconds instead of waiting for the nightly job. Normally a
+//     no-op (in-app payment writes update the order in the same transaction);
+//     it catches Admin-SDK/console writes that bypass the atomic path. Genuine
+//     corrections land in reconciliationEvents, not reconciliationReports.
+//
 // The WhatsApp webhook + order-link resolver used to live here. They were
 // pulled on 2026-07-15 because their secrets resolved to "" in production,
 // which made the signature check forgeable by anyone. Source and the
@@ -28,6 +35,7 @@
 
 const { onCall, HttpsError } = require("firebase-functions/https");
 const { onSchedule } = require("firebase-functions/scheduler");
+const { onDocumentWritten } = require("firebase-functions/firestore");
 const { logger, setGlobalOptions } = require("firebase-functions");
 const { getApp, initializeApp } = require("firebase-admin/app");
 const { getFirestore, FieldValue, FieldPath } = require("firebase-admin/firestore");
@@ -566,7 +574,10 @@ exports.mergeCustomers = onCall(async (request) => {
   return { ok: true, fromId, toId, preservedAuthUid, rekeyed: rekeyStats };
 });
 
-async function reconcileOne(orderId, runId) {
+// opts.eventSource — when set (the real-time payment-write trigger), the drift
+// record goes to reconciliationEvents instead of a nightly run's drifts
+// subcollection. The math and the order update are identical either way.
+async function reconcileOne(orderId, runId, opts = {}) {
   return db().runTransaction(async (tx) => {
     const orderRef = db().doc(`orders/${orderId}`);
     const orderSnap = await tx.get(orderRef);
@@ -603,8 +614,7 @@ async function reconcileOne(orderId, runId) {
       return false;
     }
 
-    const driftRef = db().doc(`reconciliationReports/${runId}/drifts/${orderId}`);
-    tx.set(driftRef, {
+    const driftPayload = {
       orderId,
       before: {
         amountPaid: storedAmount,
@@ -620,16 +630,71 @@ async function reconcileOne(orderId, runId) {
       subtotal,
       depositTotal,
       at: FieldValue.serverTimestamp()
-    });
+    };
+
+    if (opts.eventSource) {
+      // Real-time correction from the payment-write trigger. Recorded to its
+      // own collection, NOT reconciliationReports: the dashboard's stale-cron
+      // check reads the newest reconciliationReports doc, so writing there on
+      // every corrected payment would mask a dead nightly job.
+      tx.set(db().collection("reconciliationEvents").doc(), {
+        ...driftPayload,
+        source: opts.eventSource
+      });
+    } else {
+      tx.set(db().doc(`reconciliationReports/${runId}/drifts/${orderId}`), driftPayload);
+    }
 
     tx.update(orderRef, {
       amountPaid: expectedAmountPaid,
       balanceDue: expectedBalance,
       paymentStatus: expectedStatus,
       reconciledAt: FieldValue.serverTimestamp(),
-      reconciledRunId: runId
+      reconciledRunId: opts.eventSource ? null : runId
     });
 
     return true;
   });
 }
+
+// --- Real-time reconciliation on payment write ---------------------------
+//
+// The nightly job is the full-collection backstop; this catches drift within
+// seconds instead of up to a day. Every in-app payment write updates its order's
+// money in the SAME transaction, so this trigger is normally a no-op — it
+// re-checks the order and finds it already correct. It earns its place on the
+// paths that bypass the atomic client write: an Admin-SDK import or a console
+// edit that adds a payment without touching the order. reconcileOne is
+// idempotent and transactional, so the (rare) second fire from a multi-payment
+// delivery just finds no drift.
+//
+// Pinned to asia-east2 because a Firestore trigger must be created in the
+// database's region (setGlobalOptions pins us-central1 for the callables). A
+// genuine correction is logged at error level and recorded to
+// reconciliationEvents (owner-read) — it means a write bypassed the atomic path,
+// which is worth investigating.
+exports.reconcileOnPaymentWrite = onDocumentWritten(
+  { document: "payments/{paymentId}", region: "asia-east2" },
+  async (event) => {
+    const after = event.data && event.data.after && event.data.after.exists
+      ? event.data.after.data() : null;
+    const before = event.data && event.data.before && event.data.before.exists
+      ? event.data.before.data() : null;
+    const orderId = String((after && after.orderId) || (before && before.orderId) || "");
+    if (!orderId) return;
+    try {
+      const fixed = await reconcileOne(orderId, null, { eventSource: "payment-write" });
+      if (fixed) {
+        logger.error("reconcileOnPaymentWrite: corrected order drift", {
+          orderId,
+          paymentId: event.params.paymentId
+        });
+      }
+    } catch (err) {
+      logger.error("reconcileOnPaymentWrite failed", {
+        orderId,
+        error: String((err && err.message) || err)
+      });
+    }
+  }
+);
