@@ -47,6 +47,13 @@ Landed on disk, verified at the level noted; **nothing committed or deployed**:
   check, so a duplicate full-cancel approval threw instead of a no-op; (2) the
   legacy `legacyOutcome` guard threw on a same-outcome retry instead of returning
   idempotently. Both fixed and re-verified.
+- **Legacy backfill — DONE + tested.** `src/scripts/backfillLegacyCancellations.js`
+  (dry-run default; `--write` / `--limit N`) creates a `legacy_imported` case per
+  already-cancelled order; a positive net-payment order is flagged `legacyReview`
+  + `refundStatus: pending` for owner review (NEVER inferred as refunded). Pure
+  `computeLegacyCase` + `runBackfill` — **7/7 green** on the emulator (dry-run
+  writes nothing, write is idempotent, testFixture skipped). `schema.js` gained
+  the `orderCancellations` collection name. Feeds `resolveLegacyCancellation`.
 
 **Not yet done — before this ships to users:**
 
@@ -54,11 +61,13 @@ Landed on disk, verified at the level noted; **nothing committed or deployed**:
   this cut is **reduction-only**; increases/new products are rejected as edits.
 - **`depositEvents` `charge_reversed` reversal** — deferred so it can be modelled
   per container type against the order's existing charged events without
-  corrupting the "containers you hold" ledger.
+  corrupting the "containers you hold" ledger. NOTE: this needs a coordinated
+  CLIENT change too — the "containers you hold" aggregation nets
+  `charged − refunded − credited − forfeited` and must learn `charge_reversed`.
 - **Client wiring** (order-record panel, Receivables queues, dashboard badges,
-  customer refund view), the scoped rule-tightening, and the legacy **backfill**.
-  `resolveLegacyCancellation` is built and tested but has no inputs until the
-  backfill lands.
+  customer refund view) and the scoped rule-tightening. The backfill above is
+  built; run it with `--write` when ready (after the Historical-review UI exists
+  so the flagged cases are actionable).
 - **Independent server-side re-hash** of refund-proof objects (attachRefundEvidence
   currently records the owner-observed Storage generation/hash; storage.rules
   already enforce create-only immutability of the object itself).

@@ -2,6 +2,7 @@ export const COLLECTIONS = {
   customers: "customers",
   orders: "orders",
   orderItems: "orderItems",
+  orderCancellations: "orderCancellations",
   products: "products",
   drivers: "drivers",
   payments: "payments",
