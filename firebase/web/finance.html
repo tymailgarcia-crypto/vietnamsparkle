@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Finance · Vietnam Sparkle</title>
+    <link rel="stylesheet" href="./assets/styles.css">
+    <style>
+      .finance-month-heading {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+      .finance-month-heading h2 { margin: 0; }
+      #finance-month-stats {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 8px;
+      }
+      .finance-stat {
+        min-width: 0;
+        border: 1px solid rgba(27, 104, 233, 0.16);
+        border-radius: 10px;
+        background: #f7faff;
+        padding: 10px 11px;
+      }
+      .finance-stat > span {
+        display: block;
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 700;
+        line-height: 1.25;
+      }
+      .finance-stat > strong {
+        display: block;
+        margin-top: 2px;
+        color: var(--ink);
+        font-size: 18px;
+        line-height: 1.2;
+        overflow-wrap: anywhere;
+      }
+      .finance-stat > small {
+        display: block;
+        margin-top: 3px;
+        color: var(--muted);
+        font-size: 10px;
+        line-height: 1.3;
+      }
+      #finance-status { margin: 0 0 10px; }
+      @media (max-width: 760px) {
+        #finance-month-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .finance-stat > small { display: none; }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="page has-admin-dock">
+      <section id="auth-view" class="auth-shell hidden">
+        <div class="auth-card">
+          <span class="pill">Owner sign-in required</span>
+          <h2>Sign in to view Finance</h2>
+          <div class="button-row">
+            <a class="button-link primary" href="./admin.html">Go to sign in</a>
+          </div>
+        </div>
+      </section>
+
+      <div id="app-view" class="hidden">
+        <a class="cog-button floating-settings" href="./settings.html" title="Settings" aria-label="Settings">&#9881;</a>
+        <section class="hero mobile-page-context"><h1>Finance</h1></section>
+        <section class="hero admin-dock">
+          <h1>Finance</h1>
+          <div class="button-row">
+            <a class="button-link secondary" href="./admin.html">Dashboard</a>
+            <a class="button-link secondary" href="./customers.html">Customers</a>
+            <a class="button-link secondary" href="./orders.html">Orders</a>
+            <a class="button-link secondary" href="./map.html">Map</a>
+            <a class="button-link secondary" href="./finance.html" aria-current="page">Finance</a>
+            <a class="button-link secondary" href="./receivables.html">Receivables</a>
+            <a class="button-link secondary" href="./deposits.html">Deposits</a>
+            <a class="button-link secondary" href="./reports.html">Reconciliation</a>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="finance-month-heading">
+            <h2>This month</h2>
+            <span class="pill" id="finance-period-label"></span>
+          </div>
+          <p class="muted" id="finance-status" role="status" aria-live="polite">Loading...</p>
+          <div id="finance-month-stats" aria-label="This month finance summary"></div>
+        </section>
+      </div>
+    </main>
+
+    <script type="module" src="./assets/financeApp.js"></script>
+    <script type="module" src="./assets/dockMenu.js"></script>
+  </body>
+</html>

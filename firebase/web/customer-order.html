@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Your order · Vietnam Sparkle</title>
+    <link rel="stylesheet" href="./assets/styles.css">
+    <style>
+      .customer-order-page { max-width: 980px; }
+      .customer-order-nav { justify-content: space-between; align-items: center; }
+      .customer-order-nav h1 { margin: 0; font-size: clamp(22px, 5vw, 34px); }
+      .customer-order-summary .order-record-heading { align-items: flex-start; }
+      .customer-order-summary .button-row { justify-content: flex-end; }
+      .customer-order-section-heading { margin: 0 0 12px; }
+      .customer-order-payment-note { margin: 10px 0 0; }
+      @media (max-width: 560px) {
+        .customer-order-page { padding-bottom: 28px; }
+        .customer-order-nav { align-items: stretch; }
+        .customer-order-nav .button-row { width: 100%; }
+        .customer-order-nav .button-link { flex: 1 1 0; }
+        .customer-order-summary .order-record-heading { display: grid; gap: 10px; }
+        .customer-order-summary .button-row { justify-content: flex-start; }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="page customer-order-page">
+      <section id="auth-view" class="auth-shell hidden">
+        <div class="auth-card">
+          <span class="pill">Customer sign-in required</span>
+          <h2>Sign in to view your order</h2>
+          <p class="muted">Only the customer who placed this order can open it.</p>
+          <a class="button-link primary" href="./account.html">Go to sign in</a>
+        </div>
+      </section>
+
+      <div id="app-view" class="hidden">
+        <section class="hero customer-order-nav">
+          <div>
+            <span class="pill">YOUR ORDER</span>
+            <h1 id="order-headline">Loading order…</h1>
+            <p id="order-subline">A clear summary of your delivery and payment.</p>
+          </div>
+          <div class="button-row">
+            <a class="button-link secondary" href="./account.html">My account</a>
+            <a class="button-link primary" id="reorder-link" href="./index.html">Order again</a>
+          </div>
+        </section>
+
+        <p id="order-load-status" class="muted" role="status" aria-live="polite"></p>
+        <section id="order-summary" class="panel order-record-summary customer-order-summary"></section>
+
+        <section class="panel">
+          <h2 class="customer-order-section-heading">Items</h2>
+          <div class="customer-table-wrap">
+            <table class="customer-table">
+              <thead><tr><th>Item</th><th style="text-align:right">Qty</th><th style="text-align:right">Unit price</th><th style="text-align:right">Line total</th></tr></thead>
+              <tbody id="order-item-rows"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h2 class="customer-order-section-heading">Payment summary</h2>
+          <div id="order-money" class="order-record-money"></div>
+          <p id="order-payment-note" class="muted customer-order-payment-note"></p>
+        </section>
+
+        <section class="panel">
+          <h2 class="customer-order-section-heading">Payment history</h2>
+          <div id="order-payments" class="stack"></div>
+        </section>
+
+        <section class="panel">
+          <h2 class="customer-order-section-heading">Containers and deposits</h2>
+          <div id="order-deposits" class="stack"></div>
+        </section>
+
+        <section class="panel">
+          <h2 class="customer-order-section-heading">Container returns</h2>
+          <div id="order-returns" class="stack"></div>
+        </section>
+      </div>
+    </main>
+    <script type="module" src="./assets/customerOrderApp.js"></script>
+  </body>
+</html>
