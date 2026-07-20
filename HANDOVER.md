@@ -1,7 +1,7 @@
 # Vietnam Sparkle operations and handover runbook
 
-**Status:** operational draft; access redundancy and release-candidate checks remain open; paid database recovery is deliberately deferred
-**Last verified:** 2026-07-20 12:21 UTC
+**Status:** operational draft; single-operator access risk accepted and release-candidate checks remain open; paid database recovery is deliberately deferred
+**Last verified:** 2026-07-20 12:44 UTC
 **Project:** `vietnamsparkle-36dfe`
 **Production Hosting:** <https://vietnamsparkle-36dfe.web.app/>
 
@@ -21,6 +21,7 @@ Verified from the repository and local tools:
 - Firebase CLI reauthentication succeeded for `tymailgarcia@gmail.com`; the account can access the ACTIVE project `vietnamsparkle-36dfe` (project number `1092060902387`).
 - Project IAM has one `roles/owner` member: `user:tymailgarcia@gmail.com`. There is no backup project owner or administrator recorded in IAM.
 - Cloud Billing is enabled and linked to `billingAccounts/01D262-5F45BB-369158`. Its IAM policy has one `roles/billing.admin` member: `user:tymailgarcia@gmail.com`; no backup billing administrator was found. A linked billing account means no-cost quotas are allowances, not a hard spending cap.
+- Ty confirmed he is the sole operator and does not have or want a separate backup administrator/recovery account at launch. Loss of access to `tymailgarcia@gmail.com` could therefore block project administration, billing response, deployment, and customer operations; this is an explicitly accepted launch risk, not access redundancy.
 - The `(default)` Firestore database is Firestore Native, Standard edition, in `asia-east2`. Delete protection was enabled and verified on 2026-07-20; point-in-time recovery remains disabled and version retention is one hour (`3600s`).
 - Firestore has no backup schedule and no backups in `asia-east2`. Under Ty's no-monthly-cost launch decision, paid PITR, scheduled backups, and managed restore are deliberately deferred.
 - Nine Cloud Functions are ACTIVE on Node.js 22. `reconcileOnPaymentWrite` is in `asia-east2`; the other eight are in `us-central1`.
@@ -30,9 +31,9 @@ Verified from the repository and local tools:
 Authenticated verification status:
 
 - [x] Firebase project owner binding confirmed.
-- [ ] Add and verify at least one backup project administrator.
+- [!] No backup project administrator by Ty's explicit single-operator decision.
 - [x] Cloud Billing link and billing-administrator binding confirmed.
-- [ ] Add a backup billing administrator and confirm a recovery email not dependent on one person/device.
+- [!] No backup billing administrator or independent recovery email by Ty's explicit single-operator decision.
 - [x] Firestore location, edition, point-in-time recovery, and delete-protection state recorded.
 - [x] Scheduled-backup and existing-backup state recorded: neither exists.
 - [x] Free database delete protection enabled; paid PITR/backups left disabled by decision.
@@ -225,15 +226,15 @@ firebase functions:log --project vietnamsparkle-36dfe
 
 Complete before launch. Do not put passwords, recovery codes, or private credentials in this table.
 
-Pending decision requested from Ty on 2026-07-20 12:31 UTC: name the email to add as backup Firebase project administrator and backup billing administrator, provide an independent recovery email/contact route, and identify the technical-incident and customer-communication contacts. No access binding has been changed while those details are pending.
+Decision recorded 2026-07-20 12:44 UTC: Ty is the sole operator and contact for every launch responsibility. He confirmed there is no backup administrator or separate recovery contact. No access binding was changed.
 
 | Responsibility | Primary | Backup | Contact route | Confirmed |
 |---|---|---|---|---|
-| Business/launch approver | Ty | _pending_ | _pending_ | [ ] |
-| Firebase project administration | `tymailgarcia@gmail.com` (`roles/owner`, verified) | _pending_ | _pending_ | Primary only |
-| Billing administration | `tymailgarcia@gmail.com` (`roles/billing.admin`, verified) | _pending_ | _pending_ | Primary only |
-| Technical incident response | _pending_ | _pending_ | _pending_ | [ ] |
-| Customer communication | _pending_ | _pending_ | _pending_ | [ ] |
+| Business/launch approver | Ty | None | `tymailgarcia@gmail.com` | Sole operator confirmed |
+| Firebase project administration | `tymailgarcia@gmail.com` (`roles/owner`, verified) | None | `tymailgarcia@gmail.com` | Sole operator confirmed |
+| Billing administration | `tymailgarcia@gmail.com` (`roles/billing.admin`, verified) | None | `tymailgarcia@gmail.com` | Sole operator confirmed |
+| Technical incident response | Ty | None | `tymailgarcia@gmail.com` | Sole operator confirmed |
+| Customer communication | Ty | None | `tymailgarcia@gmail.com` | Sole operator confirmed |
 
 Escalation order:
 
@@ -246,12 +247,12 @@ Escalation order:
 ## 10. Handover completion record
 
 - [x] CLI reauthentication completed.
-- [ ] Project/billing owners and backup administrator confirmed.
+- [x] Project/billing owner confirmed; absence of a backup administrator explicitly accepted by Ty.
 - [x] Delete protection enabled; PITR and backup schedule remain disabled under the documented no-monthly-cost policy.
 - [x] Paid managed restore drill explicitly deferred by Ty; no backup exists to restore.
 - [ ] Maps restriction verified.
 - [ ] App Check registration/metrics decision recorded.
 - [ ] Release and previous-good tags/Hosting versions recorded.
 - [ ] Monitoring and budget alert recipients tested.
-- [ ] Launch contacts completed.
+- [x] Launch contacts completed for the current sole-operator model.
 - [ ] Customer and owner authenticated QA signed off in `SHIP-READINESS.md`.
