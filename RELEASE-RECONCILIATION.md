@@ -2,16 +2,16 @@
 
 **Status:** in progress; production is not reproducible from Git yet
 **Prepared by:** Codex
-**Last checked:** 2026-07-20 11:45 UTC
+**Last checked:** 2026-07-20 12:31 UTC
 
 This inventory supports `SHIP-READINESS.md` P0-01. It records what can be committed safely without sweeping another agent's work.
 
 ## Repository checkpoint
 
 - Branch: `main`
-- HEAD: `77acc23` (`Track production-essential owner pages`)
+- HEAD: `734eceb` (`Adopt no-cost Firestore protection policy`)
 - Remote checkpoint: `origin/main` at `04062e5`
-- Local branch: 5 commits ahead of `origin/main`
+- Local branch: 9 commits ahead of `origin/main`
 - Tags: none
 - Tracked working-tree changes: 34 files
 - Untracked top-level/status entries: 20
@@ -96,8 +96,14 @@ Leave these for Claude's matching implementation commits.
 | `5e10f6d` | Cancellation/refund server slice |
 | `39c33db` | Legacy cancellation backfill |
 | `77acc23` | Six production-essential owner/customer pages and controllers |
+| `62ebf43` | Ship gate, release reconciliation, and operational handover documentation |
+| `c649e1e` | Initial Firebase handover blocker evidence |
+| `3d1b101` | Authenticated Firebase project, access, Hosting, and scheduler inventory |
+| `734eceb` | Approved no-cost Firestore protection policy and delete-protection evidence |
 
 These commits are locally preserved but not a complete production checkpoint. Push only after the remaining live file owners reconcile their hunks, the full clean checkout passes the ship tests, and the Hosting tree matches production.
+
+The 2026-07-20 12:31 UTC refresh confirmed that the four commits after `77acc23` touch only `HANDOVER.md`, `RELEASE-RECONCILIATION.md`, and `SHIP-READINESS.md`. They improve release and access documentation but do not resolve the mixed live Hosting tree. The working tree still has 34 tracked modified files, 20 untracked status entries, and exactly one staged path: Claude's pre-existing `firebase/web/assets/adminApp.js` hunk. No tag exists.
 
 ## Required next sequence
 

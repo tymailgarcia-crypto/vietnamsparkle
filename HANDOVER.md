@@ -225,6 +225,8 @@ firebase functions:log --project vietnamsparkle-36dfe
 
 Complete before launch. Do not put passwords, recovery codes, or private credentials in this table.
 
+Pending decision requested from Ty on 2026-07-20 12:31 UTC: name the email to add as backup Firebase project administrator and backup billing administrator, provide an independent recovery email/contact route, and identify the technical-incident and customer-communication contacts. No access binding has been changed while those details are pending.
+
 | Responsibility | Primary | Backup | Contact route | Confirmed |
 |---|---|---|---|---|
 | Business/launch approver | Ty | _pending_ | _pending_ | [ ] |

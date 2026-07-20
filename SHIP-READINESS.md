@@ -61,6 +61,7 @@ Evidence/commit/deploy:
 
 - 2026-07-20: Codex committed the six production-essential files alone as `77acc23`; all six matched production by SHA-256, four modules passed staged syntax checks, and focused checks passed 8/8 + 24/24 + 8/8. The other agent's pre-existing staged `adminApp.js` hunk remained staged and was not included. Ownership/blocker inventory: `RELEASE-RECONCILIATION.md`.
 - 2026-07-20: Authenticated Hosting inventory recorded live version `ceb7745d6aa10c3d` and the immediately preceding fully verified rollback target `9d83a2219e228e81`. `HANDOVER.md` documents the Console rollback route and tagged-worktree redeploy route. A pushed release commit, Git tag, and full tagged-tree hash proof are still required.
+- 2026-07-20 12:31 UTC: repository evidence refreshed at HEAD `734eceb`, 9 commits ahead of `origin/main` (`04062e5`) with no tags. The four commits after `77acc23` are documentation/protection-policy records only. The working tree still contains 34 modified tracked files, 20 untracked status entries, and Claude's sole staged `adminApp.js` hunk, so a push/tag/hash proof remains unsafe until live file owners reconcile their work. No application file, index hunk, push, tag, or deployment was touched during this check.
 
 ### P0-02 — Make public order submission idempotent
 
@@ -310,6 +311,7 @@ Evidence/commit:
 - 2026-07-20: `HANDOVER.md` created with scoped release/rollback, claims, backup/restore-drill, monitoring, Maps/App Check/domain, and escalation procedures. Tracked-tree and Git-history credential scans found no private-key/service-account signature.
 - 2026-07-20 after reauthentication: project and billing IAM confirmed `tymailgarcia@gmail.com` as the sole project owner and sole billing administrator. The initial Firestore read found `(default)` Standard/Native in `asia-east2` with PITR disabled, delete protection disabled, one-hour version retention, no backup schedule, and no backups. No settings were changed during that inventory checkpoint; the later no-cost decision below supersedes its open protection decision.
 - 2026-07-20 no-cost decision: official Firebase documentation confirms PITR data, backup data, and restore operations have no free usage, while delete protection is a database safety setting. Codex enabled only delete protection and independently re-read the database: `DELETE_PROTECTION_ENABLED`, `POINT_IN_TIME_RECOVERY_DISABLED`, Standard/Native, `freeTier: true`, one-hour retention. No backup schedule or backup was created. P0-12 now remains blocked only on access redundancy, recovery contact, and launch contacts.
+- 2026-07-20 12:31 UTC: Ty was asked to name the backup Firebase project/billing administrator email, an independent recovery email/contact route, and the technical-incident and customer-communication contacts. No IAM or billing binding was changed pending that decision.
 
 ## P1 — finish before broad customer use
 
@@ -360,6 +362,7 @@ Add one row when work starts and update the same row when it stops. Detailed fil
 | 2026-07-20 11:17 | P0-12 + P0-01 safe slice | Codex | blocked after repository work | `HANDOVER.md`, `RELEASE-RECONCILIATION.md`, `SHIP-READINESS.md`; six standalone web files | Six production-identical essentials committed as `77acc23`; handover/runbook committed as `62ebf43`. Next: Ty reauthenticates Firebase, confirms owners/backup policy, and approves a restore drill; other agents reconcile mixed live files. |
 | 2026-07-20 12:10 | P0-12 authenticated inventory | Codex | blocked on decisions | `HANDOVER.md`, `SHIP-READINESS.md`; read-only Firebase/Google Cloud state | Reauthentication verified. Sole project owner and billing admin identified; no backup admin. Firestore has no PITR, delete protection, schedule, or backups. Hosting rollback IDs and healthy nightly scheduler/function evidence recorded. No external settings changed. |
 | 2026-07-20 12:21 | P0-12 no-cost protection | Codex | database decision complete; access still blocked | `HANDOVER.md`, `SHIP-READINESS.md`; Firestore `(default)` setting | Ty chose no monthly recovery cost. Enabled and verified free delete protection only; PITR remains disabled and no schedule/backup/restore resource was created. Accepted recovery limit documented. |
+| 2026-07-20 12:31 | P0-01/P0-12 safe continuation | Codex | blocked on shared-file reconciliation and Ty's contact decision | `HANDOVER.md`, `RELEASE-RECONCILIATION.md`, `SHIP-READINESS.md`; read-only Git evidence | Refreshed HEAD/ahead/dirty/staged/tag evidence without touching application work; requested the backup-admin, recovery, incident, and customer-contact details required to close P0-12. |
 
 ## Decision log
 
