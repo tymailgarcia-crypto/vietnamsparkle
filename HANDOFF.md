@@ -1,4 +1,38 @@
-# Handoff — as of 2026-07-16
+# Handoff — as of 2026-07-20
+
+## Claude: read this July 20 ship-readiness briefing first
+
+The app is **NO-GO for public launch or handover**. The authoritative current documents are [SHIP-READINESS.md](SHIP-READINESS.md), [HANDOVER.md](HANDOVER.md), and [RELEASE-RECONCILIATION.md](RELEASE-RECONCILIATION.md). The documentation checkpoint immediately before this handoff was commit `1e232cc` (`Clarify future business operator handover`). It changed only those three documents. Nothing was deployed, pushed, or tagged.
+
+### Shared-tree state that must be preserved
+
+- `main` was 12 commits ahead of `origin/main` immediately before this handoff update. There is still no release tag.
+- The working tree still has 34 tracked modified files and 20 untracked status entries. Most application changes are deployed-but-uncommitted, mixed-author work recorded on `.agent-status.md`.
+- `firebase/web/assets/adminApp.js` is the only staged path. Its staged blob is exactly `a42a37e545da0d90490ab9c1b4d690671accc0a4`, with 14 additions and 1 deletion. It is Claude's pre-existing hunk. Do not unstage, overwrite, or include it in an unrelated commit.
+- `ROADMAP.md` is dirty and mixed. Do not sweep it into an application or documentation commit.
+- Manual deployment snapshots (`.manual-deploy-*-20260720/`) are scratch, not source history. `PNG Cutline Tool/`, `rembg-to-cutline-svg.bat`, and its shortcut are unrelated personal tools. Never sweep them into Vietnam Sparkle commits.
+- Do not run Hosting deployment while any agent has an active `firebase/web/` claim. Do not push or tag until the live application tree is reconciled and verified from a clean checkout.
+
+### Operational decisions—do not reinterpret them
+
+- Ty retains Firebase ownership, Cloud Billing administration, deployment, rollback, and technical incident control after launch. He is the sole Firebase project owner and billing administrator and deliberately chose no backup technical administrator/recovery account.
+- Ty's buddy will be the future business/customer operator and will launch the app for his customers. The buddy's name, contact route, and exact in-app permissions are deliberately pending and do not need to be requested yet.
+- This is **not** a Firebase ownership transfer. Do not add Firebase/Google Cloud access or invent contact information.
+- Firestore delete protection is enabled. PITR is disabled. There are no scheduled backups or existing backups. Ty deliberately deferred paid PITR, backup storage, managed restore, and restore drills under the no-monthly-cost launch policy. Do not enable a paid Firebase feature without new explicit approval.
+- The nightly reconciliation scheduler/function is healthy. Current and previous known-good Hosting version IDs and rollback instructions are in `HANDOVER.md`.
+- Maps-key restriction and App Check registration/metrics remain read-only inventory items. Local tooling cannot query them (`gcloud` is absent; Firebase CLI has no applicable command), and the in-app Cloud Console required sign-in. Do not enable App Check enforcement before verified production traffic passes.
+
+### What Claude should do next
+
+1. Re-read `.agent-status.md` and close the current deployed-but-uncommitted ownership backlog as focused commits, starting with the staged `adminApp.js` hunk. Use hunk staging for every mixed file and commit only owned work.
+2. Preserve all Codex-origin untracked tests for their matching implementation slice. Do not make a miscellaneous test dump. `RELEASE-RECONCILIATION.md` lists which tests are Codex-origin versus Claude-origin.
+3. After application owners reconcile the tree, run the syntax/focused/rules gates and authenticated customer/owner QA from a clean checkout. Then compare the complete Hosting tree to production by SHA-256.
+4. Only after the clean candidate matches production: push the complete checkpoint, create the annotated release-candidate tag, and record the release evidence. Do not push or tag the current mixed tree.
+5. The first new engineering P0 after reconciliation is P0-02, idempotent public-order submission. It touches `publicApp.js` and `functions/index.js`, which are currently Claude-claimed; finish their existing ownership split before starting it.
+
+P0-12 is accurately reassessed as: technical/recovery controls documented, no-backup-administrator risk accepted, and future business-operator binding pending before launch. P0-01 read-only evidence is current through `1e232cc`, but reproducibility remains blocked on application-file reconciliation.
+
+## Earlier development handoff and durable gotchas
 
 The previous version of this file briefed the 2026-07-15 identity/security session. That work shipped and is documented under "Customer identity, merge, and auth" and "Security hardening" in [ROADMAP.md](ROADMAP.md). Nothing from it carries forward except the gotchas below.
 
