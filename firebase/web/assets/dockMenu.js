@@ -7,11 +7,20 @@
 // `.dock-menu` block at the tail of styles.css; this file only rearranges the
 // DOM and toggles a class.
 
-const FINANCE_HREFS = ["./receivables.html", "./deposits.html", "./reports.html"];
+const FINANCE_HREFS = ["./finance.html", "./receivables.html", "./deposits.html", "./reports.html"];
 
 function initDockMenu() {
   const row = document.querySelector(".admin-dock .button-row");
   if (!row) return;
+  if (!row.querySelector('a[href="./finance.html"]')) {
+    const financeLink = document.createElement("a");
+    financeLink.className = "button-link secondary";
+    financeLink.href = "./finance.html";
+    financeLink.textContent = "Finance";
+    if (/finance\.html$/.test(location.pathname)) financeLink.setAttribute("aria-current", "page");
+    const firstMoneyLink = row.querySelector('a[href="./receivables.html"], a[href="./deposits.html"], a[href="./reports.html"]');
+    row.insertBefore(financeLink, firstMoneyLink || null);
+  }
   const links = FINANCE_HREFS
     .map((href) => row.querySelector(`a[href="${href}"]`))
     .filter(Boolean);

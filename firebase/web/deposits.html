@@ -5,6 +5,26 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Deposits · Vietnam Sparkle</title>
     <link rel="stylesheet" href="./assets/styles.css">
+    <style>
+      #deposit-rows > tr:first-child {
+        outline: 3px solid #2f70c5;
+        outline-offset: -3px;
+        box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.85);
+      }
+
+      .deposit-forfeit-button {
+        background: #f8d7da;
+        border-color: #c84a55;
+        color: #7a2016;
+      }
+
+      .deposit-forfeit-button:hover,
+      .deposit-forfeit-button:focus-visible {
+        background: #f2bcc2;
+        border-color: #a92f3b;
+        color: #641510;
+      }
+    </style>
   </head>
   <body>
     <main class="page has-admin-dock">
@@ -35,6 +55,8 @@
           </div>
         </section>
 
+        <div id="deposit-ledger-warning" class="hidden" style="margin-bottom:18px"></div>
+
         <div id="deposit-summary-tiles" class="stats-grid" style="margin-bottom:18px"></div>
 
         <section class="panel">
@@ -47,6 +69,17 @@
               <input id="search-input" type="search" placeholder="Search customer / phone" style="min-width:220px">
               <button class="secondary" id="refresh-button" type="button">Refresh</button>
             </div>
+          </div>
+          <div class="deposit-filters">
+            <div class="filter-chips" id="age-filter" role="group" aria-label="Filter by age">
+              <button type="button" class="filter-chip is-active" data-age="all">All</button>
+              <button type="button" class="filter-chip" data-age="warning">At risk</button>
+              <button type="button" class="filter-chip" data-age="forfeit">Overdue</button>
+            </div>
+            <label class="filter-select">
+              <span class="muted">Container</span>
+              <select id="container-filter"><option value="all">All containers</option></select>
+            </label>
           </div>
           <div class="customer-table-wrap">
             <table class="customer-table deposits-table">

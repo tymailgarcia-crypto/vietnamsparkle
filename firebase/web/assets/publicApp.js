@@ -24,10 +24,15 @@ import {
   computeOrderTotals,
   escapeHtml,
   formatCurrency,
-  normalizePhoneE164VN,
+  isBrokenDepositBalance,
+  normalizePhoneWithCountry,
+  phoneEntryErrorMessage,
   productCategoryKey,
   productImageUrl,
+  setupPhoneCountryPicker,
+  splitPhoneWithCountry,
   setDeliveryWindow,
+  summarizeHeldContainers,
   todayKey,
   withSubmitLock
 } from "./shared.js";
@@ -51,9 +56,224 @@ const state = {
   addressMode: "guest"
 };
 
+let publicOpenOrdersRequestId = 0;
+let emptiesPickupRequestId = 0;
+
+const PUBLIC_OPEN_ORDER_LABELS = {
+  pending_approval: "Waiting for confirmation",
+  new: "Confirmed",
+  assigned: "Being prepared",
+  out_for_delivery: "On the way"
+};
+
+async function renderPublicOpenOrders(user) {
+  const section = document.getElementById("public-open-orders");
+  const list = document.getElementById("public-open-orders-list");
+  const count = document.getElementById("public-open-orders-count");
+  if (!section || !list || !count) return;
+  const requestId = ++publicOpenOrdersRequestId;
+  if (!user) {
+    section.classList.add("hidden");
+    list.innerHTML = "";
+    count.textContent = "";
+    return;
+  }
+  try {
+    const snapshot = await getDocs(query(
+      collection(db, "orders"),
+      where("authUid", "==", user.uid),
+      orderBy("createdAt", "desc"),
+      limit(25)
+    ));
+    if (requestId !== publicOpenOrdersRequestId) return;
+    const open = snapshot.docs
+      .map((item) => ({ id: item.id, ...item.data() }))
+      .filter((order) => order.status !== "delivered" && order.status !== "cancelled");
+    if (!open.length) {
+      section.classList.add("hidden");
+      list.innerHTML = "";
+      count.textContent = "";
+      return;
+    }
+    count.textContent = `(${open.length})`;
+    section.classList.remove("hidden");
+    list.innerHTML = open.slice(0, 3).map((order) => {
+      const total = Number(order.subtotal || 0) + Number(order.depositTotal || 0);
+      const status = PUBLIC_OPEN_ORDER_LABELS[order.status] || order.status || "Open";
+      const detailHref = `./customer-order.html?id=${encodeURIComponent(order.id)}`;
+      return `
+        <a class="public-open-order" href="${detailHref}" style="color:inherit;text-decoration:none" aria-label="View order ${escapeHtml(order.orderId || order.id)}">
+          <div class="public-open-order-main">
+            <strong>${escapeHtml(status)}</strong>
+            <div class="public-open-order-meta">${escapeHtml(order.deliveryDate ? `Delivery ${order.deliveryDate}` : "Delivery date to be confirmed")} · ${escapeHtml(order.orderId || order.id)}</div>
+          </div>
+          <span class="public-open-order-total">${escapeHtml(formatCurrency(total))} →</span>
+        </a>
+      `;
+    }).join("");
+  } catch (error) {
+    if (requestId !== publicOpenOrdersRequestId) return;
+    section.classList.add("hidden");
+    console.warn("Could not load open orders on the order form:", error);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Empties pickup on the order form
+//
+// Ty asked whether a customer should be able to deduct their deposit here. They
+// should not, and this is the alternative. A customer-typed deduction is a
+// deposit credit created with nobody having counted a container, and it puts a
+// discount on the order hours before the driver discovers there are no empties
+// waiting. Deposit money moves in exactly one place — the delivery dialog,
+// against containers the driver physically counted, with a photo.
+//
+// What the customer CAN usefully do is say "come and get them". That request
+// already exists as `emptiesPickupRequested` on the customer doc: it badges the
+// today board, shows in both delivery dialogs, and clears itself when the
+// delivery is saved. It just lived only on account.html, which nobody visits
+// while placing an order. This surfaces the same flag at the moment the
+// customer is actually thinking about it.
+//
+// Everything below is deliberately non-binding. The figure shown is an estimate
+// in prose; it is NOT added to computeOrderTotals, depositTotal or "Due now",
+// because a credit that has not been earned must never reach the order.
+// No rules change: the customers update rule blacklists owner-managed keys, so
+// a signed-in customer may already set these two keys on their own doc — the
+// same write account.html has been making.
+const PUBLIC_CONTAINER_LABELS = {
+  glass_crate: "glass crates",
+  "18_9l_jug": "18.9 L jugs",
+  "19l_jug": "19 L jugs",
+  "20l_jug": "20 L jugs",
+  mixed: "containers"
+};
+
+function publicContainerLabel(type, qty) {
+  const plural = PUBLIC_CONTAINER_LABELS[type] || String(type || "containers").replace(/_/g, " ");
+  return Number(qty) === 1 ? plural.replace(/s$/, "") : plural;
+}
+
+async function loadHeldContainersForUid(uid) {
+  const snap = await getDocs(query(collection(db, "depositEvents"), where("authUid", "==", uid)));
+  return summarizeHeldContainers(snap.docs.map((row) => row.data()));
+}
+
+async function renderEmptiesPickup(user) {
+  const card = document.getElementById("empties-pickup");
+  const toggle = document.getElementById("empties-pickup-toggle");
+  const summary = document.getElementById("empties-pickup-summary");
+  const status = document.getElementById("empties-pickup-status");
+  if (!card || !toggle || !summary) return;
+  const requestId = ++emptiesPickupRequestId;
+  const hide = () => card.classList.add("hidden");
+  // No profile means no deposit history to have containers against, and nothing
+  // to write the flag to.
+  if (!user || !state.customer?.id) {
+    hide();
+    return;
+  }
+  let rows = [];
+  try {
+    rows = await loadHeldContainersForUid(user.uid);
+  } catch (error) {
+    // A container read must never stand between a customer and placing an order.
+    console.warn("Could not load held containers on the order form:", error);
+    hide();
+    return;
+  }
+  if (requestId !== emptiesPickupRequestId) return;
+  // A below-zero balance is a broken ledger, not a holding — offering to collect
+  // against it would invite a return the deposit record cannot absorb. The
+  // owner's delivery dialog suppresses these the same way. Silently excluded:
+  // it is the business's bookkeeping problem, not something to alarm a customer
+  // with mid-order. The deposits page flags it on the owner's side.
+  const holding = rows.filter((row) => Number(row.qty) > 0 && !isBrokenDepositBalance(row.qty, row.deposit));
+  const requested = state.customer?.emptiesPickupRequested === true;
+  if (!holding.length && !requested) {
+    hide();
+    return;
+  }
+  const totalDeposit = holding.reduce((sum, row) => sum + Number(row.deposit || 0), 0);
+  const parts = holding.map((row) => `${Number(row.qty)} ${publicContainerLabel(row.type, row.qty)}`);
+  const held = parts.length
+    ? `You're holding ${parts.join(" and ")}.`
+    : "Your empties are marked for collection.";
+  // "About", and only when there is something to estimate. This is the one line
+  // that could be mistaken for a discount, so it stays conditional prose.
+  const estimate = totalDeposit >= 1
+    ? ` That's ${formatCurrency(totalDeposit)} in deposit — return them all on this delivery and about that much comes off your bill.`
+    : "";
+  summary.innerHTML = `<strong>${escapeHtml(held)}</strong><span class="muted">${escapeHtml(estimate)}</span>`;
+  toggle.checked = requested;
+  if (status) status.textContent = "";
+  card.classList.remove("hidden");
+}
+
+async function toggleEmptiesPickup(event) {
+  const toggle = event.currentTarget;
+  const status = document.getElementById("empties-pickup-status");
+  const requesting = toggle.checked === true;
+  if (!state.user || !state.customer?.id) {
+    toggle.checked = !requesting;
+    return;
+  }
+  toggle.disabled = true;
+  if (status) status.textContent = "Saving…";
+  // Same two keys, same shape as account.html's toggle, so the two screens
+  // cannot disagree about what "requested" means.
+  const payload = {
+    emptiesPickupRequested: requesting,
+    emptiesPickupRequestedAt: requesting ? new Date().toISOString() : null,
+    updatedAt: new Date().toISOString()
+  };
+  try {
+    await setDoc(doc(db, "customers", state.customer.id), payload, { merge: true });
+    state.customer = { ...state.customer, ...payload };
+    if (status) {
+      status.textContent = requesting
+        ? "Saved — the driver will collect them on your next delivery."
+        : "Pickup request cancelled.";
+    }
+  } catch (error) {
+    // Put the checkbox back: leaving it ticked would promise a collection that
+    // was never recorded, and the driver would arrive not knowing to ask.
+    toggle.checked = !requesting;
+    if (status) status.textContent = `Could not save: ${error.message || error}`;
+  } finally {
+    toggle.disabled = false;
+  }
+}
+
+document.getElementById("empties-pickup-toggle")?.addEventListener("change", toggleEmptiesPickup);
+
 let mapsLoadPromise = null;
 let addressMap = null;
 let addressMarker = null;
+let addressInfoWindow = null;
+let addressAutocompleteTimer = null;
+let addressAutocompleteRequestId = 0;
+let addressAutocompletePredictions = [];
+let addressAutocompleteActiveIndex = -1;
+
+const DA_NANG_DELIVERY_BOUNDS = Object.freeze({
+  west: 108.05,
+  south: 15.90,
+  east: 108.35,
+  north: 16.20
+});
+
+function isInsideDaNangDeliveryArea(position) {
+  const latValue = typeof position?.lat === "function" ? position.lat() : position?.lat;
+  const lngValue = typeof position?.lng === "function" ? position.lng() : position?.lng;
+  const lat = Number(latValue);
+  const lng = Number(lngValue);
+  return Number.isFinite(lat) && Number.isFinite(lng)
+    && lat >= DA_NANG_DELIVERY_BOUNDS.south
+    && lat <= DA_NANG_DELIVERY_BOUNDS.north
+    && lng >= DA_NANG_DELIVERY_BOUNDS.west
+    && lng <= DA_NANG_DELIVERY_BOUNDS.east;
+}
 
 function loadGoogleMaps() {
   if (window.google?.maps) return Promise.resolve(window.google.maps);
@@ -70,11 +290,167 @@ function loadGoogleMaps() {
   return mapsLoadPromise;
 }
 
-function setAddressVerifyStatus(text, verified = false) {
+function addressAutocompleteList() {
+  let list = document.getElementById("address-autocomplete-list");
+  if (list) return list;
+  const input = document.getElementById("form-address");
+  if (!input) return null;
+  list = document.createElement("div");
+  list.id = "address-autocomplete-list";
+  list.hidden = true;
+  list.setAttribute("role", "listbox");
+  list.setAttribute("aria-label", "Google Maps address suggestions");
+  list.style.cssText = "margin-top:6px;overflow:hidden;border:1px solid #d8ddd9;border-radius:10px;background:#fff;box-shadow:0 8px 22px rgba(17,34,45,.14)";
+  input.closest("label")?.insertAdjacentElement("afterend", list);
+  input.setAttribute("aria-autocomplete", "list");
+  input.setAttribute("aria-controls", list.id);
+  input.setAttribute("aria-expanded", "false");
+  return list;
+}
+
+function closeAddressAutocomplete() {
+  addressAutocompleteRequestId += 1;
+  addressAutocompletePredictions = [];
+  addressAutocompleteActiveIndex = -1;
+  const input = document.getElementById("form-address");
+  const list = document.getElementById("address-autocomplete-list");
+  if (list) {
+    list.hidden = true;
+    list.replaceChildren();
+  }
+  input?.setAttribute("aria-expanded", "false");
+  input?.removeAttribute("aria-activedescendant");
+}
+
+function setActiveAddressSuggestion(index) {
+  if (!addressAutocompletePredictions.length) return;
+  addressAutocompleteActiveIndex = (index + addressAutocompletePredictions.length)
+    % addressAutocompletePredictions.length;
+  const input = document.getElementById("form-address");
+  document.querySelectorAll("#address-autocomplete-list [role='option']").forEach((option, optionIndex) => {
+    const active = optionIndex === addressAutocompleteActiveIndex;
+    option.setAttribute("aria-selected", String(active));
+    option.style.background = active ? "#eef6f1" : "#fff";
+    if (active) input?.setAttribute("aria-activedescendant", option.id);
+  });
+}
+
+async function chooseAddressSuggestion(placePrediction) {
+  const input = document.getElementById("form-address");
+  if (!input || !placePrediction) return;
+  const suggestedAddress = String(placePrediction.text || "").trim();
+  if (!suggestedAddress) return;
+  input.value = suggestedAddress.slice(0, 499);
+  closeAddressAutocomplete();
+  setAddressVerifyStatus("Address selected — checking its pin on Google Maps…");
+  await verifyAddressOnMap();
+}
+
+function renderAddressSuggestions(predictions) {
+  const list = addressAutocompleteList();
+  const input = document.getElementById("form-address");
+  if (!list || !input) return;
+  addressAutocompletePredictions = predictions.slice(0, 5);
+  addressAutocompleteActiveIndex = -1;
+  list.replaceChildren();
+  if (!addressAutocompletePredictions.length) {
+    closeAddressAutocomplete();
+    return;
+  }
+  addressAutocompletePredictions.forEach((prediction, index) => {
+    const option = document.createElement("button");
+    option.id = `address-autocomplete-option-${index}`;
+    option.type = "button";
+    option.setAttribute("role", "option");
+    option.setAttribute("aria-selected", "false");
+    option.style.cssText = "display:block;width:100%;padding:11px 12px;border:0;border-bottom:1px solid #e5e9e6;background:#fff;color:inherit;font:inherit;text-align:left;cursor:pointer";
+    option.textContent = String(prediction.text || "");
+    option.addEventListener("mouseenter", () => setActiveAddressSuggestion(index));
+    option.addEventListener("click", () => void chooseAddressSuggestion(prediction));
+    list.appendChild(option);
+  });
+  const attribution = document.createElement("div");
+  attribution.setAttribute("translate", "no");
+  attribution.style.cssText = "padding:5px 10px;color:#5e5e5e;font:400 12px Roboto,sans-serif;text-align:right";
+  attribution.textContent = "Google Maps";
+  list.appendChild(attribution);
+  list.hidden = false;
+  input.setAttribute("aria-expanded", "true");
+}
+
+async function fetchAddressSuggestions() {
+  const input = document.getElementById("form-address");
+  const queryText = String(input?.value || "").trim();
+  if (isEmulatorMode || !mapsApiKey || queryText.length < 3 || input?.readOnly) {
+    closeAddressAutocomplete();
+    return;
+  }
+  const requestId = ++addressAutocompleteRequestId;
+  try {
+    const maps = await loadGoogleMaps();
+    const { AutocompleteSuggestion } = await maps.importLibrary("places");
+    const { suggestions } = await AutocompleteSuggestion.fetchAutocompleteSuggestions({
+      input: queryText,
+      includedRegionCodes: ["vn"],
+      region: "vn",
+      language: document.documentElement.lang || "en",
+      locationRestriction: DA_NANG_DELIVERY_BOUNDS
+    });
+    if (requestId !== addressAutocompleteRequestId
+      || queryText !== String(input.value || "").trim()) return;
+    renderAddressSuggestions((suggestions || [])
+      .map((suggestion) => suggestion.placePrediction)
+      .filter(Boolean));
+  } catch (error) {
+    if (requestId === addressAutocompleteRequestId) closeAddressAutocomplete();
+    console.warn("Google address suggestions unavailable; manual entry remains enabled.", error);
+  }
+}
+
+function scheduleAddressSuggestions() {
+  clearTimeout(addressAutocompleteTimer);
+  addressAutocompleteTimer = setTimeout(() => void fetchAddressSuggestions(), 320);
+}
+
+function handleAddressAutocompleteKeydown(event) {
+  if (!addressAutocompletePredictions.length) return;
+  if (event.key === "ArrowDown") {
+    event.preventDefault();
+    setActiveAddressSuggestion(addressAutocompleteActiveIndex + 1);
+  } else if (event.key === "ArrowUp") {
+    event.preventDefault();
+    setActiveAddressSuggestion(addressAutocompleteActiveIndex < 0
+      ? addressAutocompletePredictions.length - 1
+      : addressAutocompleteActiveIndex - 1);
+  } else if (event.key === "Enter") {
+    event.preventDefault();
+    void chooseAddressSuggestion(addressAutocompletePredictions[Math.max(0, addressAutocompleteActiveIndex)]);
+  } else if (event.key === "Escape") {
+    closeAddressAutocomplete();
+  }
+}
+
+function setAddressVerifyStatus(text, verified = false, isError = false) {
   const node = document.getElementById("address-verify-status");
   if (!node) return;
   node.textContent = text;
   node.classList.toggle("address-verified", verified);
+  node.classList.toggle("is-blocking", isError);
+}
+
+// A pre-order blocking message ("do X before you can order") has to be seen:
+// paint it in the error colour and pull it into the middle of the screen so it
+// isn't left off-screen below the Submit button. Neutral/success updates pass
+// no options and clear the blocking styling again.
+function setPublicFeedback(message, { error = false, scroll = false } = {}) {
+  const feedback = document.getElementById("public-feedback");
+  if (!feedback) return null;
+  feedback.textContent = message;
+  feedback.classList.toggle("is-blocking", Boolean(error));
+  if (scroll && typeof feedback.scrollIntoView === "function") {
+    feedback.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+  return feedback;
 }
 
 function normalizeAddress(value) {
@@ -137,11 +513,12 @@ function savedLocationForAddress(address, customer = state.customer) {
   return savedAddressLocationEntries(customer).find((entry) => normalizeAddress(entry.address) === key) || null;
 }
 
-function setSavedAddressHelp(text = "") {
+function setSavedAddressHelp(text = "", isError = false) {
   const help = document.getElementById("saved-address-help");
   if (!help) return;
   help.textContent = text;
   help.hidden = !text;
+  help.classList.toggle("is-blocking", isError && Boolean(text));
 }
 
 function setAddressSaveChoice(value) {
@@ -185,6 +562,7 @@ function setAddressMode(mode, address = "", location = null) {
   const editorLabel = document.getElementById("delivery-address-editor-label");
   const savedLocation = validSavedLocation(location);
   const isSavedAddress = mode === "primary" || mode === "additional";
+  closeAddressAutocomplete();
   state.addressMode = mode;
   if (editor) editor.hidden = isSavedAddress;
   if (editorLabel) editorLabel.textContent = mode === "different"
@@ -354,6 +732,7 @@ async function handleSavedAddressSelection() {
 
 function clearDeliveryLocation(message = "Address changed — confirm the pin again.") {
   state.deliveryLocation = null;
+  addressInfoWindow?.close();
   document.getElementById("address-map-wrap")?.setAttribute("hidden", "");
   setAddressVerifyStatus(message, false);
 }
@@ -363,36 +742,62 @@ async function verifyAddressOnMap() {
   const button = document.getElementById("address-verify-button");
   const address = String(input?.value || "").trim();
   if (address.length < 5) {
-    setAddressVerifyStatus("Enter a complete delivery address first.");
+    setAddressVerifyStatus("Enter a complete delivery address first.", false, true);
     input?.focus();
     return;
   }
   button.disabled = true;
   button.textContent = "Finding…";
+  state.deliveryLocation = null;
+  addressInfoWindow?.close();
   setAddressVerifyStatus("Searching Google Maps…");
   try {
     await loadGoogleMaps();
     const geocoder = new google.maps.Geocoder();
     const results = await new Promise((resolve, reject) => {
-      geocoder.geocode({ address, region: "vn" }, (matches, status) => {
+      geocoder.geocode({
+        address,
+        region: "vn",
+        componentRestrictions: { country: "vn" },
+        // Bias to the Da Nang metro so an ambiguous street name resolves
+        // locally instead of matching a same-named road elsewhere in Vietnam —
+        // a common cause of the "partial match" dead-end.
+        bounds: new google.maps.LatLngBounds(
+          { lat: DA_NANG_DELIVERY_BOUNDS.south, lng: DA_NANG_DELIVERY_BOUNDS.west },
+          { lat: DA_NANG_DELIVERY_BOUNDS.north, lng: DA_NANG_DELIVERY_BOUNDS.east }
+        )
+      }, (matches, status) => {
         if (status === "OK" && matches?.[0]) resolve(matches);
         else reject(new Error("We couldn't find that address. Add a district or nearby landmark and try again."));
       });
     });
     const match = results[0];
-    if (match.partial_match) {
-      throw new Error("Google Maps only found a partial match. Add a district or nearby landmark and try again.");
+    if (!isInsideDaNangDeliveryArea(match.geometry.location)) {
+      throw new Error("Google Maps found a result outside the Da Nang delivery area. Choose a Da Nang suggestion or enter a more complete local address.");
     }
+    // Google flags many valid Da Nang addresses as a partial match. Rather than
+    // dead-end, still drop the (draggable) pin at the best match and ask the
+    // customer to nudge it to their exact entrance — the same confirm-by-drag
+    // step a full match uses.
+    let currentApproximate = Boolean(match.partial_match);
+    let currentFormattedAddress = String(match.formatted_address || address);
+    let pinAddressLookupId = 0;
     const position = match.geometry.location;
     const wrap = document.getElementById("address-map-wrap");
+    const mapElement = document.getElementById("address-confirm-map");
     wrap.hidden = false;
-    addressMap = addressMap || new google.maps.Map(document.getElementById("address-confirm-map"), {
+    // Expand the confirmation surface only when Maps is in use. `clamp` keeps
+    // it substantially larger than the 260px resting size without letting it
+    // overwhelm a short phone viewport.
+    mapElement.style.height = "clamp(360px, 62vh, 520px)";
+    addressMap = addressMap || new google.maps.Map(mapElement, {
       center: position,
       zoom: 17,
       streetViewControl: false,
       mapTypeControl: false,
       fullscreenControl: false
     });
+    google.maps.event.trigger(addressMap, "resize");
     addressMap.setCenter(position);
     if (addressMarker) addressMarker.setMap(null);
     addressMarker = new google.maps.Marker({ map: addressMap, position, draggable: true, title: "Drag to your delivery entrance" });
@@ -400,15 +805,92 @@ async function verifyAddressOnMap() {
       state.deliveryLocation = {
         lat: pos.lat(),
         lng: pos.lng(),
-        formattedAddress: String(formattedAddress || address).slice(0, 499),
+        formattedAddress: String(formattedAddress || currentFormattedAddress || address).slice(0, 499),
         source: "customer_google_maps"
       };
       setAddressVerifyStatus("✓ Location confirmed on Google Maps", true);
     };
-    savePosition(position, match.formatted_address);
-    addressMarker.addListener("dragend", () => {
-      savePosition(addressMarker.getPosition(), match.formatted_address);
-      addressMap.panTo(addressMarker.getPosition());
+
+    // Use the supported InfoWindow API instead of reaching into Google's
+    // generated `.gm-style-iw…` DOM. The customer can explicitly accept the
+    // suggested pin without having to move it; dragging remains available
+    // when Google lands near, rather than exactly on, the entrance.
+    const showPinConfirmation = () => {
+      const content = document.createElement("div");
+      content.style.maxWidth = "240px";
+
+      const title = document.createElement("strong");
+      title.textContent = "Is this your delivery entrance?";
+      content.appendChild(title);
+
+      const detail = document.createElement("p");
+      detail.style.margin = "6px 0 10px";
+      detail.textContent = currentApproximate
+        ? "Google found an approximate match. Drag the pin if needed, or confirm it here."
+        : "Drag the pin if it needs correcting, or confirm it here.";
+      content.appendChild(detail);
+
+      const resolvedAddress = document.createElement("p");
+      resolvedAddress.style.margin = "0 0 10px";
+      resolvedAddress.style.overflowWrap = "anywhere";
+      const addressLabel = document.createElement("strong");
+      addressLabel.textContent = "Address: ";
+      resolvedAddress.append(addressLabel, document.createTextNode(currentFormattedAddress));
+      content.appendChild(resolvedAddress);
+
+      const confirmButton = document.createElement("button");
+      confirmButton.type = "button";
+      confirmButton.className = "primary";
+      confirmButton.style.width = "100%";
+      confirmButton.textContent = "Use this address";
+      confirmButton.addEventListener("click", () => {
+        savePosition(addressMarker.getPosition(), currentFormattedAddress);
+        addressInfoWindow?.close();
+      });
+      content.appendChild(confirmButton);
+
+      addressInfoWindow = addressInfoWindow || new google.maps.InfoWindow({ maxWidth: 280 });
+      addressInfoWindow.setContent(content);
+      addressInfoWindow.open({ map: addressMap, anchor: addressMarker });
+    };
+
+    setAddressVerifyStatus(currentApproximate
+      ? "Check the suggested pin. Drag it if needed, or choose “Use this address”."
+      : "Check the pin, then choose “Use this address”.", false);
+    showPinConfirmation();
+    addressMarker.addListener("dragstart", () => {
+      pinAddressLookupId += 1;
+      state.deliveryLocation = null;
+      addressInfoWindow?.close();
+      setAddressVerifyStatus("Pin moved — check its position, then choose “Use this address”.", false);
+    });
+    addressMarker.addListener("dragend", async () => {
+      const draggedPosition = addressMarker.getPosition();
+      const lookupId = ++pinAddressLookupId;
+      addressMap.panTo(draggedPosition);
+      if (!isInsideDaNangDeliveryArea(draggedPosition)) {
+        setAddressVerifyStatus("That pin is outside the Da Nang delivery area. Move it back into Da Nang to continue.", false, true);
+        return;
+      }
+      setAddressVerifyStatus("Finding the address at the corrected pin…", false);
+      try {
+        const reverseMatches = await new Promise((resolve, reject) => {
+          geocoder.geocode({ location: draggedPosition }, (matches, status) => {
+            if (status === "OK" && matches?.[0]) resolve(matches);
+            else reject(new Error("Google Maps could not find a street address at that pin."));
+          });
+        });
+        if (lookupId !== pinAddressLookupId) return;
+        currentFormattedAddress = String(reverseMatches[0].formatted_address || address);
+        currentApproximate = false;
+        closeAddressAutocomplete();
+        input.value = currentFormattedAddress.slice(0, 499);
+        setAddressVerifyStatus("Pin moved — check the updated address, then choose “Use this address”.", false);
+        showPinConfirmation();
+      } catch (error) {
+        if (lookupId !== pinAddressLookupId) return;
+        setAddressVerifyStatus(`${error.message || String(error)} Move the pin again, or enter the address and search again.`, false, true);
+      }
     });
     wrap.scrollIntoView({ behavior: "smooth", block: "nearest" });
   } catch (error) {
@@ -443,14 +925,75 @@ function selectedLines() {
     .filter((line) => line.quantity > 0);
 }
 
+function setOrderReviewCollapsed(collapsed) {
+  const panel = document.getElementById("mobile-order-totals");
+  const toggle = document.getElementById("order-review-toggle");
+  if (!panel || !toggle) return;
+  if (collapsed) setOrderReviewExpanded(false);
+  panel.classList.toggle("review-collapsed", collapsed);
+  toggle.setAttribute("aria-expanded", String(!collapsed));
+  toggle.setAttribute("aria-label", collapsed ? "Show order item list" : "Hide order item list");
+}
+
+function setOrderReviewExpanded(expanded) {
+  const panel = document.getElementById("mobile-order-totals");
+  const button = document.getElementById("order-review-expand");
+  if (!panel || !button) return;
+  panel.classList.toggle("review-expanded", expanded);
+  button.setAttribute("aria-pressed", String(expanded));
+  button.setAttribute("aria-label", expanded ? "Use compact item list" : "Show the full item list");
+  button.title = expanded ? "Use compact list" : "Show all items";
+}
+
 function renderTotals() {
-  const totals = computeOrderTotals(selectedLines());
+  const lines = selectedLines();
+  const totals = computeOrderTotals(lines);
   const due = totals.subtotal + totals.depositTotal;
+  const panel = document.getElementById("mobile-order-totals");
+  panel?.classList.toggle("has-order-items", lines.length > 0);
+  panel?.classList.toggle("has-long-order-review", lines.length >= 5);
+  if (!lines.length) setOrderReviewCollapsed(false);
+  if (lines.length < 5) setOrderReviewExpanded(false);
+
+  // Small ordered overview so the customer can double-check what they're about
+  // to submit, right above the Submit button.
+  const review = lines.length
+    ? `<ul class="order-review${lines.length >= 5 ? " is-scrollable" : ""}" id="order-review-list">${lines.map((line) => `
+        <li>
+          <span class="order-review-name">${escapeHtml(line.productName)}</span>
+          <span class="order-review-qty">× ${Number(line.quantity)}</span>
+          <span class="order-review-amt">${formatCurrency(Number(line.unitPrice || 0) * Number(line.quantity))}</span>
+          <button type="button" class="order-review-remove" data-remove-order-line="${escapeHtml(line.id)}" aria-label="Remove ${escapeHtml(line.productName)} from order">×</button>
+        </li>`).join("")}</ul>`
+    : `<p class="muted order-review-empty">No items yet — add products above and they'll be listed here to review.</p>`;
+
   document.getElementById("totals").innerHTML = `
-    <div class="card"><span class="muted">Subtotal</span><strong>${formatCurrency(totals.subtotal)}</strong></div>
-    <div class="card"><span class="muted">Deposit</span><strong>${formatCurrency(totals.depositTotal)}</strong></div>
-    <div class="card"><span class="muted">Due now</span><strong>${formatCurrency(due)}</strong></div>
+    ${review}
+    <div class="order-total-summary">
+      <div class="order-total-cell"><span class="muted">Subtotal</span><strong>${formatCurrency(totals.subtotal)}</strong></div>
+      <div class="order-total-cell"><span class="muted order-deposit-label">Deposit <button type="button" class="info-dot" id="deposit-info" aria-label="What is a deposit?" aria-expanded="false">?</button></span><strong>${formatCurrency(totals.depositTotal)}</strong></div>
+      <div class="order-total-cell order-total-due"><span class="muted">Due now</span><strong>${formatCurrency(due)}</strong></div>
+    </div>
+    <p id="deposit-note" class="muted deposit-note hidden">Refundable deposit for returnable crates and jugs. You get it back when they are returned.</p>
   `;
+
+  const info = document.getElementById("deposit-info");
+  if (info) {
+    info.addEventListener("click", () => {
+      const note = document.getElementById("deposit-note");
+      if (!note) return;
+      const open = note.classList.toggle("hidden");
+      info.setAttribute("aria-expanded", String(!open));
+    });
+  }
+
+  document.querySelectorAll("[data-remove-order-line]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const productId = button.dataset.removeOrderLine;
+      if (!productId) return;
+      adjustQuantity(productId, -Number(state.quantities[productId] || 0));
+    });
+  });
 }
 
 function adjustQuantity(productId, delta) {
@@ -794,13 +1337,10 @@ async function handleReorderPick(orderId) {
       if (totals && typeof totals.scrollIntoView === "function") {
         totals.scrollIntoView({ behavior: "smooth", block: "center" });
       }
-      const feedback = document.getElementById("public-feedback");
-      if (feedback) {
-        const suffix = prefilled.length
-          ? ` Prefilled ${prefilled.join(", ")} from that order.`
-          : "";
-        feedback.textContent = `Loaded items from order ${orderId}. Review, then Submit.${suffix}`;
-      }
+      const suffix = prefilled.length
+        ? ` Prefilled ${prefilled.join(", ")} from that order.`
+        : "";
+      setPublicFeedback(`Loaded items from order ${orderId}. Review, then Submit.${suffix}`);
     } else {
       setReorderDialogStatus("Could not load that past order. It may have been removed.", true);
     }
@@ -826,13 +1366,21 @@ async function submitOrder(event) {
   event.preventDefault();
   const form = event.currentTarget;
   const feedback = document.getElementById("public-feedback");
+  // Ordering requires sign-in. The server rejects guest orders too; this is the
+  // friendly stop (reached via Enter-to-submit — the button click opens the
+  // modal directly). Pop the sign-in modal instead of bouncing the customer.
+  if (!state.user) {
+    openSignInDialog();
+    return;
+  }
   if (!state.deliveryLocation && !isEmulatorMode) {
     const savedAddressMissingPin = state.addressMode === "primary" || state.addressMode === "additional";
-    feedback.textContent = savedAddressMissingPin
+    const message = savedAddressMissingPin
       ? "This older saved delivery profile is missing its stored pin. Edit it once under My account → Delivery addresses."
       : "Confirm your delivery address on Google Maps before submitting.";
-    if (savedAddressMissingPin) setSavedAddressHelp(feedback.textContent);
-    else setAddressVerifyStatus(feedback.textContent);
+    setPublicFeedback(message, { error: true, scroll: true });
+    if (savedAddressMissingPin) setSavedAddressHelp(message, true);
+    else setAddressVerifyStatus(message, false, true);
     (savedAddressMissingPin
       ? document.getElementById("saved-address-select")
       : document.getElementById("address-verify-button"))?.focus();
@@ -846,14 +1394,14 @@ async function submitOrder(event) {
   // must be typed with their country code. The field is rewritten so the
   // customer sees exactly what we will store, and the server enforces the
   // same rule — this check just makes the error arrive before the round-trip.
-  const phoneE164 = normalizePhoneE164VN(form.phone?.value);
+  const phoneE164 = normalizePhoneWithCountry(form.phone?.value, document.getElementById("form-phone-country")?.value);
   if (!phoneE164) {
-    feedback.textContent = "Please include your phone's country code, e.g. +84 905 123 456.";
+    setPublicFeedback(phoneEntryErrorMessage(form.phone?.value), { error: true, scroll: true });
     form.phone?.focus();
     return;
   }
   if (form.phone) form.phone.value = phoneE164;
-  feedback.textContent = "Submitting order...";
+  setPublicFeedback("Submitting order...");
 
   // Capture identity fields before we reset the form — needed for the
   // "save these to your profile?" prompt after success.
@@ -885,20 +1433,39 @@ async function submitOrder(event) {
       successOrderId = orderId;
     } catch (error) {
       // Callable errors surface as { code, message, details } from HttpsError.
-      feedback.textContent = error && error.message ? error.message : String(error);
+      setPublicFeedback(error && error.message ? error.message : String(error), { error: true, scroll: true });
     }
   }, { busyLabel: "Submitting..." });
+
+  // The callable needs E.164, but the visible field owns only the national
+  // number because its country code is already shown in the adjacent picker.
+  if (successOrderId) {
+    setupPhoneCountryPicker(document.getElementById("form-phone-country-picker"))?.setValue("+84");
+  } else {
+    syncPublicPhoneCountry();
+  }
 
   if (successOrderId && submitButton) {
     submitButton.disabled = true;
     submitButton.classList.add("success-locked");
     submitButton.textContent = "Ordered ✓";
+    feedback.classList.remove("is-blocking");
+    // Close the loop on the pickup request: the customer ticked a box several
+    // minutes ago and should see it was carried onto the order they just placed,
+    // otherwise the only confirmation is a checkbox that scrolled away.
+    const pickupLine = state.customer?.emptiesPickupRequested === true
+      ? `<div>Have your empties ready — the driver will collect them and take the deposit off this order.</div>`
+      : "";
     feedback.innerHTML = `
       <div class="order-confirmation">
         <strong>Order ${escapeHtml(successOrderId)} received.</strong>
         <div>Thanks! We'll confirm shortly and message you before delivery.</div>
+        ${pickupLine}
+        <div class="button-row top-gap"><a class="button-link secondary" href="./account.html">View your orders</a></div>
       </div>
     `;
+    renderPublicOpenOrders(state.user);
+    renderEmptiesPickup(state.user);
     try {
       await persistDeliveryAddressChoice(submittedIdentity);
     } catch (error) {
@@ -1113,21 +1680,22 @@ async function updateAccountFromPersonalDetails() {
   if (!state.user) return;
   if (fields.some((field) => field && !field.checkValidity()) || name.length < 2 || phone.length < 6) {
     status.textContent = "Complete your name and phone first.";
+    status.classList.add("is-blocking");
     fields.find((field) => field && !field.checkValidity())?.reportValidity();
     return;
   }
   // Same E.164-only rule as the order form — stored phones must carry the
   // country code so wa.me links work.
-  const phoneE164 = normalizePhoneE164VN(phone);
+  const phoneE164 = normalizePhoneWithCountry(phone, document.getElementById("form-phone-country")?.value);
   if (!phoneE164) {
-    status.textContent = "Please include your phone's country code, e.g. +84 905 123 456.";
+    status.textContent = phoneEntryErrorMessage(phone);
+    status.classList.add("is-blocking");
     return;
   }
-  const phoneField = document.getElementById("form-phone");
-  if (phoneField) phoneField.value = phoneE164;
   button.disabled = true;
   button.textContent = "Saving…";
   status.textContent = "Saving your contact details…";
+  status.classList.remove("is-blocking");
   try {
     const ref = doc(db, "customers", state.customer?.id || `CUS-${state.user.uid}`);
     const payload = {
@@ -1143,6 +1711,7 @@ async function updateAccountFromPersonalDetails() {
     status.textContent = "Your contact details were saved.";
   } catch (error) {
     status.textContent = `Could not save your contact details: ${error.message || error}`;
+    status.classList.add("is-blocking");
   } finally {
     button.disabled = false;
     button.textContent = "Save contact details";
@@ -1150,10 +1719,22 @@ async function updateAccountFromPersonalDetails() {
 }
 
 async function prefillFromCustomer(user) {
+  try {
+    await prefillFromCustomerProfile(user);
+  } finally {
+    // Every exit path lands here — signed out, no profile yet, loaded, or the
+    // read failed. The pickup block reads state.customer, which only settles
+    // once the pass above is done, and it must disappear again on sign-out.
+    renderEmptiesPickup(user);
+  }
+}
+
+async function prefillFromCustomerProfile(user) {
   const banner = document.getElementById("signed-in-banner");
   const prevUid = state.user?.uid || null;
   state.user = user || null;
   state.customer = null;
+  renderPublicOpenOrders(user);
   const nextUid = state.user?.uid || null;
   if (prevUid !== nextUid) {
     state.pastOrders = [];
@@ -1166,6 +1747,7 @@ async function prefillFromCustomer(user) {
   if (accountLink) accountLink.textContent = user ? "My account" : "Sign in";
   const heroSignin = document.getElementById("hero-signin-row");
   if (heroSignin) heroSignin.classList.toggle("hidden", !!user);
+  applyOrderAuthGate(!!user);
   document.getElementById("update-account-details")?.classList.toggle("hidden", !user);
   if (!user) {
     if (banner) banner.textContent = "";
@@ -1181,6 +1763,9 @@ async function prefillFromCustomer(user) {
   if (banner) {
     banner.innerHTML = `Signed in as <strong>${escapeHtml(user.email)}</strong>.`;
   }
+  // Any path that signs the customer in (modal, hero, or a returning session)
+  // should dismiss the sign-in modal if it happens to be open.
+  closeSignInDialog();
   try {
     const snap = await getDocs(query(collection(db, "customers"), where("authUid", "==", user.uid)));
     if (snap.empty) {
@@ -1195,12 +1780,77 @@ async function prefillFromCustomer(user) {
     const phoneField = document.getElementById("form-phone");
     if (nameField && !nameField.value) nameField.value = customer.name || user.displayName || "";
     if (phoneField && !phoneField.value) phoneField.value = customer.phone || "";
+    syncPublicPhoneCountry();
     // The saved primary address is authoritative. Do not preserve a stale or
     // partially-entered address that happens to be in the form already.
     await renderSavedAddressControl();
   } catch (error) {
     console.warn("Could not prefill customer profile:", error);
     await renderSavedAddressControl();
+  }
+}
+
+function syncPublicPhoneCountry() {
+  const input = document.getElementById("form-phone");
+  const picker = document.getElementById("form-phone-country");
+  if (!input || !picker || !String(input.value).startsWith("+")) return;
+  const split = splitPhoneWithCountry(input.value, picker.value);
+  setupPhoneCountryPicker(document.getElementById("form-phone-country-picker"))?.setValue(split.dialCode);
+  input.value = split.nationalNumber;
+}
+
+setupPhoneCountryPicker(document.getElementById("form-phone-country-picker"));
+
+// Reflect the sign-in requirement on the submit button. Signed out, it stays
+// clickable and reads "Sign in to order" — clicking it opens the sign-in modal
+// (see the click handler) rather than submitting. The post-success "Ordered ✓"
+// locked state sets its own label/disabled and only happens while signed in, so
+// it never collides with this gate.
+function applyOrderAuthGate(signedIn) {
+  const submit = document.getElementById("public-submit-button");
+  if (!submit || submit.classList.contains("success-locked")) return;
+  submit.disabled = false;
+  submit.textContent = signedIn ? "Submit order" : "Sign in to order";
+}
+
+function openSignInDialog() {
+  const dialog = document.getElementById("signin-dialog");
+  if (!dialog) return;
+  const status = document.getElementById("signin-dialog-status");
+  if (status) status.textContent = "";
+  const btn = document.getElementById("signin-dialog-google");
+  if (btn) btn.disabled = false;
+  if (typeof dialog.showModal === "function") dialog.showModal();
+  else dialog.setAttribute("open", "");
+}
+
+function closeSignInDialog() {
+  const dialog = document.getElementById("signin-dialog");
+  if (!dialog) return;
+  if (typeof dialog.close === "function") dialog.close();
+  else dialog.removeAttribute("open");
+}
+
+// Google is the one-tap, stay-on-page path: the popup resolves after auth state
+// flips, so onAuthStateChanged re-enables ordering and the customer's in-memory
+// cart (state.quantities) is untouched. We just close the modal.
+async function handleDialogGoogleSignIn() {
+  const btn = document.getElementById("signin-dialog-google");
+  const status = document.getElementById("signin-dialog-status");
+  if (btn) btn.disabled = true;
+  if (status) status.textContent = "Opening Google sign-in…";
+  try {
+    const result = await signInWithGoogleForEnvironment();
+    if (!result) {
+      if (status) status.textContent = "Sign-in cancelled.";
+      if (btn) btn.disabled = false;
+      return;
+    }
+    if (status) status.textContent = "Signed in — you can place your order now.";
+    closeSignInDialog();
+  } catch (error) {
+    if (status) status.textContent = error && error.message ? error.message : String(error);
+    if (btn) btn.disabled = false;
   }
 }
 
@@ -1278,13 +1928,40 @@ if (isEmulatorMode) {
 document.getElementById("public-order-form").addEventListener("submit", submitOrder);
 document.getElementById("address-verify-button")?.addEventListener("click", verifyAddressOnMap);
 document.getElementById("update-account-details")?.addEventListener("click", updateAccountFromPersonalDetails);
+
+// When the customer starts entering their personal data, snap the whole Contact
+// details section to the middle of the screen so they get the full overview
+// instead of a field pinned under the keyboard. One-shot so it doesn't fight
+// the customer as they tab between fields.
+let contactDetailsCentered = false;
+function centerContactDetails() {
+  if (contactDetailsCentered) return;
+  contactDetailsCentered = true;
+  const section = document.getElementById("contact-details-section");
+  section?.scrollIntoView?.({ behavior: "smooth", block: "center" });
+}
+["form-customer-name", "form-phone"].forEach((id) => {
+  document.getElementById(id)?.addEventListener("focus", centerContactDetails);
+});
 document.getElementById("saved-address-select")?.addEventListener("change", handleSavedAddressSelection);
 document.getElementById("address-reset-pin")?.addEventListener("click", () => {
   clearDeliveryLocation("Pin reset — find this delivery address on the map again.");
   document.getElementById("address-verify-button")?.focus();
 });
-document.getElementById("form-address")?.addEventListener("input", () => {
+const publicAddressInput = document.getElementById("form-address");
+publicAddressInput?.addEventListener("input", () => {
   if (state.deliveryLocation) clearDeliveryLocation();
+  closeAddressAutocomplete();
+  scheduleAddressSuggestions();
+});
+publicAddressInput?.addEventListener("focus", scheduleAddressSuggestions);
+publicAddressInput?.addEventListener("keydown", handleAddressAutocompleteKeydown);
+publicAddressInput?.addEventListener("blur", () => {
+  setTimeout(() => {
+    if (!document.getElementById("address-autocomplete-list")?.contains(document.activeElement)) {
+      closeAddressAutocomplete();
+    }
+  }, 120);
 });
 
 // Hide the overlay once BOTH the initial auth check has resolved AND the
@@ -1318,6 +1995,20 @@ loadProducts()
 const heroGoogleBtn = document.getElementById("hero-google-signin-button");
 if (heroGoogleBtn) heroGoogleBtn.addEventListener("click", handleHeroGoogleSignIn);
 
+// Signed-out click on the order button opens the sign-in modal instead of
+// submitting. Handling it on click (before the form's submit + native field
+// validation) means an empty form still opens the modal rather than nagging
+// the customer to fill fields they can't use yet.
+document.getElementById("public-submit-button")?.addEventListener("click", (event) => {
+  if (!state.user) {
+    event.preventDefault();
+    openSignInDialog();
+  }
+});
+document.getElementById("signin-dialog-google")?.addEventListener("click", handleDialogGoogleSignIn);
+document.getElementById("signin-dialog-close")?.addEventListener("click", closeSignInDialog);
+document.getElementById("form-phone")?.addEventListener("blur", syncPublicPhoneCountry);
+
 const reorderOpenBtn = document.getElementById("reorder-open-button");
 if (reorderOpenBtn) reorderOpenBtn.addEventListener("click", openReorderDialog);
 const reorderCloseBtn = document.getElementById("reorder-dialog-close");
@@ -1341,3 +2032,15 @@ if (reorderDialog) {
     brieflyShowReorderThumbName(thumb);
   });
 }
+
+document.getElementById("order-review-toggle")?.addEventListener("click", () => {
+  const panel = document.getElementById("mobile-order-totals");
+  setOrderReviewCollapsed(!panel?.classList.contains("review-collapsed"));
+});
+
+document.getElementById("order-review-expand")?.addEventListener("click", () => {
+  const panel = document.getElementById("mobile-order-totals");
+  if (!panel) return;
+  if (panel.classList.contains("review-collapsed")) setOrderReviewCollapsed(false);
+  setOrderReviewExpanded(!panel.classList.contains("review-expanded"));
+});

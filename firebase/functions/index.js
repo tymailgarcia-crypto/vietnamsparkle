@@ -110,6 +110,16 @@ exports.submitPublicOrder = onCall(async (request) => {
   const authUid = request.auth ? request.auth.uid : null;
   const authEmail = request.auth && request.auth.token ? request.auth.token.email : null;
 
+  // Ordering requires sign-in (Ty, 2026-07-18). A guest order carries no
+  // authUid, so it can never attach to the customer's later sign-in — their
+  // history query is keyed by authUid (accountApp loadFirstOrdersPage). Gating
+  // here, server-side, is the real enforcement; the public form's disabled
+  // submit button is only the UX half. Every order now stamps an authUid, so
+  // approval's canLinkAuthUidToCustomer links the phone doc cleanly.
+  if (!authUid) {
+    throw new HttpsError("unauthenticated", "Please sign in before placing an order.");
+  }
+
   // ---- Customer/order fields --------------------------------------------
   const customer = data.customer || {};
   const name = String(customer.name || "").trim();
@@ -1079,12 +1089,14 @@ async function applyApprovalTransaction(input) {
   });
 }
 
-// Owner applies a cancellation immediately; a customer records a cancellation
-// REQUEST (no order mutation). Idempotent on caseId = `${orderId}-cx-${clientRequestId}`.
+// Owner-only cancellation workflow. Customers cancel unapproved orders through
+// the narrow Firestore rule; every post-approval cancellation stays with admin.
+// Idempotent on caseId = `${orderId}-cx-${clientRequestId}`.
 exports.submitOrderCancellation = onCall(async (request) => {
   const uid = request.auth ? request.auth.uid : null;
   if (!uid) throw new HttpsError("unauthenticated", "Sign in first.");
   const role = request.auth.token ? request.auth.token.role : null;
+  if (role !== "owner") throw new HttpsError("permission-denied", "Only the owner can manage an approved-order cancellation.");
 
   const data = request.data || {};
   const orderId = String(data.orderId || "");
@@ -1097,71 +1109,14 @@ exports.submitOrderCancellation = onCall(async (request) => {
   if (!/^[A-Za-z0-9_-]{8,120}$/.test(clientRequestId)) throw new HttpsError("invalid-argument", "clientRequestId must be a stable 8–120 char token.");
   const caseId = `${orderId}-cx-${clientRequestId}`;
 
-  if (role === "owner") {
-    let remainingItems = null;
-    if (kind === "partial") {
-      remainingItems = Array.isArray(data.remainingItems) ? data.remainingItems : null;
-      if (!remainingItems) throw new HttpsError("invalid-argument", "remainingItems is required for a partial cancellation.");
-    }
-    return applyApprovalTransaction({
-      orderId, caseId, kind, reason, remainingItems,
-      requestedBy: uid, requestedByRole: "owner", requestedAt: new Date().toISOString(), decidedBy: uid
-    });
+  let remainingItems = null;
+  if (kind === "partial") {
+    remainingItems = Array.isArray(data.remainingItems) ? data.remainingItems : null;
+    if (!remainingItems) throw new HttpsError("invalid-argument", "remainingItems is required for a partial cancellation.");
   }
-
-  // Customer path — a REQUEST only, no mutation. (An unpaid pending_approval
-  // order still cancels via the existing direct client write; this callable is
-  // for requesting cancellation of an already-approved order they own.)
-  return db().runTransaction(async (tx) => {
-    const orderRef = db().doc(`orders/${orderId}`);
-    const orderSnap = await tx.get(orderRef);
-    if (!orderSnap.exists) throw new HttpsError("not-found", "Order not found.");
-    const order = orderSnap.data() || {};
-    if (order.authUid !== uid) throw new HttpsError("permission-denied", "Not your order.");
-    if (order.status === "delivered" || order.status === "cancelled") {
-      throw new HttpsError("failed-precondition", "This order can no longer be cancelled.");
-    }
-    const caseRef = db().doc(`orderCancellations/${caseId}`);
-    const caseSnap = await tx.get(caseRef);
-    if (caseSnap.exists) return { caseId, status: caseSnap.data().decisionStatus || "requested" };
-
-    const nowIso = new Date().toISOString();
-    tx.set(caseRef, {
-      orderId,
-      customerId: order.customerId || null,
-      authUid: order.authUid || null,
-      kind: "full",
-      decisionStatus: "requested",
-      refundStatus: "not_required",
-      evidenceStatus: "not_required",
-      requestedBy: uid,
-      requestedByRole: "customer",
-      requestedAt: nowIso,
-      reason,
-      decidedBy: null,
-      decidedAt: null,
-      decisionNote: null,
-      before: null,
-      after: null,
-      lineDeltas: [],
-      netPaymentsAtDecision: 0,
-      revisedOrderTotal: 0,
-      refundRequired: 0,
-      refundRemaining: 0,
-      source: "app",
-      legacyOutcome: null,
-      createdAt: nowIso,
-      updatedAt: nowIso
-    });
-    // Mirror the existing unscoped request flags so the dashboard banner shows.
-    tx.update(orderRef, {
-      cancellationRequested: true,
-      cancellationRequestReason: reason,
-      cancellationRequestedAt: nowIso,
-      cancellationCaseId: caseId,
-      updatedAt: nowIso
-    });
-    return { caseId, status: "requested" };
+  return applyApprovalTransaction({
+    orderId, caseId, kind, reason, remainingItems,
+    requestedBy: uid, requestedByRole: "owner", requestedAt: new Date().toISOString(), decidedBy: uid
   });
 });
 

@@ -9,7 +9,7 @@ import {
   setDoc,
   signOut
 } from "./firebaseClient.js";
-import { buildDepositEventId, formatCurrency, mergeThresholds, requireRole, THRESHOLD_DEFAULTS, todayKey, withSubmitLock } from "./shared.js";
+import { buildDepositEventId, describeDepositBalanceProblem, formatCurrency, isBrokenDepositBalance, mergeThresholds, requireRole, THRESHOLD_DEFAULTS, todayKey, withSubmitLock } from "./shared.js";
 
 const CONTAINER_LABELS = {
   glass_crate: "Glass crates",
@@ -26,8 +26,11 @@ function humanizeContainerType(key) {
 
 const state = {
   rows: [],
+  broken: [],
   customers: {},
   search: "",
+  ageFilter: "all",
+  containerFilter: "all",
   thresholds: { ...THRESHOLD_DEFAULTS }
 };
 
@@ -72,10 +75,30 @@ function matchesSearch(row) {
   return [row.customerName, row.phone].some((f) => String(f || "").toLowerCase().includes(q));
 }
 
+function matchesAge(row) {
+  if (state.ageFilter === "all") return true;
+  const days = daysSince(row.since);
+  if (state.ageFilter === "forfeit") return days >= state.thresholds.depositForfeitDays;
+  if (state.ageFilter === "warning") return days >= state.thresholds.depositWarningDays;
+  return true;
+}
+
+function matchesContainer(row) {
+  if (state.containerFilter === "all") return true;
+  return String(row.containerType || "other") === state.containerFilter;
+}
+
+function matchesFilters(row) {
+  return matchesSearch(row) && matchesAge(row) && matchesContainer(row);
+}
+
+const filtersActive = () =>
+  Boolean(state.search) || state.ageFilter !== "all" || state.containerFilter !== "all";
+
 function renderRows() {
   const tbody = el("deposit-rows");
-  const filtered = state.rows.filter(matchesSearch);
-  setStatus(state.search
+  const filtered = state.rows.filter(matchesFilters);
+  setStatus(filtersActive()
     ? `${filtered.length} of ${state.rows.length} outstanding containers`
     : `${state.rows.length} outstanding container line${state.rows.length === 1 ? "" : "s"}`);
 
@@ -113,7 +136,7 @@ function renderRows() {
         <td data-label="Age">${dayCell}</td>
         <td data-label="Actions" class="deposit-actions">
           <div class="button-row" style="gap:6px;flex-wrap:wrap">
-            <button class="ghost" type="button"
+            <button class="ghost deposit-forfeit-button" type="button"
               data-forfeit-customer="${escapeHtml(row.customerId)}"
               data-forfeit-type="${escapeHtml(row.containerType)}">Mark as forfeit</button>
             ${reminderButton}
@@ -130,6 +153,22 @@ function renderRows() {
       if (row) openForfeitDialog(row);
     });
   });
+}
+
+function populateContainerFilter() {
+  const select = el("container-filter");
+  if (!select) return;
+  const types = Array.from(new Set(state.rows.map((row) => String(row.containerType || "other"))))
+    .sort((a, b) => humanizeContainerType(a).localeCompare(humanizeContainerType(b)));
+  // Drop a stale selection if that container type is no longer outstanding.
+  if (state.containerFilter !== "all" && !types.includes(state.containerFilter)) {
+    state.containerFilter = "all";
+  }
+  const options = ['<option value="all">All containers</option>']
+    .concat(types.map((type) =>
+      `<option value="${escapeHtml(type)}">${escapeHtml(humanizeContainerType(type))}</option>`));
+  select.innerHTML = options.join("");
+  select.value = state.containerFilter;
 }
 
 function renderSummaryTiles() {
@@ -154,6 +193,30 @@ function renderSummaryTiles() {
         : ""}
     </div>
   `;
+}
+
+function renderBrokenBalances() {
+  const node = el("deposit-ledger-warning");
+  if (!node) return;
+  if (!state.broken.length) {
+    node.innerHTML = "";
+    node.classList.add("hidden");
+    return;
+  }
+  const rows = state.broken.map((row) => {
+    const name = row.customerId
+      ? `<a href="./customer.html?id=${encodeURIComponent(row.customerId)}">${escapeHtml(row.customerName)}</a>`
+      : escapeHtml(row.customerName);
+    return `<li>${name} — <strong>${escapeHtml(humanizeContainerType(row.containerType))}</strong>: ${escapeHtml(describeDepositBalanceProblem(row.qty, row.amount))}</li>`;
+  }).join("");
+  node.innerHTML = `
+    <div class="panel" style="border:2px solid rgb(192,57,43)">
+      <strong style="color:rgb(122,32,22)">${state.broken.length} container record${state.broken.length === 1 ? " needs" : "s need"} fixing</strong>
+      <p class="muted" style="margin:6px 0">These customers show as returning more containers than they were ever charged for. Until each one is corrected, the next deposit they pay will cancel out the gap instead of showing up as money you owe them back.</p>
+      <ul class="muted" style="margin:0;padding-left:18px">${rows}</ul>
+    </div>
+  `;
+  node.classList.remove("hidden");
 }
 
 async function loadThresholdsFromSettings() {
@@ -208,7 +271,12 @@ async function loadDeposits() {
     });
 
     const outstanding = Object.values(byPair).filter((row) => row.qty > 0 || row.amount > 0);
-    const customerIds = Array.from(new Set(outstanding.map((r) => r.customerId)));
+    // Below-zero balances can't be worked from this table — there is nothing to
+    // chase or forfeit — but they must not stay invisible either, because each
+    // one silently cancels out the customer's next real deposit. They get their
+    // own banner so the owner can go and fix the bad write behind them.
+    const brokenRows = Object.values(byPair).filter((row) => isBrokenDepositBalance(row.qty, row.amount));
+    const customerIds = Array.from(new Set(outstanding.concat(brokenRows).map((r) => r.customerId)));
     await Promise.all(customerIds.map(async (id) => {
       if (state.customers[id]) return;
       try {
@@ -235,8 +303,21 @@ async function loadDeposits() {
       })
       .sort((a, b) => String(a.since || "9999-12-31").localeCompare(String(b.since || "9999-12-31")));
 
+    state.broken = brokenRows.map((row) => {
+      const customer = state.customers[row.customerId] || {};
+      return {
+        customerId: row.customerId,
+        containerType: row.containerType,
+        qty: row.qty,
+        amount: row.amount,
+        customerName: customer.name || "Unknown customer"
+      };
+    });
+
+    populateContainerFilter();
     renderRows();
     renderSummaryTiles();
+    renderBrokenBalances();
   } catch (error) {
     setStatus(`Could not load deposits: ${error.message || error}`);
   }
@@ -311,6 +392,19 @@ async function saveForfeit(event) {
 
 el("search-input").addEventListener("input", (event) => {
   state.search = event.target.value.trim();
+  renderRows();
+});
+el("age-filter")?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-age]");
+  if (!button) return;
+  state.ageFilter = button.dataset.age;
+  el("age-filter").querySelectorAll(".filter-chip").forEach((chip) => {
+    chip.classList.toggle("is-active", chip === button);
+  });
+  renderRows();
+});
+el("container-filter")?.addEventListener("change", (event) => {
+  state.containerFilter = event.target.value;
   renderRows();
 });
 el("refresh-button").addEventListener("click", loadDeposits);

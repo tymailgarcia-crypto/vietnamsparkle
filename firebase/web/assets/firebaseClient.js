@@ -62,7 +62,13 @@ const app = initializeApp(firebaseWebConfig);
 // Must run before the first callable/Firestore request so those carry tokens.
 // Enforcement is a separate, later step on the Functions side; initializing
 // here changes nothing about who is allowed to do what.
-if (appCheckSiteKey) {
+//
+// Scoped to pages that opt in via `self.__ENABLE_APP_CHECK__` (set by an inline
+// script BEFORE this module loads). Only the public order page needs it — it is
+// the sole caller of the unauthenticated submitPublicOrder callable. The
+// owner/admin pages are login-gated and would only pay the reCAPTCHA bootstrap
+// cost on every navigation for no benefit, so they leave the flag unset.
+if (appCheckSiteKey && self.__ENABLE_APP_CHECK__) {
   if (location.hostname === "localhost" || location.hostname === "127.0.0.1") {
     // Emulator/local pages mint a debug token instead of running reCAPTCHA.
     // The token prints to the browser console; register it in the console's

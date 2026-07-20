@@ -337,14 +337,21 @@ async function findPinFor(value) {
     await loadCustomerMaps();
     const geocoder = new google.maps.Geocoder();
     const match = await new Promise((resolve, reject) => {
-      geocoder.geocode({ address: value, region: "vn" }, (results, resultStatus) => {
+      geocoder.geocode({
+        address: value,
+        region: "vn",
+        componentRestrictions: { country: "vn" },
+        // Bias to the Da Nang metro so an ambiguous street name resolves
+        // locally instead of matching a same-named road elsewhere in Vietnam.
+        bounds: new google.maps.LatLngBounds({ lat: 15.90, lng: 108.05 }, { lat: 16.20, lng: 108.35 })
+      }, (results, resultStatus) => {
         if (resultStatus === "OK" && results?.[0]) resolve(results[0]);
         else reject(new Error("We couldn't find that address. Add a district or nearby landmark and try again."));
       });
     });
-    if (match.partial_match) {
-      throw new Error("Google Maps only found a partial match. Add a district or nearby landmark and try again.");
-    }
+    // A partial match still gives a usable pin; drop it (draggable) and prompt
+    // the owner to nudge it to the exact entrance instead of dead-ending.
+    const approximate = Boolean(match.partial_match);
     const position = match.geometry.location;
     const wrap = el("customer-address-map-wrap");
     wrap.hidden = false;
@@ -371,7 +378,9 @@ async function findPinFor(value) {
     customerAddressMarker.addListener("dragend", () => capture(customerAddressMarker.getPosition()));
     el("customer-address-map-help").textContent = "Drag the pin to the exact entrance, then select “Save confirmed address”. Future orders will reuse this pin.";
     updateAddressFormMode();
-    setStatus("customer-addresses-status", "Pin found. Check it, drag it if needed, then save.");
+    setStatus("customer-addresses-status", approximate
+      ? "Approximate match — drag the pin to the exact entrance, then save."
+      : "Pin found. Check it, drag it if needed, then save.");
   } catch (error) {
     resetPendingAddressConfirmation();
     setStatus("customer-addresses-status", error.message || String(error), true);

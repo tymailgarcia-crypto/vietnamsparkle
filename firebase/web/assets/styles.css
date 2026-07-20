@@ -346,6 +346,11 @@ textarea:focus {
 
 .address-verify-actions button { width: auto; }
 .address-verified { color: #18764b; font-weight: 700; }
+
+/* Pre-order blocking messages ("confirm your pin / add your phone code before
+   submitting"). Red + bold so the customer actually reads them; overrides the
+   .muted grey these elements normally carry. */
+.is-blocking { color: var(--danger) !important; font-weight: 600; }
 .address-map-wrap { min-width: 0; margin-top: 10px; }
 .address-confirm-map {
   width: 100%;
@@ -817,6 +822,72 @@ textarea:focus {
   font-weight: 800;
 }
 
+/* Deposits filters (age + container), above the outstanding-containers table. */
+.deposit-filters {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin: 0 0 14px;
+}
+
+.filter-chips {
+  display: inline-flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.filter-chip {
+  min-height: 34px;
+  padding: 6px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--surface-strong);
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.filter-chip.is-active {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: #fff;
+}
+
+.deposit-filters .filter-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 13px;
+}
+
+.deposit-filters .filter-select select {
+  width: auto;
+  min-width: 160px;
+  padding: 8px 12px;
+}
+
+@media (max-width: 760px) {
+  .deposit-filters {
+    gap: 10px;
+  }
+
+  .deposit-filters .filter-chips,
+  .deposit-filters .filter-select {
+    width: 100%;
+  }
+
+  .deposit-filters .filter-chips .filter-chip {
+    flex: 1 1 0;
+    text-align: center;
+  }
+
+  .deposit-filters .filter-select select {
+    flex: 1 1 auto;
+  }
+}
+
 @media (max-width: 760px) {
   .customer-table th,
   .customer-table td {
@@ -1035,6 +1106,48 @@ textarea:focus {
   background: var(--surface, #ffffff);
 }
 
+.order-review-controls,
+.order-review-handle,
+.order-review-expand {
+  display: none;
+}
+
+.order-total-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 4px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.order-total-cell {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 12px 14px;
+  border-right: 1px solid var(--line);
+}
+
+.order-total-cell:last-child {
+  border-right: 0;
+}
+
+.order-total-cell strong {
+  font-size: 20px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.order-total-due {
+  background: var(--sky-tint);
+}
+
+.order-total-due strong {
+  color: var(--brand-dark);
+}
+
 @media (max-width: 760px) {
   .page {
     padding: 16px;
@@ -1100,6 +1213,10 @@ textarea:focus {
     gap: 10px;
   }
 
+  .form-grid.pair-mobile > .contact-identity-field {
+    grid-column: 1 / -1;
+  }
+
   .mobile-sticky-totals {
     position: sticky;
     bottom: 0;
@@ -1109,14 +1226,122 @@ textarea:focus {
     z-index: 10;
   }
 
-  .mobile-sticky-totals .stats-grid {
-    grid-template-columns: repeat(3, 1fr);
-    gap: 6px;
+  .mobile-sticky-totals.has-order-items .order-review-controls {
+    position: relative;
+    display: flex;
+    width: 100%;
+    height: 24px;
+    margin: -8px 0 2px;
   }
 
-  .mobile-sticky-totals .card {
-    padding: 8px;
+  .mobile-sticky-totals.has-order-items .order-review-handle {
+    display: flex;
+    width: 100%;
+    height: 24px;
+    min-height: 24px;
+    margin: 0;
+    padding: 0;
+    gap: 7px;
+    border: 0;
+    border-radius: 10px;
+    background: transparent;
+    color: var(--muted);
+  }
+
+  .mobile-sticky-totals.has-long-order-review .order-review-expand {
+    position: absolute;
+    top: 0;
+    right: 0;
+    display: inline-flex;
+    width: 28px;
+    height: 24px;
+    min-height: 24px;
+    padding: 0;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--muted);
+    font-size: 14px;
+    font-weight: 800;
+  }
+
+  .mobile-sticky-totals.review-expanded .order-review-expand {
+    background: var(--sky-tint);
+    color: var(--brand-dark);
+  }
+
+  .order-review-grip {
+    width: 38px;
+    height: 4px;
+    border-radius: 999px;
+    background: rgba(15, 33, 57, 0.24);
+  }
+
+  .order-review-chevron {
+    margin-top: -3px;
+    font-size: 15px;
+    font-weight: 800;
+    line-height: 1;
+    transition: transform 140ms ease;
+  }
+
+  .mobile-sticky-totals.review-collapsed .order-review-chevron {
+    transform: rotate(180deg);
+  }
+
+  .mobile-sticky-totals.review-collapsed h3,
+  .mobile-sticky-totals.review-collapsed .order-review,
+  .mobile-sticky-totals.review-collapsed .order-review-empty {
+    display: none;
+  }
+
+  .mobile-sticky-totals.review-collapsed .order-total-summary {
+    margin-top: 0;
+  }
+
+  .mobile-sticky-totals h3 {
+    margin: 0 0 8px;
+    font-size: 18px;
+  }
+
+  .mobile-sticky-totals .order-review {
+    margin-bottom: 8px;
+    padding-right: 4px;
+  }
+
+  .mobile-sticky-totals .order-review.is-scrollable {
+    max-height: 132px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
+  }
+
+  .mobile-sticky-totals.review-expanded .order-review.is-scrollable {
+    max-height: none;
+    overflow-y: visible;
+  }
+
+  .mobile-sticky-totals .order-review li {
+    gap: 7px;
+    padding-bottom: 4px;
     font-size: 13px;
+  }
+
+  .mobile-sticky-totals .order-total-cell {
+    padding: 8px 9px;
+  }
+
+  .mobile-sticky-totals .order-total-cell > span {
+    font-size: 12px;
+  }
+
+  .mobile-sticky-totals .order-total-cell strong {
+    font-size: clamp(15px, 4vw, 18px);
+    letter-spacing: -0.02em;
+  }
+
+  .mobile-sticky-totals .public-order-actions {
+    margin-top: 10px !important;
   }
 
   .catalog-column {
@@ -1478,6 +1703,142 @@ textarea:focus {
 .tab-strip button.active {
   color: var(--ink);
   border-bottom-color: var(--brand);
+}
+
+/* Customer-account sections should read as three primary destinations, not
+   small utility tabs. Scoped to this strip so owner/admin tabs stay compact. */
+#account-tabs {
+  gap: 8px;
+  padding-bottom: 7px;
+  flex-wrap: nowrap;
+}
+
+#account-tabs button {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 48px;
+  padding: 12px 8px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 750;
+}
+
+#account-tabs button.active {
+  border-color: rgba(27, 104, 233, 0.2);
+  border-bottom-color: var(--brand);
+  background: var(--sky-tint);
+  color: var(--brand-dark);
+}
+
+/* Customer account balance: calm when paid up, loud when money is owed. */
+.balance-compact {
+  background: rgba(11, 122, 99, 0.06);
+  border-radius: 12px;
+  padding: 14px;
+}
+.balance-compact.has-outstanding {
+  background: rgba(178, 38, 30, 0.08);
+  border: 2px solid rgba(178, 38, 30, 0.55);
+  padding: 12px;
+}
+.balance-compact.has-outstanding h3::before {
+  content: "⚠ ";
+}
+.balance-compact.has-outstanding .amount {
+  color: rgb(150, 28, 22);
+}
+
+/* "Signed in as …" was near-invisible as muted white on the blue hero. */
+.hero #hero-auth-status {
+  color: rgba(255, 255, 255, 0.96);
+  font-weight: 500;
+}
+
+/* Small ordered overview above the Submit button on the public order form. */
+.order-review {
+  list-style: none;
+  margin: 0 0 14px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.order-review li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto 24px;
+  gap: 10px;
+  align-items: baseline;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--line);
+  font-size: 14px;
+}
+.order-review-qty {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.order-review-amt {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.order-review-remove {
+  width: 24px;
+  height: 24px;
+  min-height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(192, 57, 43, 0.09);
+  color: var(--danger);
+  font-size: 16px;
+  font-weight: 800;
+  line-height: 1;
+}
+.order-review-remove:hover,
+.order-review-remove:focus-visible {
+  background: rgba(192, 57, 43, 0.18);
+}
+.order-review-empty {
+  margin: 0 0 14px;
+}
+.order-total-cards {
+  margin-top: 4px;
+}
+
+/* Deposit "?" explainer in the totals panel. */
+.info-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  min-height: 22px;
+  padding: 0;
+  margin: -3px 0 -3px 1px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--brand-dark);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1;
+  cursor: pointer;
+  vertical-align: middle;
+}
+.info-dot:hover,
+.info-dot:focus-visible {
+  background: var(--sky-tint);
+  border-radius: 50%;
+}
+.order-deposit-label {
+  display: inline-flex;
+  align-items: center;
+}
+.deposit-note {
+  margin: 10px 2px 0;
+  font-size: 13px;
+  line-height: 1.45;
 }
 
 .balance-compact .amount {
@@ -2711,3 +3072,227 @@ button.success-locked:disabled {
     grid-column: 1 / -1;
   }
 }
+
+/* Sign-in modal on the public order page — pops when a signed-out customer
+   tries to order. Google-first so they stay on the page and keep their cart. */
+.signin-dialog {
+  width: min(400px, 92vw);
+  padding: 26px 24px 24px;
+  text-align: center;
+  position: relative;
+}
+
+.signin-dialog[open] {
+  display: block;
+}
+
+.signin-dialog-close {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  border: none;
+  background: none;
+  font-size: 26px;
+  line-height: 1;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 4px 8px;
+}
+
+.signin-dialog-title {
+  margin: 4px 0 8px;
+  font-size: 20px;
+}
+
+.signin-dialog-hint {
+  margin: 0 0 20px;
+  font-size: 14px;
+}
+
+.signin-google-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+  padding: 12px 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface, #ffffff);
+  color: var(--ink, #11222d);
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.signin-google-button:hover {
+  background: rgba(66, 133, 244, 0.06);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
+}
+
+.signin-google-button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.signin-dialog-status {
+  margin: 12px 0 0;
+  min-height: 18px;
+  font-size: 13px;
+}
+
+.signin-dialog-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 16px 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.signin-dialog-divider::before,
+.signin-dialog-divider::after {
+  content: "";
+  flex: 1 1 auto;
+  height: 1px;
+  background: var(--line);
+}
+
+.signin-dialog-email {
+  display: inline-block;
+  width: 100%;
+}
+
+/* Count badge on the "Find duplicates" link — nudges the owner to review
+   possible same-person records. Orange matches the duplicates tool's warning. */
+.nav-count-badge {
+  display: inline-block;
+  margin-left: 6px;
+  min-width: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: rgb(178, 109, 0);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+  vertical-align: middle;
+}
+
+/* Live "cash to collect" breakdown in the delivery dialog — shows the deposit
+   credit deducted from the order so the reduced cash figure is never a mystery. */
+.delivery-cod-summary {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px 12px;
+  margin: 4px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border, #d8dee9);
+  border-radius: 10px;
+  background: var(--surface-muted, #f4f6fb);
+  font-size: 14px;
+}
+.delivery-cod-summary > div {
+  display: contents;
+}
+.delivery-cod-summary > div > span {
+  color: var(--muted, #5b6472);
+}
+.delivery-cod-summary > div > strong {
+  text-align: right;
+}
+.delivery-cod-summary .delivery-cod-total > span,
+.delivery-cod-summary .delivery-cod-total > strong {
+  padding-top: 6px;
+  margin-top: 4px;
+  border-top: 1px solid var(--border, #d8dee9);
+  font-weight: 700;
+  color: inherit;
+}
+
+/* Searchable phone-country picker. This is an in-page menu so mobile browsers
+   do not replace it with their large, dark native datalist suggestion panel. */
+.phone-country-picker {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 102px;
+  width: 102px;
+}
+
+.phone-country-trigger {
+  width: 100%;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  padding: 8px 9px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+  white-space: nowrap;
+}
+
+.phone-country-trigger:focus-visible {
+  outline: 3px solid rgba(30, 111, 235, 0.2);
+  border-color: var(--brand);
+}
+
+.phone-country-chevron { color: var(--muted); font-size: 14px; }
+
+.phone-country-menu {
+  position: absolute;
+  z-index: 1200;
+  top: calc(100% + 6px);
+  left: 0;
+  width: min(300px, calc(100vw - 48px));
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 14px 34px rgba(16, 35, 58, 0.2);
+}
+
+.phone-country-menu[hidden] { display: none; }
+
+.phone-country-search {
+  width: 100%;
+  min-height: 42px;
+  margin: 0 0 6px;
+  padding: 8px 10px;
+  background: #f7faff;
+}
+
+.phone-country-options {
+  display: block;
+  max-height: 240px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.phone-country-option {
+  width: 100%;
+  min-height: 42px;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+}
+
+.phone-country-option:hover,
+.phone-country-option:focus-visible { background: #edf4ff; }
+.phone-country-option[aria-selected="true"] { background: #e5efff; font-weight: 700; }
+.phone-country-flag { font-size: 20px; }
+.phone-country-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.phone-country-code { color: var(--muted); font-weight: 600; }
+.phone-country-empty { display: block; padding: 14px 10px; color: var(--muted); text-align: center; }

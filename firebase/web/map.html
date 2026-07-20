@@ -78,6 +78,39 @@
       .route-stop-list { color: var(--ink); }
       .route-stop-list li { margin: 2px 0; }
       .planner-hint { font-size: 13px; color: var(--muted); margin-top: 8px; }
+      .planner-suggestion { margin: 0; font-size: 16px; line-height: 1.4; color: var(--ink); }
+      .trip-selection-bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 14px;
+        margin-top: 12px;
+        padding: 12px 14px;
+        border: 1px solid rgba(27, 104, 233, 0.22);
+        border-radius: 12px;
+        background: rgba(27, 104, 233, 0.06);
+      }
+      .trip-selection-copy { flex: 1; min-width: 180px; }
+      .trip-selection-detail { margin-top: 3px; font-size: 12px; color: var(--muted); }
+      .trip-select-column { display: none; width: 46px; text-align: center; }
+      .map-order-table.trip-selection-active .trip-select-column { display: table-cell; }
+      .map-order-table.trip-selection-active tbody tr[data-order-id] { cursor: pointer; }
+      .map-order-table tbody tr.trip-selected-row { background: rgba(27, 104, 233, 0.08); }
+      .trip-select-checkbox { width: 20px; height: 20px; accent-color: #1b68e9; cursor: pointer; }
+      .trip-select-checkbox:disabled { cursor: not-allowed; }
+      .map-delivery-date { white-space: nowrap; font-size: 12px; }
+      .map-delivery-date.is-overdue { color: #a5221a; font-weight: 700; }
+      .map-delivery-date.is-today { color: #1458c0; font-weight: 700; }
+      #build-trip-button[aria-pressed="true"] {
+        background: rgba(27, 104, 233, 0.12);
+        border-color: rgba(27, 104, 233, 0.45);
+      }
+      @media (max-width: 720px) {
+        .trip-selection-bar { align-items: stretch; flex-direction: column; }
+        .trip-selection-bar .button-row { display: grid; grid-template-columns: 1fr 1fr; width: 100%; }
+        .trip-selection-bar .button-row .primary { grid-column: 1 / -1; }
+        .trip-selection-bar button { min-height: 44px; }
+      }
     </style>
   </head>
   <body>
@@ -118,19 +151,28 @@
                 <option value="__unassigned__">Unassigned</option>
               </select>
               <select id="status-filter" title="Filter by status">
-                <option value="approved">Approved (new · assigned · out for delivery)</option>
+                <option value="approved">All active orders</option>
                 <option value="new">Approved only</option>
                 <option value="assigned">Assigned only</option>
                 <option value="out_for_delivery">Out for delivery only</option>
-                <option value="delivered">Delivered</option>
               </select>
-              <label class="muted">Date <input id="map-date" type="date" required></label>
               <button class="secondary" id="refresh-button" type="button">Refresh</button>
-              <button class="primary" id="plan-trips-button" type="button" disabled>Plan trips</button>
+              <button class="secondary" id="build-trip-button" type="button" aria-pressed="false">Build a trip</button>
             </div>
           </div>
 
           <p class="muted" id="list-status" style="margin-top:12px"></p>
+          <div id="trip-selection-bar" class="trip-selection-bar hidden">
+            <div class="trip-selection-copy">
+              <strong id="trip-selection-summary">No stops selected</strong>
+              <div id="trip-selection-detail" class="trip-selection-detail">Select orders from the list or map pins.</div>
+            </div>
+            <div class="button-row">
+              <button class="secondary" id="select-filtered-button" type="button">Select all shown</button>
+              <button class="secondary" id="clear-trip-selection-button" type="button">Clear</button>
+              <button class="primary" id="plan-trips-button" type="button" disabled>Plan selected</button>
+            </div>
+          </div>
           <div id="missing-banner" class="map-missing-banner" style="display:none"></div>
 
           <div id="map-config-needed" class="map-config-banner" style="display:none">
@@ -146,8 +188,10 @@
           <div class="customer-table-wrap" style="margin-top:16px">
             <table class="customer-table map-order-table">
               <colgroup>
+                <col class="trip-select-column">
                 <col>
                 <col class="map-products-col">
+                <col>
                 <col>
                 <col class="map-address-col">
                 <col class="map-order-id-col">
@@ -155,8 +199,10 @@
               </colgroup>
               <thead>
                 <tr>
+                  <th class="trip-select-column">Trip</th>
                   <th>Customer</th>
                   <th>Products</th>
+                  <th>Delivery</th>
                   <th>Phone</th>
                   <th>Address</th>
                   <th>Order ID</th>
@@ -170,7 +216,7 @@
 
         <section class="panel" id="trip-planner-panel">
           <h2>Trip planner</h2>
-          <p class="muted planner-hint" id="planner-hint">Pick a single driver above (not "All drivers") and a single day to plan trips.</p>
+          <p class="muted planner-hint" id="planner-hint">Pick a single driver, select Build a trip, then choose the stops to include.</p>
           <div id="planner-capacity"></div>
           <div id="planner-results" class="stack" style="margin-top:12px"></div>
         </section>

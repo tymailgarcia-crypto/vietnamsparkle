@@ -65,10 +65,262 @@ export function normalizePhoneE164VN(value) {
   return null;
 }
 
+// Kept in one shared list so checkout and My Account offer the same searchable
+// country choices. Common Da Nang customer origins come first; the input stays
+// compact because browsers only reveal the full list while the customer types.
+export const PHONE_COUNTRIES = Object.freeze([
+  ["+84", "🇻🇳", "Vietnam"], ["+1", "🇺🇸", "United States"], ["+1", "🇨🇦", "Canada"],
+  ["+44", "🇬🇧", "United Kingdom"], ["+61", "🇦🇺", "Australia"], ["+64", "🇳🇿", "New Zealand"],
+  ["+33", "🇫🇷", "France"], ["+49", "🇩🇪", "Germany"], ["+81", "🇯🇵", "Japan"],
+  ["+82", "🇰🇷", "South Korea"], ["+65", "🇸🇬", "Singapore"], ["+66", "🇹🇭", "Thailand"],
+  ["+91", "🇮🇳", "India"], ["+7", "🇷🇺", "Russia"], ["+86", "🇨🇳", "China"],
+  ["+852", "🇭🇰", "Hong Kong"], ["+853", "🇲🇴", "Macau"], ["+886", "🇹🇼", "Taiwan"],
+  ["+62", "🇮🇩", "Indonesia"], ["+60", "🇲🇾", "Malaysia"], ["+63", "🇵🇭", "Philippines"],
+  ["+855", "🇰🇭", "Cambodia"], ["+856", "🇱🇦", "Laos"], ["+95", "🇲🇲", "Myanmar"],
+  ["+880", "🇧🇩", "Bangladesh"], ["+92", "🇵🇰", "Pakistan"], ["+94", "🇱🇰", "Sri Lanka"],
+  ["+977", "🇳🇵", "Nepal"], ["+975", "🇧🇹", "Bhutan"], ["+960", "🇲🇻", "Maldives"],
+  ["+31", "🇳🇱", "Netherlands"], ["+32", "🇧🇪", "Belgium"], ["+34", "🇪🇸", "Spain"],
+  ["+39", "🇮🇹", "Italy"], ["+41", "🇨🇭", "Switzerland"], ["+43", "🇦🇹", "Austria"],
+  ["+353", "🇮🇪", "Ireland"], ["+351", "🇵🇹", "Portugal"], ["+30", "🇬🇷", "Greece"],
+  ["+45", "🇩🇰", "Denmark"], ["+46", "🇸🇪", "Sweden"], ["+47", "🇳🇴", "Norway"],
+  ["+358", "🇫🇮", "Finland"], ["+354", "🇮🇸", "Iceland"], ["+48", "🇵🇱", "Poland"],
+  ["+420", "🇨🇿", "Czechia"], ["+421", "🇸🇰", "Slovakia"], ["+36", "🇭🇺", "Hungary"],
+  ["+40", "🇷🇴", "Romania"], ["+359", "🇧🇬", "Bulgaria"], ["+385", "🇭🇷", "Croatia"],
+  ["+386", "🇸🇮", "Slovenia"], ["+381", "🇷🇸", "Serbia"], ["+382", "🇲🇪", "Montenegro"],
+  ["+387", "🇧🇦", "Bosnia and Herzegovina"], ["+389", "🇲🇰", "North Macedonia"],
+  ["+355", "🇦🇱", "Albania"], ["+383", "🇽🇰", "Kosovo"], ["+373", "🇲🇩", "Moldova"],
+  ["+380", "🇺🇦", "Ukraine"], ["+375", "🇧🇾", "Belarus"], ["+370", "🇱🇹", "Lithuania"],
+  ["+371", "🇱🇻", "Latvia"], ["+372", "🇪🇪", "Estonia"], ["+352", "🇱🇺", "Luxembourg"],
+  ["+356", "🇲🇹", "Malta"], ["+357", "🇨🇾", "Cyprus"], ["+377", "🇲🇨", "Monaco"],
+  ["+376", "🇦🇩", "Andorra"], ["+423", "🇱🇮", "Liechtenstein"], ["+378", "🇸🇲", "San Marino"],
+  ["+90", "🇹🇷", "Türkiye"], ["+971", "🇦🇪", "United Arab Emirates"], ["+966", "🇸🇦", "Saudi Arabia"],
+  ["+974", "🇶🇦", "Qatar"], ["+973", "🇧🇭", "Bahrain"], ["+965", "🇰🇼", "Kuwait"],
+  ["+968", "🇴🇲", "Oman"], ["+972", "🇮🇱", "Israel"], ["+962", "🇯🇴", "Jordan"],
+  ["+961", "🇱🇧", "Lebanon"], ["+98", "🇮🇷", "Iran"], ["+964", "🇮🇶", "Iraq"],
+  ["+995", "🇬🇪", "Georgia"], ["+374", "🇦🇲", "Armenia"], ["+994", "🇦🇿", "Azerbaijan"],
+  ["+7", "🇰🇿", "Kazakhstan"], ["+998", "🇺🇿", "Uzbekistan"], ["+996", "🇰🇬", "Kyrgyzstan"],
+  ["+976", "🇲🇳", "Mongolia"], ["+27", "🇿🇦", "South Africa"], ["+20", "🇪🇬", "Egypt"],
+  ["+212", "🇲🇦", "Morocco"], ["+213", "🇩🇿", "Algeria"], ["+216", "🇹🇳", "Tunisia"],
+  ["+234", "🇳🇬", "Nigeria"], ["+254", "🇰🇪", "Kenya"], ["+233", "🇬🇭", "Ghana"],
+  ["+251", "🇪🇹", "Ethiopia"], ["+255", "🇹🇿", "Tanzania"], ["+256", "🇺🇬", "Uganda"],
+  ["+250", "🇷🇼", "Rwanda"], ["+230", "🇲🇺", "Mauritius"], ["+248", "🇸🇨", "Seychelles"],
+  ["+52", "🇲🇽", "Mexico"], ["+55", "🇧🇷", "Brazil"], ["+54", "🇦🇷", "Argentina"],
+  ["+56", "🇨🇱", "Chile"], ["+57", "🇨🇴", "Colombia"], ["+51", "🇵🇪", "Peru"],
+  ["+58", "🇻🇪", "Venezuela"], ["+593", "🇪🇨", "Ecuador"], ["+591", "🇧🇴", "Bolivia"],
+  ["+595", "🇵🇾", "Paraguay"], ["+598", "🇺🇾", "Uruguay"], ["+506", "🇨🇷", "Costa Rica"],
+  ["+507", "🇵🇦", "Panama"], ["+502", "🇬🇹", "Guatemala"], ["+503", "🇸🇻", "El Salvador"],
+  ["+504", "🇭🇳", "Honduras"], ["+505", "🇳🇮", "Nicaragua"], ["+53", "🇨🇺", "Cuba"],
+  ["+1", "🇯🇲", "Jamaica"], ["+1", "🇩🇴", "Dominican Republic"], ["+1", "🇵🇷", "Puerto Rico"],
+  ["+679", "🇫🇯", "Fiji"], ["+675", "🇵🇬", "Papua New Guinea"], ["+685", "🇼🇸", "Samoa"],
+  ["+676", "🇹🇴", "Tonga"], ["+678", "🇻🇺", "Vanuatu"], ["+687", "🇳🇨", "New Caledonia"],
+  ["+689", "🇵🇫", "French Polynesia"]
+].map(([dialCode, flag, name]) => Object.freeze({ dialCode, flag, name })));
+
+export function populatePhoneCountryDatalist(listElement) {
+  if (!listElement || listElement.childElementCount) return;
+  for (const country of PHONE_COUNTRIES) {
+    const option = document.createElement("option");
+    option.value = `${country.flag} ${country.dialCode}`;
+    option.label = country.name;
+    listElement.append(option);
+  }
+}
+
+export function phoneCountryDisplayValue(dialCode, currentValue = "") {
+  const code = String(dialCode || "").match(/\+\d{1,3}/)?.[0] || "+84";
+  if (String(currentValue).includes(code) && /\p{Regional_Indicator}/u.test(String(currentValue))) {
+    return String(currentValue);
+  }
+  const country = PHONE_COUNTRIES.find((entry) => entry.dialCode === code) || PHONE_COUNTRIES[0];
+  return `${country.flag} ${code}`;
+}
+
+export function phoneCountryCodeForNumber(value, selectedCode = "+84") {
+  const phone = String(value || "").replace(/[^\d+]/g, "");
+  const selected = String(selectedCode || "").match(/\+\d{1,3}/)?.[0];
+  if (selected && phone.startsWith(selected)) return selected;
+  const codes = [...new Set(PHONE_COUNTRIES.map((country) => country.dialCode))]
+    .sort((left, right) => right.length - left.length);
+  return codes.find((code) => phone.startsWith(code)) || selected || "+84";
+}
+
+// Keep the country code in its own control. Stored E.164 numbers are split
+// when loaded so the adjacent phone field contains only the national number.
+export function splitPhoneWithCountry(value, selectedCode = "+84") {
+  const raw = String(value || "").trim();
+  const selected = String(selectedCode || "").match(/\+\d{1,3}/)?.[0] || "+84";
+  if (!raw.startsWith("+")) return { dialCode: selected, nationalNumber: raw };
+  const cleaned = raw.replace(/[^\d+]/g, "");
+  const dialCode = phoneCountryCodeForNumber(cleaned, selected);
+  return {
+    dialCode,
+    nationalNumber: cleaned.startsWith(dialCode) ? cleaned.slice(dialCode.length) : cleaned.replace(/^\+/, "")
+  };
+}
+
+export function setupPhoneCountryPicker(rootElement) {
+  if (!rootElement) return null;
+  if (rootElement._phoneCountryPicker) return rootElement._phoneCountryPicker;
+  const valueInput = rootElement.querySelector("[data-phone-country-value]");
+  const trigger = rootElement.querySelector(".phone-country-trigger");
+  const display = rootElement.querySelector("[data-phone-country-display]");
+  const menu = rootElement.querySelector(".phone-country-menu");
+  const search = rootElement.querySelector(".phone-country-search");
+  const options = rootElement.querySelector(".phone-country-options");
+  if (!valueInput || !trigger || !display || !menu || !search || !options) return null;
+
+  let selectedCountry = PHONE_COUNTRIES.find((country) => country.dialCode === valueInput.value) || PHONE_COUNTRIES[0];
+  const close = () => {
+    menu.hidden = true;
+    trigger.setAttribute("aria-expanded", "false");
+  };
+  const render = () => {
+    const query = search.value.trim().toLowerCase();
+    options.replaceChildren();
+    const matches = PHONE_COUNTRIES.filter((country) =>
+      !query || country.name.toLowerCase().includes(query) || country.dialCode.includes(query)
+    );
+    for (const country of matches) {
+      const option = document.createElement("button");
+      option.type = "button";
+      option.className = "phone-country-option";
+      option.setAttribute("role", "option");
+      option.setAttribute("aria-selected", String(country === selectedCountry));
+      for (const [className, text] of [
+        ["phone-country-flag", country.flag],
+        ["phone-country-name", country.name],
+        ["phone-country-code", country.dialCode]
+      ]) {
+        const part = document.createElement("span");
+        part.className = className;
+        part.textContent = text;
+        option.append(part);
+      }
+      option.addEventListener("click", () => {
+        api.setValue(country.dialCode, country);
+        valueInput.dispatchEvent(new Event("change", { bubbles: true }));
+        close();
+        trigger.focus();
+      });
+      options.append(option);
+    }
+    if (!matches.length) {
+      const empty = document.createElement("span");
+      empty.className = "phone-country-empty";
+      empty.textContent = "No matching country";
+      options.append(empty);
+    }
+  };
+  const api = {
+    setValue(dialCode, country = null) {
+      const code = String(dialCode || "").match(/\+\d{1,3}/)?.[0] || "+84";
+      selectedCountry = country
+        || (selectedCountry?.dialCode === code ? selectedCountry : null)
+        || PHONE_COUNTRIES.find((entry) => entry.dialCode === code)
+        || PHONE_COUNTRIES[0];
+      valueInput.value = code;
+      display.textContent = `${selectedCountry.flag} ${code}`;
+      render();
+    },
+    close
+  };
+  rootElement._phoneCountryPicker = api;
+  trigger.addEventListener("click", () => {
+    const opening = menu.hidden;
+    if (!opening) return close();
+    menu.hidden = false;
+    trigger.setAttribute("aria-expanded", "true");
+    search.value = "";
+    render();
+    search.focus();
+  });
+  search.addEventListener("input", render);
+  rootElement.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      close();
+      trigger.focus();
+    }
+  });
+  document.addEventListener("pointerdown", (event) => {
+    if (!rootElement.contains(event.target)) close();
+  });
+  api.setValue(valueInput.value);
+  return api;
+}
+
+// Phone forms show a small, familiar country picker rather than requiring a
+// customer to understand why a bare local number is rejected. A number that
+// already carries '+' always wins; the picker only supplies the missing code.
+export function normalizePhoneWithCountry(value, countryCode = "+84") {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  if (raw.startsWith("+")) return normalizePhoneE164VN(raw);
+  const code = String(countryCode || "+84").match(/\+\d{1,3}/)?.[0] || "";
+  if (!/^\+\d{1,3}$/.test(code)) return null;
+  if (code === "+84") return normalizePhoneE164VN(raw);
+  const digits = raw.replace(/\D+/g, "").replace(/^00/, "").replace(/^0/, "");
+  return digits.length >= 5 && digits.length <= 15 ? `${code}${digits}` : null;
+}
+
+export function phoneEntryErrorMessage(value) {
+  const raw = String(value || "").trim();
+  if (/[A-Za-z]/.test(raw)) {
+    return "Phone number must use digits, not letters. Spaces, +, brackets and dashes are okay.";
+  }
+  return "Enter a valid phone number. Choose the country code, then enter at least 5 digits.";
+}
+
 export function buildCustomerId(phone) {
   const normalized = normalizePhoneE164VN(phone) || normalizePhone(phone);
   if (!normalized) return "";
   return "CUS-" + normalized.replace(/\D+/g, "");
+}
+
+// Group customer docs that look like the same person — 2+ records sharing a
+// canonical phone or an email. Used by BOTH the Find-duplicates tool (to list
+// and merge) and the Customers-page nudge (to count), so the badge count can
+// never disagree with what the tool shows. Merging is always owner-initiated;
+// this only surfaces candidates, it never links anything automatically.
+export function buildDuplicateGroups(customers) {
+  const emailKey = (value) => {
+    const raw = String(value || "").trim().toLowerCase();
+    return raw.includes("@") ? raw : null;
+  };
+  const byPhone = new Map();
+  const byEmail = new Map();
+  for (const customer of customers) {
+    const phone = normalizePhoneE164VN(customer.phone);
+    if (phone) {
+      if (!byPhone.has(phone)) byPhone.set(phone, []);
+      byPhone.get(phone).push(customer);
+    }
+    const email = emailKey(customer.email);
+    if (email) {
+      if (!byEmail.has(email)) byEmail.set(email, []);
+      byEmail.get(email).push(customer);
+    }
+  }
+
+  const groups = [];
+  const seenMemberSets = new Set();
+  const memberKey = (docs) => docs.map((d) => d.id).sort().join("|");
+
+  for (const [phone, docs] of byPhone) {
+    if (docs.length < 2) continue;
+    groups.push({ kind: "phone", key: phone, docs });
+    seenMemberSets.add(memberKey(docs));
+  }
+  // Email groups that are not just a phone group seen again.
+  for (const [email, docs] of byEmail) {
+    if (docs.length < 2) continue;
+    if (seenMemberSets.has(memberKey(docs))) continue;
+    groups.push({ kind: "email", key: email, docs });
+  }
+
+  // Biggest groups first; phone groups ahead of email at equal size.
+  groups.sort((a, b) => b.docs.length - a.docs.length
+    || (a.kind === b.kind ? 0 : a.kind === "phone" ? -1 : 1));
+  return groups;
 }
 
 // Single canonical customer-id resolver used from every entry point (public
@@ -240,6 +492,124 @@ export function computeDepositBreakdown(items, productsById) {
     byType[containerType].amount += qty * deposit;
   });
   return Object.values(byType);
+}
+
+// A container balance is broken when netting the ledger leaves the customer
+// holding less than nothing — more containers returned, refunded or written off
+// than were ever charged to them. That is never a real-world state, so it always
+// means a bad write upstream.
+//
+// Screens must surface it instead of filtering it out. A hidden negative
+// silently absorbs the customer's next genuine deposit (charge 2, hole is -2,
+// net reads 0), so cash you actually collected stops showing as owed back and
+// the customer has no record to point at when they return the containers.
+//
+// qty and amount are tested separately on purpose: a write-off priced at a zero
+// deposit moves the count without the money, so the two drift apart
+// independently and either one alone is enough to prove the ledger is wrong.
+export function isBrokenDepositBalance(qty, amount) {
+  return Number(qty || 0) < 0 || Number(amount || 0) <= -1;
+}
+
+export function describeDepositBalanceProblem(qty, amount) {
+  const parts = [];
+  const netQty = Number(qty || 0);
+  const netAmount = Number(amount || 0);
+  if (netQty < 0) parts.push(`${Math.abs(netQty)} more returned than were ever charged`);
+  if (netAmount <= -1) parts.push(`${formatCurrency(Math.abs(netAmount))} refunded beyond what was collected`);
+  return parts.join(" · ");
+}
+
+// Proof that containers actually came back.
+//
+// A photo on its own is weak evidence — nothing stops someone photographing an
+// empty floor, a previous trip's crates, or the back of a van — so requiring a
+// photo and nothing else buys false confidence. The rule is therefore "a photo
+// OR a written account", with the note treated as a genuine alternative rather
+// than a lesser fallback: a specific sentence about what was collected and from
+// whom, saved against the delivery under the name of whoever closed it, is
+// harder to produce carelessly than a blank photo and far easier to challenge
+// later. Either way the point is the same — no deposit credit without someone
+// putting their name to an account of what physically changed hands.
+//
+// Both delivery dialogs call this, so the bar cannot drift between the owner's
+// order page and the dashboard.
+export const RETURN_NOTE_MIN_LENGTH = 15;
+
+export function containerReturnProofProblem({ hasPhoto = false, note = "" } = {}) {
+  if (hasPhoto) return null;
+  const trimmed = String(note || "").trim();
+  if (!trimmed) {
+    return "Add a photo of the returned containers — or, if you can't, write what you collected.";
+  }
+  if (trimmed.length < RETURN_NOTE_MIN_LENGTH) {
+    return `Say what was actually collected, and from whom — at least ${RETURN_NOTE_MIN_LENGTH} characters.`;
+  }
+  return null;
+}
+
+// "photo" | "note" | "photo_note" | null. Stored alongside the return events and
+// the deposit_credit payment so "which returns were closed without a photo?" is
+// one query, rather than inferring it from a null document id — which would also
+// match a return recorded before any of this existed.
+export function containerReturnProofType({ hasPhoto = false, note = "" } = {}) {
+  const hasNote = String(note || "").trim().length > 0;
+  if (hasPhoto && hasNote) return "photo_note";
+  if (hasPhoto) return "photo";
+  if (hasNote) return "note";
+  return null;
+}
+
+// What a customer is still holding, per container type, from their deposit
+// ledger. `charged` adds containers and money; `credited`, `refunded` and
+// `forfeited` all take both back — a written-off container is no longer held
+// any more than a returned one is.
+//
+// This is deliberately the SAME arithmetic as the owner's
+// loadHeldContainersForCustomer (adminApp/orderApp), because the customer and
+// the owner disagreeing about how many crates are on the doorstep is the whole
+// problem. The customer surfaces used to run their own version keyed off
+// /returns docs — but nothing in this app has ever WRITTEN a /returns doc, so
+// a container returned at delivery stayed on the customer's record forever and
+// forfeited ones were ignored outright. Do not reintroduce a /returns term
+// here without first making something write them.
+//
+// Negative nets are NOT filtered out: below zero means the ledger is broken,
+// and hiding it is exactly what let a hole masquerade as a settled customer.
+// Callers decide how to present it — see isBrokenDepositBalance.
+export function summarizeHeldContainers(depositEvents = []) {
+  const byType = {};
+  const bump = (rawType, deltaQty, deltaAmount, chargedDate) => {
+    const type = String(rawType || "other");
+    if (!byType[type]) {
+      byType[type] = { type, qty: 0, deposit: 0, oldestChargedDate: null, chargedQty: 0, chargedAmount: 0 };
+    }
+    byType[type].qty += deltaQty;
+    byType[type].deposit += deltaAmount;
+    if (chargedDate && (!byType[type].oldestChargedDate || chargedDate < byType[type].oldestChargedDate)) {
+      byType[type].oldestChargedDate = chargedDate;
+    }
+  };
+  depositEvents.forEach((event) => {
+    const qty = Number(event.qty || 0);
+    const amount = Number(event.amount || 0);
+    if (event.eventType === "charged") {
+      bump(event.containerType, qty, amount, event.eventDate || null);
+      const row = byType[String(event.containerType || "other")];
+      row.chargedQty += qty;
+      row.chargedAmount += amount;
+    } else if (event.eventType === "credited" || event.eventType === "refunded" || event.eventType === "forfeited") {
+      bump(event.containerType, -qty, -amount, null);
+    }
+  });
+  // A type that nets to a clean zero is settled and uninteresting. Sub-1 money
+  // residue is rounding, not a balance.
+  return Object.values(byType)
+    .map((row) => ({
+      ...row,
+      depositPerUnit: row.chargedQty > 0 ? row.chargedAmount / row.chargedQty : 0
+    }))
+    .filter((row) => row.qty !== 0 || Math.abs(row.deposit) >= 1);
 }
 
 export function computeOrderTotals(selectedProducts) {

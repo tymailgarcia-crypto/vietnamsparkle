@@ -8,7 +8,6 @@ import {
   getDocs,
   onAuthStateChanged,
   query,
-  runTransaction,
   serverTimestamp,
   setDoc,
   signOut,
@@ -22,7 +21,6 @@ import {
   buildOrderId,
   computeOrderTotals,
   escapeHtml,
-  formatCurrency,
   mergeThresholds,
   normalizePhone,
   paymentStatusFor,
@@ -49,8 +47,6 @@ function humanizeContainerType(key) {
 const state = {
   drivers: [],
   products: [],
-  inventoryByProduct: {},
-  inventoryAvailable: false,
   containerTypes: [],
   mapsReady: false,
   geocoder: null
@@ -318,176 +314,6 @@ async function loadDriversAndProducts() {
     seen.add(t);
     return true;
   });
-  try {
-    const inventorySnap = await getDocs(collection(db, "inventory"));
-    state.inventoryByProduct = Object.fromEntries(inventorySnap.docs.map((row) => [row.id, { id: row.id, ...row.data() }]));
-    state.inventoryAvailable = true;
-  } catch (error) {
-    // Hosting and rules are separate deploys. Keep settings/loadouts usable if
-    // the UI reaches production first, but disable stock editing until the
-    // owner-only /inventory rule has shipped.
-    state.inventoryByProduct = {};
-    state.inventoryAvailable = false;
-    console.warn("Could not load inventory:", error);
-  }
-}
-
-function inventoryNumber(value) {
-  if (value === null || value === undefined || value === "") return null;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function inventorySummary(product, inventory) {
-  const onHand = inventoryNumber(inventory?.onHand);
-  const reserved = inventoryNumber(inventory?.reserved) || 0;
-  const costPrice = inventoryNumber(inventory?.costPrice);
-  if (onHand === null && costPrice === null) return "Not counted yet.";
-  const unit = product.unitLabel || "units";
-  const stock = onHand === null
-    ? "Stock not counted"
-    : `${onHand} ${unit} on hand · ${onHand - reserved} available`;
-  const margin = costPrice === null
-    ? "cost not recorded"
-    : `${formatCurrency(costPrice)} cost · ${formatCurrency(Number(product.unitPrice || 0) - costPrice)} gross margin per unit`;
-  return `${stock} · ${margin}`;
-}
-
-function setInventoryStatus(message, isError = false) {
-  const node = el("inventory-products-status");
-  if (!node) return;
-  node.textContent = message || "";
-  node.style.color = isError ? "var(--danger, #b3261e)" : "var(--muted)";
-}
-
-function renderProductInventory() {
-  const container = el("inventory-products-list");
-  const empty = el("inventory-products-empty");
-  if (!container) return;
-  if (!state.products.length) {
-    container.innerHTML = "";
-    if (empty) empty.hidden = false;
-    return;
-  }
-  if (empty) empty.hidden = true;
-  setInventoryStatus(state.inventoryAvailable
-    ? ""
-    : "Inventory access is not active yet. Deploy the Firestore inventory rule before using these fields.", !state.inventoryAvailable);
-  container.innerHTML = state.products.map((product) => {
-    const inventory = state.inventoryByProduct[product.id] || {};
-    const onHand = inventoryNumber(inventory.onHand);
-    const costPrice = inventoryNumber(inventory.costPrice);
-    const disabled = state.inventoryAvailable ? "" : "disabled";
-    return `
-      <article class="card" data-inventory-card="${escapeHtml(product.id)}">
-        <div class="order-top">
-          <div>
-            <strong>${escapeHtml(product.productName || product.id)}</strong>
-            <div class="muted" style="font-size:12px">${escapeHtml(product.id)} · retail ${escapeHtml(formatCurrency(product.unitPrice))}${product.active === false ? " · inactive" : ""}</div>
-          </div>
-          <span class="pill">${escapeHtml(product.unitLabel || "unit")}</span>
-        </div>
-        <div class="form-grid" style="margin-top:12px">
-          <label>
-            On hand
-            <input type="number" min="0" step="1" inputmode="numeric" data-inventory-on-hand value="${onHand === null ? "" : escapeHtml(onHand)}" ${disabled}>
-          </label>
-          <label>
-            Supplier cost per unit (VND)
-            <input type="number" min="0" step="1" inputmode="numeric" data-inventory-cost value="${costPrice === null ? "" : escapeHtml(costPrice)}" ${disabled}>
-          </label>
-        </div>
-        <p class="muted" data-inventory-summary style="margin:10px 0">${escapeHtml(inventorySummary(product, inventory))}</p>
-        <div class="button-row">
-          <button class="primary" type="button" data-save-inventory="${escapeHtml(product.id)}" ${disabled}>Save stock count</button>
-          <span class="muted" data-inventory-save-status></span>
-        </div>
-      </article>
-    `;
-  }).join("");
-  container.querySelectorAll("[data-save-inventory]").forEach((button) => {
-    button.addEventListener("click", () => saveProductInventory(button.dataset.saveInventory, button));
-  });
-}
-
-async function saveProductInventory(productId, button) {
-  const product = state.products.find((row) => row.id === productId);
-  const card = button.closest("[data-inventory-card]");
-  const status = card?.querySelector("[data-inventory-save-status]");
-  const onHandRaw = card?.querySelector("[data-inventory-on-hand]")?.value.trim() || "";
-  const costRaw = card?.querySelector("[data-inventory-cost]")?.value.trim() || "";
-  const onHand = Number(onHandRaw);
-  const costPrice = Number(costRaw);
-  if (!product || !state.inventoryAvailable) return;
-  if (onHandRaw === "" || !Number.isInteger(onHand) || onHand < 0) {
-    if (status) status.textContent = "Enter a whole on-hand quantity of 0 or more.";
-    return;
-  }
-  if (costRaw === "" || !Number.isFinite(costPrice) || costPrice < 0) {
-    if (status) status.textContent = "Enter a supplier cost of 0 or more.";
-    return;
-  }
-  await withSubmitLock(button, async () => {
-    if (status) status.textContent = "Saving...";
-    try {
-      const inventoryRef = doc(db, "inventory", productId);
-      // Allocate the movement id before the transaction. If Firestore retries
-      // the closure, it rewrites the same not-yet-committed row instead of
-      // producing duplicate audit movements.
-      const movementRef = doc(collection(db, "inventoryMovements"));
-      let savedInventory = null;
-      await runTransaction(db, async (transaction) => {
-        const snapshot = await transaction.get(inventoryRef);
-        const current = snapshot.exists() ? snapshot.data() : {};
-        const storedReserved = inventoryNumber(current.reserved);
-        if (storedReserved !== null && (!Number.isInteger(storedReserved) || storedReserved < 0)) {
-          throw new Error("Stored reserved stock is invalid. Review this inventory record before counting.");
-        }
-        const reserved = storedReserved || 0;
-        const previousOnHandValue = inventoryNumber(current.onHand);
-        if (previousOnHandValue !== null && (!Number.isInteger(previousOnHandValue) || previousOnHandValue < 0)) {
-          throw new Error("Stored on-hand stock is invalid. Review this inventory record before counting.");
-        }
-        const previousOnHand = previousOnHandValue || 0;
-        const previousCostPrice = inventoryNumber(current.costPrice);
-        const now = serverTimestamp();
-        const payload = {
-          productId,
-          onHand,
-          reserved,
-          available: onHand - reserved,
-          costPrice,
-          lastCountedAt: now,
-          updatedAt: now,
-          updatedByUid: auth.currentUser?.uid || null,
-          updatedByEmail: auth.currentUser?.email || null
-        };
-        transaction.set(inventoryRef, payload, { merge: true });
-        transaction.set(movementRef, {
-          productId,
-          qty: onHand - previousOnHand,
-          reason: "stock_take_adjustment",
-          linkedOrderId: null,
-          linkedPurchaseId: null,
-          beforeOnHand: previousOnHand,
-          afterOnHand: onHand,
-          costPriceBefore: previousCostPrice,
-          costPriceAfter: costPrice,
-          at: now,
-          byUid: auth.currentUser?.uid || null,
-          byEmail: auth.currentUser?.email || null
-        });
-        savedInventory = { ...current, ...payload };
-      });
-      const saved = { ...savedInventory, lastCountedAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
-      state.inventoryByProduct[productId] = saved;
-      const summary = card?.querySelector("[data-inventory-summary]");
-      if (summary) summary.textContent = inventorySummary(product, saved);
-      if (status) status.textContent = "Saved.";
-    } catch (error) {
-      if (status) status.textContent = error.message || String(error);
-    }
-  }, { busyLabel: "Saving..." });
 }
 
 function renderDrivers() {
@@ -836,7 +662,6 @@ onAuthStateChanged(auth, async (user) => {
   try {
     await loadDriversAndProducts();
     renderDrivers();
-    renderProductInventory();
   } catch (error) {
     console.error("Could not load drivers/products:", error);
   }

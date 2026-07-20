@@ -38,12 +38,14 @@
 
         <section class="panel">
           <div class="toolbar">
-            <div class="view-toggle directory-view-toggle" aria-label="Customer view">
-              <button id="customers-cards-view" class="active" type="button">Cards</button>
-              <button id="customers-list-view" type="button">List</button>
+            <div class="button-row" style="flex-wrap:wrap;gap:8px">
+              <div class="view-toggle directory-view-toggle" aria-label="Customer view">
+                <button id="customers-cards-view" class="active" type="button">Cards</button>
+                <button id="customers-list-view" type="button">List</button>
+              </div>
+              <a class="button-link secondary" href="./duplicates.html" title="Review records that look like the same customer">Find duplicates<span id="duplicates-badge" class="nav-count-badge" hidden></span></a>
             </div>
             <div class="button-row" style="flex-wrap:wrap;gap:8px">
-              <a class="button-link secondary" href="./duplicates.html">Find duplicates</a>
               <input id="search-input" type="search" placeholder="Search..." style="min-width:220px">
               <select id="attention-filter">
                 <option value="">All attention</option>
@@ -108,6 +110,17 @@
             Address
             <input id="new-customer-address" required minlength="5" maxlength="499" type="text" autocomplete="off">
           </label>
+          <div class="span-2 button-row">
+            <button id="new-customer-address-verify" class="ghost" type="button">Find on Google Maps</button>
+            <span class="muted" id="new-customer-address-status">Confirm the delivery pin before saving.</span>
+          </div>
+          <div id="new-customer-address-map-wrap" class="span-2 address-map-wrap" hidden>
+            <div id="new-customer-address-map" class="address-confirm-map" aria-label="Map showing the new customer's delivery address"></div>
+            <div class="address-map-footer">
+              <p class="muted address-map-help">Drag the pin to the exact entrance, then confirm it.</p>
+              <button id="new-customer-address-confirm" class="secondary" type="button">Use this location</button>
+            </div>
+          </div>
           <label class="span-2">
             Notes
             <textarea id="new-customer-notes" rows="3" maxlength="1999" placeholder="Delivery preferences, allergies, past complaints..."></textarea>

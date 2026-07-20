@@ -12,8 +12,8 @@ import {
 } from "./firebaseClient.js";
 import {
   buildCustomerId,
+  buildDuplicateGroups,
   escapeHtml,
-  normalizePhoneE164VN,
   requireRole,
   withSubmitLock
 } from "./shared.js";
@@ -53,50 +53,6 @@ function setStatus(message) {
   if (node) node.textContent = message || "";
 }
 
-function normalizedEmail(value) {
-  const raw = String(value || "").trim().toLowerCase();
-  return raw.includes("@") ? raw : null;
-}
-
-// --- Grouping -------------------------------------------------------------
-
-function buildGroups(customers) {
-  const byPhone = new Map();
-  const byEmail = new Map();
-  for (const customer of customers) {
-    const phoneKey = normalizePhoneE164VN(customer.phone);
-    if (phoneKey) {
-      if (!byPhone.has(phoneKey)) byPhone.set(phoneKey, []);
-      byPhone.get(phoneKey).push(customer);
-    }
-    const emailKey = normalizedEmail(customer.email);
-    if (emailKey) {
-      if (!byEmail.has(emailKey)) byEmail.set(emailKey, []);
-      byEmail.get(emailKey).push(customer);
-    }
-  }
-
-  const groups = [];
-  const seenMemberSets = new Set();
-  const memberKey = (docs) => docs.map((d) => d.id).sort().join("|");
-
-  for (const [phone, docs] of byPhone) {
-    if (docs.length < 2) continue;
-    groups.push({ kind: "phone", key: phone, docs });
-    seenMemberSets.add(memberKey(docs));
-  }
-  // Email groups that are not just a phone group seen again.
-  for (const [email, docs] of byEmail) {
-    if (docs.length < 2) continue;
-    if (seenMemberSets.has(memberKey(docs))) continue;
-    groups.push({ kind: "email", key: email, docs });
-  }
-
-  // Biggest groups first; phone groups ahead of email at equal size.
-  groups.sort((a, b) => b.docs.length - a.docs.length
-    || (a.kind === b.kind ? 0 : a.kind === "phone" ? -1 : 1));
-  return groups;
-}
 
 // Suggested survivor: the canonical CUS-<E164> doc when present, then the doc
 // carrying a sign-in, then the one with the most orders. resolveCustomerId
@@ -301,7 +257,7 @@ async function loadCustomers() {
     state.customers = snap.docs
       .map((d) => ({ id: d.id, ...(d.data() || {}) }))
       .filter((c) => c.archived !== true && c.testFixture !== true);
-    state.groups = buildGroups(state.customers);
+    state.groups = buildDuplicateGroups(state.customers);
     state.orderCounts = {};
     renderSummaryTiles();
     renderGroups();

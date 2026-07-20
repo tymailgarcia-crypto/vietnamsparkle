@@ -9,7 +9,14 @@ import {
   setDoc,
   signOut
 } from "./firebaseClient.js";
-import { normalizePhoneE164VN, requireRole, withSubmitLock } from "./shared.js";
+import { buildDuplicateGroups, normalizePhoneE164VN, requireRole, withSubmitLock } from "./shared.js";
+import { mapsApiKey } from "./firebaseWebConfig.js";
+
+let customersMapsPromise = null;
+let newCustomerAddressMap = null;
+let newCustomerAddressMarker = null;
+let pendingNewCustomerLocation = null;
+let confirmedNewCustomerLocation = null;
 
 const state = {
   customers: [],
@@ -27,6 +34,99 @@ function el(id) {
 function setStatus(message) {
   const node = el("list-status");
   if (node) node.textContent = message || "";
+}
+
+function loadCustomersMaps() {
+  if (window.google?.maps) return Promise.resolve(window.google.maps);
+  if (customersMapsPromise) return customersMapsPromise;
+  if (!mapsApiKey) return Promise.reject(new Error("Google Maps is not configured."));
+  customersMapsPromise = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(mapsApiKey)}&v=weekly`;
+    script.async = true;
+    script.onload = () => resolve(window.google.maps);
+    script.onerror = () => reject(new Error("Google Maps could not be loaded."));
+    document.head.appendChild(script);
+  });
+  return customersMapsPromise;
+}
+
+function setNewCustomerAddressStatus(message, isError = false) {
+  const node = el("new-customer-address-status");
+  node.textContent = message || "";
+  node.style.color = isError ? "var(--danger, #b3261e)" : "var(--muted)";
+}
+
+function clearNewCustomerLocation() {
+  pendingNewCustomerLocation = null;
+  confirmedNewCustomerLocation = null;
+  el("new-customer-address-map-wrap")?.setAttribute("hidden", "");
+  setNewCustomerAddressStatus("Confirm the delivery pin before saving.");
+}
+
+async function findNewCustomerAddress() {
+  const address = el("new-customer-address").value.trim();
+  if (address.length < 5) {
+    setNewCustomerAddressStatus("Enter a fuller delivery address first.", true);
+    return;
+  }
+  const button = el("new-customer-address-verify");
+  button.disabled = true;
+  setNewCustomerAddressStatus("Searching Google Maps...");
+  confirmedNewCustomerLocation = null;
+  try {
+    await loadCustomersMaps();
+    const geocoder = new google.maps.Geocoder();
+    const match = await new Promise((resolve, reject) => {
+      geocoder.geocode({
+        address,
+        region: "vn",
+        componentRestrictions: { country: "vn" },
+        bounds: new google.maps.LatLngBounds({ lat: 15.90, lng: 108.05 }, { lat: 16.20, lng: 108.35 })
+      }, (results, status) => {
+        if (status === "OK" && results?.[0]) resolve(results[0]);
+        else reject(new Error("We couldn't find that address. Add a district or nearby landmark and try again."));
+      });
+    });
+    const position = match.geometry.location;
+    const wrap = el("new-customer-address-map-wrap");
+    wrap.hidden = false;
+    newCustomerAddressMap = newCustomerAddressMap || new google.maps.Map(el("new-customer-address-map"), {
+      center: position,
+      zoom: 17,
+      streetViewControl: false,
+      mapTypeControl: false,
+      fullscreenControl: false
+    });
+    newCustomerAddressMap.setCenter(position);
+    google.maps.event.trigger(newCustomerAddressMap, "resize");
+    if (newCustomerAddressMarker) newCustomerAddressMarker.setMap(null);
+    newCustomerAddressMarker = new google.maps.Marker({ map: newCustomerAddressMap, position, draggable: true });
+    const capture = (pin) => {
+      pendingNewCustomerLocation = {
+        lat: pin.lat(),
+        lng: pin.lng(),
+        formattedAddress: match.formatted_address || address,
+        geocodedAt: new Date().toISOString()
+      };
+      confirmedNewCustomerLocation = null;
+      setNewCustomerAddressStatus("Check the pin, drag it to the exact entrance if needed, then use this location.");
+    };
+    capture(position);
+    newCustomerAddressMarker.addListener("dragend", () => capture(newCustomerAddressMarker.getPosition()));
+  } catch (error) {
+    pendingNewCustomerLocation = null;
+    el("new-customer-address-map-wrap")?.setAttribute("hidden", "");
+    setNewCustomerAddressStatus(error.message || String(error), true);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function confirmNewCustomerAddress() {
+  if (!pendingNewCustomerLocation) return;
+  confirmedNewCustomerLocation = { ...pendingNewCustomerLocation };
+  setNewCustomerAddressStatus("✓ Delivery location confirmed on Google Maps.");
 }
 
 function phoneDialHref(phone) {
@@ -187,7 +287,7 @@ function renderRows() {
     return `
       <article class="card directory-card">
         <div class="directory-card-head">
-          <div><a class="directory-card-title" href="${nameHref}">${escapeHtml(customer.name || "Unknown")}</a><div class="muted">${escapeHtml(customer.area || "Area not set")}</div></div>
+          <div><a class="directory-card-title" href="${nameHref}">${escapeHtml(customer.name || "Unknown")}</a></div>
           <span class="directory-count">${Number(customer.orderCount || 0)} order${Number(customer.orderCount || 0) === 1 ? "" : "s"}</span>
         </div>
         <div class="customer-attention customer-attention-${attention.tone}">${escapeHtml(attention.text)}</div>
@@ -235,8 +335,28 @@ async function loadCustomers() {
       depositsSnap.docs.map((item) => item.data())
     );
     renderRows();
+    updateDuplicatesBadge();
   } catch (error) {
     setStatus(`Could not load customers: ${error.message || error}`);
+  }
+}
+
+// Nudge toward the merge tool: count records that look like the same person
+// (same phone or email) and badge the "Find duplicates" link. Same grouping the
+// tool itself uses (buildDuplicateGroups), so the number can't disagree with
+// what you see when you open it. Merging stays a manual owner decision there.
+function updateDuplicatesBadge() {
+  const badge = el("duplicates-badge");
+  if (!badge) return;
+  // Match the tool's population: it also drops testFixture docs (archived docs
+  // are already excluded when state.customers is built).
+  const groups = buildDuplicateGroups(state.customers.filter((c) => c.testFixture !== true));
+  if (groups.length) {
+    badge.textContent = String(groups.length);
+    badge.hidden = false;
+    badge.title = `${groups.length} possible duplicate account${groups.length === 1 ? "" : "s"} to review`;
+  } else {
+    badge.hidden = true;
   }
 }
 
@@ -289,6 +409,7 @@ function openAddCustomerDialog() {
   const statusNode = el("add-customer-status");
   statusNode.textContent = "";
   statusNode.style.color = "";
+  clearNewCustomerLocation();
   dialog.showModal();
 }
 
@@ -300,6 +421,12 @@ async function handleSaveNewCustomer(event) {
   if (!e164) {
     statusNode.textContent = "Enter a valid phone. Include country code for numbers outside Vietnam.";
     statusNode.style.color = "var(--danger, #b3261e)";
+    return;
+  }
+  if (!confirmedNewCustomerLocation) {
+    statusNode.textContent = "Confirm the delivery address on Google Maps before saving.";
+    statusNode.style.color = "var(--danger, #b3261e)";
+    el("new-customer-address-verify").focus();
     return;
   }
   const digits = e164.replace(/\D+/g, "");
@@ -315,6 +442,11 @@ async function handleSaveNewCustomer(event) {
         email: el("new-customer-email").value.trim() || null,
         area: el("new-customer-area").value.trim() || null,
         address: el("new-customer-address").value.trim(),
+        addressLocations: [{
+          address: el("new-customer-address").value.trim(),
+          ...confirmedNewCustomerLocation
+        }],
+        location: { ...confirmedNewCustomerLocation },
         notes: el("new-customer-notes").value.trim() || null,
         billingName: null,
         taxId: null,
@@ -342,6 +474,9 @@ el("add-customer-cancel-button").addEventListener("click", () => {
 });
 el("add-customer-form").addEventListener("submit", handleSaveNewCustomer);
 el("new-customer-phone").addEventListener("input", checkForDuplicatePhone);
+el("new-customer-address").addEventListener("input", clearNewCustomerLocation);
+el("new-customer-address-verify").addEventListener("click", findNewCustomerAddress);
+el("new-customer-address-confirm").addEventListener("click", confirmNewCustomerAddress);
 
 onAuthStateChanged(auth, async (user) => {
   const authView = el("auth-view");

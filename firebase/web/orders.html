@@ -5,6 +5,125 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Orders · Vietnam Sparkle</title>
     <link rel="stylesheet" href="./assets/styles.css">
+    <style>
+      .orders-date-range {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        align-items: end;
+        gap: 8px;
+        flex: 1 1 330px;
+        min-width: min(100%, 300px);
+      }
+      .orders-date-range label {
+        display: grid;
+        gap: 4px;
+        min-width: 0;
+      }
+      .orders-date-range input {
+        width: 100%;
+        min-width: 0;
+      }
+      #order-cards .order-directory-card {
+        border: 1px solid #a9c9f5;
+        box-shadow: 0 1px 3px rgba(27, 104, 233, 0.09);
+      }
+      #order-cards .order-card-item-thumbs {
+        margin-top: 4px;
+      }
+      #order-cards .map-order-product-image {
+        max-width: 38px;
+        height: 38px;
+      }
+      #order-cards .map-order-product {
+        width: 43px;
+        height: 43px;
+      }
+      #order-cards .order-card-proof-thumbs button {
+        padding: 0;
+        border: 0;
+        background: transparent;
+      }
+      #order-cards .order-card-proof-thumbs button:focus-visible {
+        outline: 2px solid var(--sky);
+        outline-offset: 2px;
+        border-radius: 8px;
+      }
+      #order-cards .order-location-preview {
+        position: relative;
+        display: block;
+        width: 100%;
+        height: 112px;
+        padding: 0;
+        overflow: hidden;
+        cursor: zoom-in;
+        border: 2px solid #7da9e6;
+        border-radius: 11px;
+        background: #e6eef8;
+        box-shadow: 0 1px 3px rgba(27, 104, 233, 0.12);
+      }
+      #order-cards .order-location-preview:hover {
+        border-color: #2f70c5;
+        box-shadow: 0 2px 7px rgba(27, 104, 233, 0.22);
+      }
+      #order-cards .order-location-preview:focus-visible {
+        outline: 3px solid #2f70c5;
+        outline-offset: 2px;
+      }
+      #order-cards .order-location-preview-map {
+        position: absolute;
+        inset: 0;
+        display: block;
+        width: 100%;
+        height: 100%;
+        pointer-events: none;
+      }
+      #order-cards .order-location-preview-label {
+        position: absolute;
+        right: 7px;
+        bottom: 7px;
+        z-index: 2;
+        padding: 4px 8px;
+        border: 1px solid rgba(47, 112, 197, 0.35);
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.92);
+        color: #123b72;
+        font-size: 12px;
+        font-weight: 700;
+        line-height: 1.2;
+        box-shadow: 0 1px 3px rgba(20, 38, 49, 0.16);
+      }
+      #order-cards .order-location-preview.is-unavailable .order-location-preview-map::after {
+        content: "Map preview unavailable";
+        position: absolute;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        color: var(--muted);
+        background: #eef3f7;
+      }
+      #orders-map-dialog .orders-map-footer {
+        display: grid;
+        grid-template-columns: 1fr auto 1fr;
+        align-items: center;
+        gap: 10px;
+        margin-top: 10px;
+      }
+      #orders-map-status { margin: 0; min-width: 0; }
+      #orders-map-directions { justify-self: center; }
+      #orders-map-close {
+        justify-self: end;
+        background: #f8d7da;
+        border-color: #c84a55;
+        color: #7a2016;
+      }
+      @media (max-width: 560px) {
+        #orders-map-dialog .orders-map-footer {
+          grid-template-columns: 1fr auto;
+        }
+        #orders-map-status { grid-column: 1 / -1; }
+        #orders-map-directions { justify-self: start; }
+      }
+    </style>
   </head>
   <body>
     <main class="page has-admin-dock">
@@ -52,8 +171,10 @@
                 <option value="delivered">Delivered</option>
                 <option value="cancelled">Cancelled</option>
               </select>
-              <label class="muted">From <input id="date-from" type="date"></label>
-              <label class="muted">To <input id="date-to" type="date"></label>
+              <div class="orders-date-range">
+                <label class="muted">From <input id="date-from" type="date"></label>
+                <label class="muted">To <input id="date-to" type="date"></label>
+              </div>
               <select id="sort-select">
                 <option value="delivery-desc">Delivery date (newest)</option>
                 <option value="delivery-asc">Delivery date (oldest)</option>
@@ -82,6 +203,34 @@
             </table>
           </div>
         </section>
+
+        <dialog id="proof-preview-dialog" class="edit-dialog" style="width:min(920px,96vw);max-width:920px;padding:14px">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:10px">
+            <h3 id="proof-preview-title" style="margin:0">Payment proof</h3>
+            <button class="ghost" type="button" id="proof-preview-close">Close</button>
+          </div>
+          <div style="display:flex;align-items:center;justify-content:center;min-height:240px;max-height:72vh;overflow:auto;background:#eef2f5;border-radius:12px;padding:8px">
+            <img id="proof-preview-image" src="" alt="Large payment proof preview" style="display:block;max-width:100%;max-height:70vh;width:auto;height:auto;object-fit:contain;border-radius:8px">
+          </div>
+          <div class="button-row" style="justify-content:flex-end;margin-top:10px">
+            <a class="button-link secondary" id="proof-preview-new-tab" href="#" target="_blank" rel="noopener">Open in new tab</a>
+          </div>
+        </dialog>
+
+        <dialog id="orders-map-dialog" class="edit-dialog" style="width:min(680px,94vw);max-width:680px">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:10px">
+            <div>
+              <h3 style="margin:0">Customer location · <span id="orders-map-customer"></span></h3>
+              <p class="muted" id="orders-map-address" style="margin:5px 0 0"></p>
+            </div>
+          </div>
+          <div id="orders-map-canvas" class="address-confirm-map" style="height:clamp(320px,58vh,500px)" aria-label="Map showing the order delivery location"></div>
+          <div class="orders-map-footer">
+            <p class="muted" id="orders-map-status">Loading map...</p>
+            <a class="button-link secondary" id="orders-map-directions" href="#" target="_blank" rel="noopener" hidden>Directions</a>
+            <button type="button" id="orders-map-close">Close</button>
+          </div>
+        </dialog>
       </div>
     </main>
 

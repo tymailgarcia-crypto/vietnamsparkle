@@ -5,6 +5,402 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Vietnam Sparkle Owner Dashboard</title>
     <link rel="stylesheet" href="./assets/styles.css">
+    <style>
+      #today-board {
+        gap: 8px;
+        border: 0;
+        background: transparent;
+        overflow: visible;
+      }
+      #today-board .compact-order {
+        border: 1px solid #a9c9f5;
+        border-radius: 12px;
+        background: #fff;
+        box-shadow: 0 1px 3px rgba(27, 104, 233, 0.09);
+      }
+      #today-board .compact-order:last-child { border-bottom: 1px solid #a9c9f5; }
+      #today-board .compact-order { font-size: 15px; }
+      #today-board .compact-order .who,
+      #today-board .compact-order .who a {
+        color: var(--ink);
+        font-size: 18px;
+        font-weight: 800;
+        line-height: 1.2;
+        text-decoration: none;
+      }
+      #today-board .map-order-product-image {
+        max-width: 38px;
+        height: 38px;
+      }
+      #today-board .map-order-product {
+        width: 43px;
+        height: 43px;
+      }
+      #today-board .order-id-link {
+        display: inline-flex;
+        align-items: center;
+        padding: 3px 7px;
+        border: 1px solid rgba(27, 104, 233, 0.28);
+        border-radius: 7px;
+        background: rgba(27, 104, 233, 0.07);
+        color: var(--brand);
+        font-family: monospace;
+        font-size: 13px;
+        font-weight: 700;
+        text-decoration: underline;
+        text-underline-offset: 2px;
+      }
+      #today-board .order-address-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 10px;
+        border-radius: 10px;
+        background: rgba(20, 38, 49, 0.045);
+        color: var(--ink);
+        font-size: 13px;
+        line-height: 1.35;
+      }
+      #today-board .order-address-row > span {
+        min-width: 0;
+        overflow-wrap: anywhere;
+      }
+      #today-board .order-address-row [data-open-map] {
+        margin-left: auto;
+        flex: 0 0 auto;
+        border: 2px solid rgba(27, 104, 233, 0.55);
+        background: #f3f8ff;
+        color: var(--brand);
+        font-weight: 700;
+        box-shadow: 0 2px 5px rgba(27, 104, 233, 0.16);
+      }
+      #today-board .order-address-row [data-open-map]:hover {
+        background: #e8f2ff;
+        box-shadow: 0 3px 7px rgba(27, 104, 233, 0.22);
+      }
+      #today-board .order-mini-map {
+        position: relative;
+        display: block;
+        width: 100%;
+        height: 126px;
+        padding: 0;
+        overflow: hidden;
+        cursor: zoom-in;
+        border: 2px solid #7da9e6;
+        border-radius: 12px;
+        background: #e6eef8;
+        box-shadow: 0 1px 3px rgba(27, 104, 233, 0.12);
+      }
+      #today-board .order-mini-map:hover {
+        border-color: #2f70c5;
+        box-shadow: 0 2px 7px rgba(27, 104, 233, 0.22);
+      }
+      #today-board .order-mini-map:focus-visible {
+        outline: 3px solid #2f70c5;
+        outline-offset: 2px;
+      }
+      #today-board .order-mini-map-canvas {
+        position: absolute;
+        inset: 0;
+        display: block;
+        width: 100%;
+        height: 100%;
+        pointer-events: none;
+      }
+      #today-board .order-mini-map-label {
+        position: absolute;
+        right: 7px;
+        bottom: 7px;
+        z-index: 2;
+        padding: 4px 8px;
+        border: 1px solid rgba(47, 112, 197, 0.35);
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.92);
+        color: #123b72;
+        font-size: 12px;
+        font-weight: 700;
+        line-height: 1.2;
+        box-shadow: 0 1px 3px rgba(20, 38, 49, 0.16);
+      }
+      #today-board .order-mini-map.is-unavailable .order-mini-map-canvas::after {
+        content: "Map preview unavailable";
+        position: absolute;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        color: var(--muted);
+        background: #eef3f7;
+      }
+      #today-board .order-total-line {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      #today-board .order-total-line strong {
+        color: var(--ink);
+        font-size: 17px;
+        font-weight: 800;
+        white-space: nowrap;
+      }
+      #today-board .compact-actions { justify-content: flex-end; align-items: center; }
+      #today-board .compact-actions > * { order: 2; }
+      #today-board .order-management-actions {
+        order: -10;
+        margin-right: auto;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        flex-wrap: wrap;
+      }
+      #today-board .order-management-actions [data-cancel] {
+        border-color: #efb4b4;
+        background: #fde7e7;
+        color: #9b2c2c;
+        font-weight: 700;
+      }
+      #today-board .order-management-actions [data-cancel]:hover { background: #fbdada; }
+      #today-board .compact-actions [data-approve],
+      #today-board .compact-actions [data-status],
+      #today-board .compact-actions [data-collect] {
+        order: 10;
+        margin-left: 0;
+      }
+      #today-board .compact-actions a { margin-left: 0 !important; }
+      #today-board .customer-contact {
+        position: relative;
+        order: 5;
+      }
+      #today-board .customer-contact summary {
+        display: flex;
+        width: 44px;
+        min-height: 44px;
+        align-items: center;
+        justify-content: center;
+        padding: 6px;
+        border: 1px solid #a9c9f5;
+        border-radius: 10px;
+        background: #f3f8ff;
+        color: var(--brand);
+        font-size: 13px;
+        font-weight: 700;
+        cursor: pointer;
+        list-style: none;
+      }
+      #today-board .customer-contact summary::-webkit-details-marker { display: none; }
+      #today-board .customer-contact summary svg,
+      #today-board .customer-contact-menu svg {
+        width: 19px;
+        height: 19px;
+        flex: 0 0 19px;
+        fill: currentColor;
+      }
+      #today-board .customer-contact-menu {
+        position: absolute;
+        right: 0;
+        bottom: calc(100% + 6px);
+        z-index: 20;
+        display: flex;
+        gap: 4px;
+        padding: 6px;
+        border: 1px solid #a9c9f5;
+        border-radius: 12px;
+        background: #fff;
+        box-shadow: 0 8px 22px rgba(20, 38, 49, 0.18);
+      }
+      #today-board .customer-contact-menu a {
+        display: flex;
+        width: 44px;
+        height: 44px;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+        border-radius: 8px;
+        color: #123b72;
+        font-size: 13px;
+        font-weight: 700;
+        text-decoration: none;
+      }
+      #today-board .customer-contact-menu a:hover { background: #eef5ff; }
+      #today-board .customer-contact-menu .contact-whatsapp { color: #128c4b; }
+      #today-board .customer-contact-menu .contact-zalo { color: #0868d7; }
+      #today-board .contact-zalo .zalo-letter {
+        fill: none;
+        stroke: #fff;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        stroke-width: 2;
+      }
+      .active-orders-heading {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+      .active-orders-heading h2 {
+        margin: 0;
+        font-size: 19px;
+      }
+      .active-orders-tools {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      .active-orders-filter {
+        display: grid;
+        gap: 4px;
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 700;
+      }
+      .active-orders-filter select {
+        width: auto;
+        min-width: 176px;
+        min-height: 44px;
+        padding: 8px 34px 8px 10px;
+        color: var(--ink);
+        font-size: 14px;
+        font-weight: 700;
+      }
+      .important-label {
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        padding: 2px 6px;
+        border-radius: 999px;
+        background: #f6d778;
+        color: #674700;
+        font-size: 11px;
+        font-weight: 800;
+      }
+      #today-board .order-delivery-timing {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 7px 9px;
+        border-radius: 8px;
+        background: #eef5ff;
+        color: #123b72;
+        font-size: 12px;
+        font-weight: 800;
+      }
+      #today-board .order-delivery-timing.is-overdue {
+        background: #fff0ed;
+        color: #9b3529;
+      }
+      [data-important-order].is-important {
+        border-color: #d99a12;
+        background: #fff3c7;
+        color: #674700;
+        font-weight: 800;
+      }
+      #today-board .order-important-note {
+        padding: 8px 10px;
+        border: 1px solid rgba(217, 154, 18, 0.35);
+        border-radius: 9px;
+        background: #fff8df;
+        color: #5c470d;
+        font-size: 13px;
+        line-height: 1.35;
+        overflow-wrap: anywhere;
+      }
+      #importance-dialog { width: min(460px, calc(100vw - 24px)); }
+      #importance-dialog form { min-width: 0; }
+      #importance-note { min-height: 110px; resize: vertical; }
+      .importance-dialog-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      @media (max-width: 560px) {
+        .active-orders-heading { align-items: flex-start; flex-wrap: wrap; }
+        .active-orders-tools { width: 100%; }
+        .active-orders-filter { flex: 1 1 auto; }
+        .active-orders-filter select { width: 100%; min-width: 0; }
+        #today-board .order-management-actions {
+          display: grid;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+          width: 100%;
+          margin-right: 0;
+        }
+        #today-board .order-management-actions button {
+          min-width: 0;
+          min-height: 44px;
+          padding: 6px;
+          font-size: 12px;
+        }
+        .importance-dialog-actions { display: grid; grid-template-columns: 1fr 1fr; }
+        .importance-dialog-actions button { min-height: 44px; }
+        .importance-dialog-actions .importance-cancel { grid-column: 1 / -1; }
+      }
+      #order-map-close {
+        border-color: #efb4b4;
+        background: #fde7e7;
+        color: #9b2c2c;
+        font-weight: 700;
+      }
+      #order-map-close:hover { background: #fbdada; }
+      #order-map-dialog .address-map-footer {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+        align-items: center;
+        gap: 10px;
+      }
+      #order-map-directions {
+        justify-self: center;
+        border-color: #a9d9bd;
+        background: #e3f5ea;
+        color: #176845;
+        font-weight: 700;
+      }
+      #order-map-directions:hover { background: #d5efdf; }
+      #order-map-close { justify-self: end; }
+      #finance-summary-panel { padding: 16px; }
+      #finance-summary-panel .finance-summary-heading {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 9px;
+      }
+      #finance-summary-panel .finance-summary-heading h2 {
+        margin: 0;
+        font-size: 19px;
+      }
+      #daily-kpis {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 8px;
+        margin: 12px 0;
+      }
+      #daily-kpis .daily-kpi {
+        min-width: 0;
+        border: 1px solid rgba(27, 104, 233, 0.16);
+        border-radius: 10px;
+        background: #f7faff;
+        padding: 9px 10px;
+      }
+      #daily-kpis .daily-kpi span {
+        display: block;
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 700;
+        line-height: 1.25;
+      }
+      #daily-kpis .daily-kpi strong {
+        display: block;
+        margin-top: 2px;
+        color: var(--ink);
+        font-size: 17px;
+        line-height: 1.2;
+        overflow-wrap: anywhere;
+      }
+      @media (max-width: 760px) {
+        #daily-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      }
+    </style>
   </head>
   <body>
     <main class="page has-admin-dock">
@@ -45,44 +441,98 @@
           <div id="admin-toast" class="admin-dock-status" role="status" aria-live="polite" aria-atomic="true"></div>
         </section>
 
-        <section class="panel">
-          <div class="date-header">
-            <input id="working-date" type="date" aria-label="Working date">
+        <section class="panel" id="active-orders-panel" aria-labelledby="active-orders-title">
+          <div class="active-orders-heading">
+            <div>
+              <h2 id="active-orders-title">Active orders</h2>
+              <p class="muted" style="margin:3px 0 0">Every unfinished order, with the full delivery card.</p>
+            </div>
+            <div class="active-orders-tools">
+              <label class="active-orders-filter" for="order-timing-filter">
+                Delivery timing
+                <select id="order-timing-filter" aria-label="Filter active orders by delivery timing">
+                  <option value="all">All delivery dates</option>
+                </select>
+              </label>
+              <span class="pill" id="active-orders-count">0</span>
+            </div>
           </div>
-          <div id="hero-stats" class="stats-grid"></div>
           <div class="view-toggle" id="order-status-filter" style="margin-top:14px" role="group" aria-label="Filter orders by status"></div>
           <div id="today-board" class="compact-list" style="margin-top:14px"></div>
         </section>
 
         <section class="panel" id="finance-summary-panel">
-          <div class="date-header">
-            <div>
-              <span class="pill">Finance</span>
-              <h2 style="margin:8px 0 4px">Range summary</h2>
-              <p class="muted" style="margin:0">Separate from the delivery date above. Sales follow delivery dates; collections follow payment dates.</p>
-            </div>
-            <form id="finance-range-form" class="button-row" style="align-items:flex-end">
-              <label>
-                From
-                <input id="finance-from" type="date" required aria-label="Finance range start">
-              </label>
-              <label>
-                To
-                <input id="finance-to" type="date" required aria-label="Finance range end">
-              </label>
-              <button class="secondary" type="submit">Update summary</button>
-            </form>
+          <div class="finance-summary-heading">
+            <h2>Quick summary</h2>
+            <a class="button-link secondary" href="./finance.html">Finance</a>
           </div>
-          <p class="muted" id="finance-status" role="status" aria-live="polite" style="min-height:18px;margin:12px 0 8px"></p>
-          <div id="finance-stats" class="stats-grid"></div>
+          <div id="daily-kpis" aria-label="Daily order and payment summary"></div>
         </section>
 
       </div>
+
+      <dialog id="order-map-dialog" class="edit-dialog" style="width:min(680px,94vw);max-width:680px">
+        <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:10px">
+          <div>
+            <h3 style="margin:0">Delivery map · <span id="order-map-customer"></span></h3>
+            <p class="muted" id="order-map-address" style="margin:5px 0 0"></p>
+          </div>
+        </div>
+        <div id="order-map-canvas" class="address-confirm-map" style="height:clamp(320px,58vh,500px)" aria-label="Map showing the order delivery location"></div>
+        <div class="address-map-footer">
+          <p class="muted address-map-help" id="order-map-status">Loading map...</p>
+          <a class="button-link secondary" id="order-map-directions" href="#" target="_blank" rel="noopener" hidden>Directions</a>
+          <button type="button" id="order-map-close">Close</button>
+        </div>
+      </dialog>
+
+      <dialog id="proof-preview-dialog" class="edit-dialog" style="width:min(920px,96vw);max-width:920px;padding:14px">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:10px">
+          <h3 id="proof-preview-title" style="margin:0">Payment proof</h3>
+          <button class="ghost" type="button" id="proof-preview-close">Close</button>
+        </div>
+        <div style="display:flex;align-items:center;justify-content:center;min-height:240px;max-height:72vh;overflow:auto;background:#eef2f5;border-radius:12px;padding:8px">
+          <img id="proof-preview-image" src="" alt="Large payment proof preview" style="display:block;max-width:100%;max-height:70vh;width:auto;height:auto;object-fit:contain;border-radius:8px">
+        </div>
+        <div class="button-row" style="justify-content:flex-end;margin-top:10px">
+          <a class="button-link secondary" id="proof-preview-new-tab" href="#" target="_blank" rel="noopener">Open in new tab</a>
+        </div>
+      </dialog>
+
+      <dialog id="importance-dialog" class="edit-dialog">
+        <form id="importance-form" class="stack">
+          <div>
+            <h3 style="margin:0">Important order</h3>
+            <p class="muted" id="importance-order-label" style="margin:4px 0 0"></p>
+          </div>
+          <input id="importance-order-id" type="hidden">
+          <label>
+            Note <span aria-hidden="true">*</span>
+            <textarea id="importance-note" required maxlength="300" placeholder="Why does this order need special attention?"></textarea>
+          </label>
+          <p class="muted" style="margin:0">A note is required so everyone knows what needs attention.</p>
+          <p id="importance-status" class="muted" role="status" aria-live="polite" style="margin:0"></p>
+          <div class="importance-dialog-actions">
+            <button class="primary" type="submit">Save important</button>
+            <button class="secondary hidden" id="importance-clear-button" type="button">Remove label</button>
+            <button class="ghost importance-cancel" id="importance-cancel-button" type="button">Cancel</button>
+          </div>
+        </form>
+      </dialog>
 
       <dialog id="delivery-payment-dialog" class="edit-dialog">
         <form id="delivery-payment-form" class="form-grid" style="min-width:min(560px,90vw)">
           <h3 class="span-2" style="margin:0">Mark delivered — <span id="delivery-payment-customer"></span></h3>
           <p class="muted span-2" style="margin:0">Amount due: <strong id="delivery-payment-due">0 VND</strong></p>
+          <div id="delivery-cod-summary" class="span-2 delivery-cod-summary hidden"></div>
+          <fieldset id="delivery-overcredit-field" class="span-2 hidden" style="border:1px solid #e0b25a;border-radius:12px;padding:12px">
+            <legend style="padding:0 6px;font-weight:700">Deposit credit exceeds this order</legend>
+            <p class="muted" style="margin:0 0 8px">There is <strong id="delivery-overcredit-amount">0 VND</strong> left after clearing the order. What should happen to it?</p>
+            <div class="button-row" style="gap:12px;align-items:flex-start">
+              <label style="display:flex;gap:6px;align-items:flex-start"><input type="radio" name="delivery-overcredit" value="carry" checked><span><strong>Carry forward</strong><small class="muted" style="display:block">Keep it as customer credit for later orders.</small></span></label>
+              <label style="display:flex;gap:6px;align-items:flex-start"><input type="radio" name="delivery-overcredit" value="refund"><span><strong>Refund cash now</strong><small class="muted" style="display:block">Return the excess and leave this order at zero.</small></span></label>
+            </div>
+          </fieldset>
           <input type="hidden" id="delivery-payment-order-id">
 
           <div class="span-2 button-row">
@@ -117,7 +567,7 @@
             <label class="span-2">
               Proof photo (optional)
               <input id="delivery-payment-proof" type="file" accept="image/*" capture="environment">
-              <span class="muted" id="delivery-payment-proof-hint">Transfer screenshot or signed receipt. Max 10 MB.</span>
+              <span class="muted" id="delivery-payment-proof-hint">Transfer screenshot or signed receipt. Photos are compressed automatically; source max 30 MB.</span>
             </label>
           </div>
 
@@ -146,6 +596,20 @@
             <h4 style="margin:12px 0 8px">Containers returned this trip</h4>
             <p class="muted" style="margin:0 0 8px" id="delivery-containers-help">Loading customer containers...</p>
             <div id="delivery-containers-list" class="stack"></div>
+            <div id="delivery-return-proof-field" class="hidden" style="margin-top:10px">
+              <strong>Record what came back <span style="color:var(--danger,#b3261e)">*</span></strong>
+              <p class="muted" style="margin:4px 0 8px">A photo or a written account — one of the two before the order can close.</p>
+              <label>
+                Photo of the returned containers
+                <input id="delivery-return-proof" type="file" accept="image/*" capture="environment">
+                <span class="muted">Compressed automatically; source max 30 MB.</span>
+              </label>
+              <label style="margin-top:8px">
+                Or write what was collected
+                <textarea id="delivery-return-note" rows="2" placeholder="e.g. 3 crates collected from Ms Hoa at the shop — phone camera not working"></textarea>
+                <span class="muted">Say what actually came back, and from whom. Saved against this delivery under your name.</span>
+              </label>
+            </div>
           </div>
 
           <div class="span-2">
@@ -153,6 +617,7 @@
               <input type="checkbox" id="delivery-loss-checkbox">
               <span>Report lost or destroyed containers</span>
             </label>
+            <p class="muted" id="delivery-loss-help" style="margin:4px 0 0"></p>
             <div id="delivery-loss-fields" class="form-grid hidden" style="margin-top:8px">
               <label>
                 Container type
@@ -205,8 +670,23 @@
           </label>
           <label class="span-2">
             Address
-            <input id="edit-address" required minlength="5" maxlength="499" type="text">
+            <input id="edit-address" required minlength="5" maxlength="499" type="text" autocomplete="street-address" aria-autocomplete="list" aria-controls="edit-address-autocomplete-list" aria-expanded="false">
           </label>
+          <div id="edit-address-autocomplete-list" class="span-2 edit-address-autocomplete" role="listbox" aria-label="Google Maps address suggestions" hidden></div>
+          <div class="span-2 button-row">
+            <button id="edit-address-verify" class="ghost" type="button">Find on Google Maps</button>
+            <span class="muted" id="edit-address-status"></span>
+          </div>
+          <div id="edit-address-map-wrap" class="span-2 address-map-wrap" hidden>
+            <div id="edit-address-map" class="address-confirm-map" aria-label="Map showing the delivery address"></div>
+            <div class="address-map-footer">
+              <p class="muted address-map-help">Drag the pin to the exact entrance, then confirm it.</p>
+              <div class="edit-address-map-actions">
+                <button id="edit-address-reset-pin" class="ghost" type="button">Reset pin</button>
+                <button id="edit-address-confirm" class="secondary" type="button">Use this address</button>
+              </div>
+            </div>
+          </div>
           <label>
             Delivery date
             <input id="edit-delivery-date" required type="date">

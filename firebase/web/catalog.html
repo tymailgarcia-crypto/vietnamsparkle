@@ -118,7 +118,7 @@
           <label class="span-2">
             …or upload a photo
             <input id="product-image-file" type="file" accept="image/*">
-            <span class="muted" id="product-image-file-hint" style="font-size:12px">Uploads immediately and fills the URL above. Max 10 MB.</span>
+            <span class="muted" id="product-image-file-hint" style="font-size:12px">Uploads immediately and fills the URL above. Photos are compressed automatically; source max 30 MB.</span>
           </label>
           <div class="span-2 catalog-image-preview" id="product-image-preview" hidden>
             <img id="product-image-preview-img" alt="Product image preview">
@@ -132,6 +132,37 @@
             <button class="primary" type="submit" id="product-save-button">Save product</button>
             <button class="ghost" type="button" id="product-cancel-button">Discard</button>
             <span class="muted" id="product-status"></span>
+          </div>
+        </form>
+      </dialog>
+
+      <dialog id="inventory-dialog" class="edit-dialog">
+        <form id="inventory-form" class="form-grid" style="min-width:min(480px,92vw)">
+          <h3 class="span-2" style="margin:0" id="inventory-dialog-title">Stock &amp; cost</h3>
+          <input type="hidden" id="inventory-product-id">
+          <p class="span-2 muted" style="margin:0">Owner-only stock and supplier cost. These are never stored on the public product catalog.</p>
+          <label>
+            On hand
+            <input id="inventory-on-hand" type="number" min="0" step="1" inputmode="numeric" placeholder="whole units">
+          </label>
+          <label>
+            Supplier cost per unit (VND)
+            <input id="inventory-cost" type="number" min="0" step="1" inputmode="numeric" placeholder="cost from supplier">
+          </label>
+          <label>
+            Reserved (read-only)
+            <output id="inventory-reserved" class="muted" style="display:block;padding:8px 0">0</output>
+          </label>
+          <label>
+            Available (computed)
+            <output id="inventory-available" class="muted" style="display:block;padding:8px 0">—</output>
+          </label>
+          <p class="span-2 muted" id="inventory-margin" style="margin:0"></p>
+          <p class="span-2 muted" style="margin:0"><strong>Manual for now:</strong> orders and purchases do not change stock automatically yet. Update these numbers after a physical stock take.</p>
+          <div class="span-2 button-row">
+            <button class="primary" type="submit" id="inventory-save-button">Save stock count</button>
+            <button class="ghost" type="button" id="inventory-cancel-button">Cancel</button>
+            <span class="muted" id="inventory-status"></span>
           </div>
         </form>
       </dialog>

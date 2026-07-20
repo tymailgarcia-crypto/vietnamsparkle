@@ -5,6 +5,19 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Receivables · Vietnam Sparkle</title>
     <link rel="stylesheet" href="./assets/styles.css">
+    <style>
+      #receivable-rows > tr:first-child > td.receivable-actions > div > button.ghost {
+        outline: 2px solid #2f70c5;
+        outline-offset: 1px;
+        box-shadow: 0 1px 3px rgba(47, 112, 197, 0.22);
+      }
+
+      #receivable-rows > tr:first-child {
+        outline: 3px solid #2f70c5;
+        outline-offset: -3px;
+        box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.85);
+      }
+    </style>
   </head>
   <body>
     <main class="page has-admin-dock">
@@ -105,7 +118,7 @@
           <label class="span-2">
             Proof photo (optional)
             <input id="record-payment-proof" type="file" accept="image/*" capture="environment">
-            <span class="muted" id="record-payment-proof-hint">Transfer screenshot or signed receipt. Max 10 MB.</span>
+            <span class="muted" id="record-payment-proof-hint">Transfer screenshot or signed receipt. Photos are compressed automatically; source max 30 MB.</span>
           </label>
           <div class="span-2 button-row">
             <button class="primary" type="submit">Save payment</button>

@@ -6,10 +6,14 @@ import {
   onAuthStateChanged,
   signOut
 } from "./firebaseClient.js";
-import { formatCurrency, requireRole } from "./shared.js";
+import { formatCurrency, productImageUrl, requireRole } from "./shared.js";
+import { mapsApiKey } from "./firebaseWebConfig.js";
 
 const state = {
   orders: [],
+  orderItems: [],
+  payments: [],
+  products: [],
   search: "",
   status: "",
   dateFrom: "",
@@ -17,6 +21,11 @@ const state = {
   sort: "delivery-desc",
   view: localStorage.getItem("orders-view") || "cards"
 };
+
+const mapsSdkState = { ready: false, loadPromise: null };
+let mapPreviewObserver = null;
+let expandedOrderMap = null;
+let expandedOrderMarker = null;
 
 function el(id) {
   return document.getElementById(id);
@@ -44,6 +53,182 @@ function humanizePaymentStatus(status) {
   if (status === "paid") return "Paid";
   if (status === "partial") return "Partial";
   return "Unpaid";
+}
+
+function deliveryPosition(order) {
+  const location = order?.deliveryLocation;
+  const rawLat = location?.lat ?? location?.latitude;
+  const rawLng = location?.lng ?? location?.longitude;
+  if (rawLat == null || rawLng == null) return null;
+  const lat = Number(rawLat);
+  const lng = Number(rawLng);
+  return Number.isFinite(lat) && Number.isFinite(lng) ? { lat, lng } : null;
+}
+
+function loadMapsSdk() {
+  if (mapsSdkState.ready) return Promise.resolve();
+  if (mapsSdkState.loadPromise) return mapsSdkState.loadPromise;
+  if (!mapsApiKey) return Promise.reject(new Error("Google Maps is not configured."));
+  if (window.google && window.google.maps) {
+    mapsSdkState.ready = true;
+    return Promise.resolve();
+  }
+  mapsSdkState.loadPromise = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    const params = new URLSearchParams({ key: mapsApiKey, v: "weekly" });
+    script.src = `https://maps.googleapis.com/maps/api/js?${params.toString()}`;
+    script.async = true;
+    script.defer = true;
+    script.onload = () => {
+      mapsSdkState.ready = true;
+      resolve();
+    };
+    script.onerror = () => reject(new Error("Maps SDK failed to load"));
+    document.head.appendChild(script);
+  });
+  return mapsSdkState.loadPromise;
+}
+
+function renderLocationPreview(order) {
+  const position = deliveryPosition(order);
+  if (!position) return "";
+  const customer = order.customerName || "customer";
+  return `
+    <button class="order-location-preview" type="button"
+      data-map-order="${escapeHtml(order.id)}"
+      data-map-lat="${position.lat}"
+      data-map-lng="${position.lng}"
+      aria-label="View a larger map for ${escapeHtml(customer)}">
+      <span class="order-location-preview-map" aria-hidden="true"></span>
+      <span class="order-location-preview-label">Tap to enlarge</span>
+    </button>`;
+}
+
+async function hydrateMapPreview(button) {
+  if (button.dataset.mapReady === "true") return;
+  button.dataset.mapReady = "true";
+  try {
+    await loadMapsSdk();
+    if (!button.isConnected) return;
+    const position = {
+      lat: Number(button.dataset.mapLat),
+      lng: Number(button.dataset.mapLng)
+    };
+    const canvas = button.querySelector(".order-location-preview-map");
+    const map = new google.maps.Map(canvas, {
+      center: position,
+      zoom: 12,
+      disableDefaultUI: true,
+      clickableIcons: false,
+      gestureHandling: "none",
+      keyboardShortcuts: false
+    });
+    new google.maps.Marker({ map, position });
+  } catch (error) {
+    button.classList.add("is-unavailable");
+    button.title = error.message || String(error);
+  }
+}
+
+function initializeMapPreviews() {
+  if (mapPreviewObserver) mapPreviewObserver.disconnect();
+  const previews = Array.from(el("order-cards").querySelectorAll("[data-map-order]"));
+  if (!previews.length) return;
+  if (!("IntersectionObserver" in window)) {
+    previews.forEach((button) => hydrateMapPreview(button));
+    return;
+  }
+  mapPreviewObserver = new IntersectionObserver((entries, observer) => {
+    entries.forEach((entry) => {
+      if (!entry.isIntersecting) return;
+      observer.unobserve(entry.target);
+      hydrateMapPreview(entry.target);
+    });
+  }, { rootMargin: "180px 0px" });
+  previews.forEach((button) => mapPreviewObserver.observe(button));
+}
+
+async function openOrderMap(order) {
+  const position = deliveryPosition(order);
+  if (!position) return;
+  const dialog = el("orders-map-dialog");
+  const status = el("orders-map-status");
+  const directions = el("orders-map-directions");
+  el("orders-map-customer").textContent = order.customerName || "Customer";
+  el("orders-map-address").textContent = order.address || "No delivery address";
+  status.textContent = "Loading map...";
+  directions.hidden = true;
+  dialog.showModal();
+  try {
+    await loadMapsSdk();
+    expandedOrderMap = expandedOrderMap || new google.maps.Map(el("orders-map-canvas"), {
+      center: position,
+      zoom: 16,
+      streetViewControl: false,
+      mapTypeControl: false,
+      fullscreenControl: true
+    });
+    expandedOrderMap.setCenter(position);
+    expandedOrderMap.setZoom(16);
+    google.maps.event.trigger(expandedOrderMap, "resize");
+    if (expandedOrderMarker) expandedOrderMarker.setMap(null);
+    expandedOrderMarker = new google.maps.Marker({
+      map: expandedOrderMap,
+      position,
+      title: order.customerName || order.address || "Delivery location"
+    });
+    directions.href = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(`${position.lat},${position.lng}`)}`;
+    directions.hidden = false;
+    status.textContent = order.deliveryLocation?.formattedAddress || "Confirmed delivery pin";
+  } catch (error) {
+    status.textContent = error.message || String(error);
+  }
+}
+
+function productForOrderItem(item) {
+  return state.products.find((product) => product.id === item.productId)
+    || state.products.find((product) => product.productName === item.productName)
+    || item.productName;
+}
+
+function renderOrderItemThumbs(order) {
+  const items = state.orderItems.filter((item) => item.orderId === order.id);
+  if (!items.length) return "";
+  const thumbs = items.map((item) => {
+    const name = String(item.productName || "Product");
+    const quantity = Number(item.quantity || 0);
+    const imageUrl = productImageUrl(productForOrderItem(item));
+    if (!imageUrl) return "";
+    const title = quantity > 1 ? `${name} ×${quantity}` : name;
+    return `
+      <span class="map-order-product" title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}">
+        <img class="map-order-product-image" src="${escapeHtml(imageUrl)}" alt="${escapeHtml(name)}" loading="lazy">
+        ${quantity > 1 ? `<span class="map-order-product-badge">×${quantity}</span>` : ""}
+      </span>`;
+  }).join("");
+  return thumbs ? `<div class="map-order-thumbs order-card-item-thumbs" aria-label="Ordered items">${thumbs}</div>` : "";
+}
+
+function renderProofThumbs(order) {
+  const proofs = state.payments.filter((payment) => payment.orderId === order.id && payment.proofUrl);
+  if (!proofs.length) return "";
+  return `
+    <div class="proof-thumbs order-card-proof-thumbs" aria-label="Payment proofs">
+      ${proofs.map((payment) => `
+        <button class="ghost" type="button" data-proof-preview="${escapeHtml(payment.proofUrl)}" data-proof-amount="${escapeHtml(formatCurrency(payment.amount))}" title="Preview payment proof — ${escapeHtml(formatCurrency(payment.amount))}">
+          <img src="${escapeHtml(payment.proofUrl)}" alt="Payment proof for ${escapeHtml(order.id)}" loading="lazy">
+        </button>
+      `).join("")}
+    </div>`;
+}
+
+function openProofPreview(button) {
+  const url = button.dataset.proofPreview;
+  if (!url) return;
+  el("proof-preview-title").textContent = `Payment proof · ${button.dataset.proofAmount || ""}`;
+  el("proof-preview-image").src = url;
+  el("proof-preview-new-tab").href = url;
+  el("proof-preview-dialog").showModal();
 }
 
 function matchesSearch(order) {
@@ -137,6 +322,9 @@ function renderRows() {
           <div><span class="muted">Balance</span><strong>${escapeHtml(formatCurrency(order.balanceDue))}</strong></div>
         </div>
         <div class="directory-address">${escapeHtml(order.address || "No delivery address")}</div>
+        ${renderLocationPreview(order)}
+        ${renderOrderItemThumbs(order)}
+        ${renderProofThumbs(order)}
         <div class="directory-order-meta"><span class="badge pay-${escapeHtml(payStatus)}">${escapeHtml(humanizePaymentStatus(payStatus))}</span><a href="./order.html?id=${encodeURIComponent(order.id)}"><code>${escapeHtml(order.id)}</code></a></div>
         <div class="button-row directory-card-actions">
           <a class="button-link primary" href="./order.html?id=${encodeURIComponent(order.id)}">Open order</a>
@@ -145,6 +333,17 @@ function renderRows() {
         </div>
       </article>`;
   }).join("");
+
+  cards.querySelectorAll("[data-proof-preview]").forEach((button) => {
+    button.addEventListener("click", () => openProofPreview(button));
+  });
+  cards.querySelectorAll("[data-map-order]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const order = state.orders.find((row) => row.id === button.dataset.mapOrder);
+      if (order) openOrderMap(order);
+    });
+  });
+  initializeMapPreviews();
 }
 
 function setView(view) {
@@ -163,8 +362,16 @@ function formatOrderId(orderId) {
 async function loadOrders() {
   setStatus("Loading orders...");
   try {
-    const snap = await getDocs(collection(db, "orders"));
-    state.orders = snap.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() }));
+    const [ordersSnap, itemsSnap, paymentsSnap, productsSnap] = await Promise.all([
+      getDocs(collection(db, "orders")),
+      getDocs(collection(db, "orderItems")),
+      getDocs(collection(db, "payments")),
+      getDocs(collection(db, "products"))
+    ]);
+    state.orders = ordersSnap.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() }));
+    state.orderItems = itemsSnap.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() }));
+    state.payments = paymentsSnap.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() }));
+    state.products = productsSnap.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() }));
     renderRows();
   } catch (error) {
     setStatus(`Could not load orders: ${error.message || error}`);
@@ -194,6 +401,11 @@ el("sort-select").addEventListener("change", (event) => {
 el("refresh-button").addEventListener("click", loadOrders);
 el("orders-cards-view").addEventListener("click", () => setView("cards"));
 el("orders-list-view").addEventListener("click", () => setView("list"));
+el("proof-preview-close").addEventListener("click", () => el("proof-preview-dialog").close());
+el("proof-preview-dialog").addEventListener("close", () => {
+  el("proof-preview-image").src = "";
+});
+el("orders-map-close").addEventListener("click", () => el("orders-map-dialog").close());
 setView(state.view);
 
 onAuthStateChanged(auth, async (user) => {

@@ -85,13 +85,33 @@ export async function renderQrDataUrl(payload) {
   });
 }
 
-export function invoiceContext({ order, items, settings }) {
+export function invoiceContext({ order, items, settings, payments, deposits }) {
   const business = settings || {};
   const bank = business.bank || {};
   const contact = business.contact || {};
 
   const balanceDue = Math.max(0, Number(order.balanceDue || 0));
   const total = Number(order.subtotal || 0) + Number(order.depositTotal || 0);
+
+  // Break "Paid" into its parts when the caller supplies the payment/deposit
+  // events. A returned-container credit lands as a `deposit_credit` payment, so
+  // amountPaid can exceed the cash actually handed over — itemizing it stops the
+  // reduced cash figure from looking like a mystery on the invoice. Callers that
+  // don't pass payments (admin/receivables) keep the plain "Paid" line.
+  const depositCreditApplied = (payments || [])
+    .filter((p) => p.method === "deposit_credit")
+    .reduce((s, p) => s + Number(p.amount || 0), 0);
+  const cashCollected = (payments || [])
+    .filter((p) => !["deposit_credit", "deposit_refund", "deferred"].includes(p.method) && Number(p.amount || 0) > 0)
+    .reduce((s, p) => s + Number(p.amount || 0), 0);
+  const returnedDepositRefunded = (deposits || [])
+    .filter((d) => d.eventType === "refunded")
+    .reduce((s, d) => s + Number(d.amount || 0), 0);
+  const excessCreditRefunded = (payments || [])
+    .filter((p) => p.method === "deposit_refund")
+    .reduce((s, p) => s + Math.abs(Number(p.amount || 0)), 0);
+  const cashRefunded = returnedDepositRefunded + excessCreditRefunded;
+  const itemizePaid = depositCreditApplied > 0;
 
   const qrPayload = balanceDue > 0
     ? buildVietQrPayload({
@@ -120,7 +140,11 @@ export function invoiceContext({ order, items, settings }) {
     isDraft,
     invoiceTitle,
     invoiceNumber,
-    issuedDate
+    issuedDate,
+    cashCollected,
+    depositCreditApplied,
+    cashRefunded,
+    itemizePaid
   };
 }
 
@@ -217,10 +241,18 @@ export function renderInvoiceHtml(ctx) {
         <div style="text-align:right">${escapeHtml(formatVnd(order.depositTotal))}</div>
         <div style="color:#5d6a74;text-align:right;font-weight:600">Total</div>
         <div style="text-align:right;font-weight:600">${escapeHtml(formatVnd(ctx.total))}</div>
+        ${ctx.itemizePaid ? `
+        <div style="color:#5d6a74;text-align:right">Cash collected</div>
+        <div style="text-align:right">${escapeHtml(formatVnd(ctx.cashCollected))}</div>
+        <div style="color:#5d6a74;text-align:right">Deposit credit (returned containers)</div>
+        <div style="text-align:right">${escapeHtml(formatVnd(ctx.depositCreditApplied))}</div>` : `
         <div style="color:#5d6a74;text-align:right">Paid</div>
-        <div style="text-align:right">${escapeHtml(formatVnd(order.amountPaid))}</div>
+        <div style="text-align:right">${escapeHtml(formatVnd(order.amountPaid))}</div>`}
         <div style="text-align:right;font-weight:700;font-size:15px">Balance due</div>
         <div style="text-align:right;font-weight:700;font-size:15px;color:${ctx.balanceDue > 0 ? "#c0392b" : "#0b7a63"}">${escapeHtml(formatVnd(ctx.balanceDue))}</div>
+        ${ctx.cashRefunded > 0 ? `
+        <div style="color:#5d6a74;text-align:right">Cash refunded (deposit)</div>
+        <div style="text-align:right">${escapeHtml(formatVnd(ctx.cashRefunded))}</div>` : ""}
       </div>
 
       <div style="display:grid;grid-template-columns:1fr 220px;gap:24px;margin-top:24px;padding-top:16px;border-top:1px dashed #ccc;align-items:start">
@@ -360,13 +392,22 @@ export async function generateInvoicePdf(ctx) {
   totalsRow("Subtotal", formatVnd(order.subtotal));
   totalsRow("Container deposit", formatVnd(order.depositTotal));
   totalsRow("Total", formatVnd(ctx.total), { bold: true });
-  totalsRow("Paid", formatVnd(order.amountPaid));
+  if (ctx.itemizePaid) {
+    totalsRow("Cash collected", formatVnd(ctx.cashCollected));
+    totalsRow("Deposit credit", formatVnd(ctx.depositCreditApplied));
+  } else {
+    totalsRow("Paid", formatVnd(order.amountPaid));
+  }
   const dueColor = ctx.balanceDue > 0 ? [192, 57, 43] : [11, 122, 99];
   doc.setFont("helvetica", "bold");
   doc.setFontSize(12);
   doc.setTextColor(dueColor[0], dueColor[1], dueColor[2]);
   doc.text("Balance due", totalsX, y, { align: "right" });
   doc.text(formatVnd(ctx.balanceDue), totalsValX, y, { align: "right" });
+  if (ctx.cashRefunded > 0) {
+    y += 6;
+    totalsRow("Cash refunded (deposit)", formatVnd(ctx.cashRefunded));
+  }
   y += 12;
 
   // Bank + QR

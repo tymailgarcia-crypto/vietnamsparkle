@@ -44,6 +44,87 @@ function extensionFor(file) {
   return "bin";
 }
 
+const MAX_IMAGE_EDGE = 1600;
+const IMAGE_QUALITY = 0.82;
+const KEEP_SMALL_ORIGINAL_BYTES = 350 * 1024;
+
+async function decodeImage(file) {
+  if (typeof createImageBitmap === "function") {
+    try {
+      return await createImageBitmap(file, { imageOrientation: "from-image" });
+    } catch (_) {
+      // Safari/older Chromium can reject the options object or HEIC input.
+    }
+  }
+  return await new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve(image);
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("This photo format could not be read. Try JPG, PNG, or WebP."));
+    };
+    image.src = url;
+  });
+}
+
+function canvasBlob(canvas, type, quality) {
+  return new Promise((resolve) => canvas.toBlob(resolve, type, quality));
+}
+
+// Camera photos routinely arrive at 4–15 MB even though the UI only displays
+// thumbnails and document previews. Resize once in the browser so payment,
+// return, and product uploads all share the same storage-saving policy. Small
+// originals stay untouched, as does any original that is already smaller than
+// the encoded WebP. PDFs never pass through this function.
+export async function compressImageForUpload(file) {
+  if (!file || !/^image\//.test(file.type || "")) return file;
+  if (file.size <= KEEP_SMALL_ORIGINAL_BYTES) return file;
+
+  const image = await decodeImage(file);
+  const sourceWidth = Number(image.width || image.naturalWidth || 0);
+  const sourceHeight = Number(image.height || image.naturalHeight || 0);
+  if (!sourceWidth || !sourceHeight) {
+    image.close?.();
+    throw new Error("This photo has no readable dimensions.");
+  }
+  const scale = Math.min(1, MAX_IMAGE_EDGE / Math.max(sourceWidth, sourceHeight));
+  const width = Math.max(1, Math.round(sourceWidth * scale));
+  const height = Math.max(1, Math.round(sourceHeight * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d", { alpha: true });
+  if (!context) {
+    image.close?.();
+    throw new Error("Photo compression is not supported in this browser.");
+  }
+  context.drawImage(image, 0, 0, width, height);
+  image.close?.();
+  const blob = await canvasBlob(canvas, "image/webp", IMAGE_QUALITY);
+  canvas.width = 1;
+  canvas.height = 1;
+  if (!blob) throw new Error("The browser could not compress this photo.");
+  if (blob.size >= file.size && file.size <= MAX_PROOF_BYTES) return file;
+
+  const originalName = String(file.name || "photo").replace(/\.[^.]+$/, "");
+  return new File([blob], `${originalName}.webp`, {
+    type: "image/webp",
+    lastModified: Date.now()
+  });
+}
+
+async function preparedImage(file) {
+  const compressed = await compressImageForUpload(file);
+  if (compressed.size > MAX_PROOF_BYTES) {
+    throw new Error(`Photo is still ${(compressed.size / 1024 / 1024).toFixed(1)} MB after compression. Choose a smaller photo.`);
+  }
+  return compressed;
+}
+
 // documents/{id} is the Sheets-era schema (see src/firestore/schema.js). Its
 // driveLink field is left alone on purpose: it means "this file lives on Google
 // Drive", which is true of the imported rows and false of everything we write.
@@ -120,11 +201,12 @@ export async function ensureInvoicePdfUploaded(ctx) {
 // proofDocumentId in the same transaction — an upload that fails must not leave
 // a payment recorded without the proof the owner thought they attached.
 export async function uploadPaymentProof({ orderId, paymentId, file }) {
+  const uploadFile = await preparedImage(file);
   const order = safeSegment(orderId, "unknown-order");
   const payment = safeSegment(paymentId, "unknown-payment");
-  const path = `payment-proofs/${order}/${payment}.${extensionFor(file)}`;
+  const path = `payment-proofs/${order}/${payment}.${extensionFor(uploadFile)}`;
   const fileRef = storageRef(storage, path);
-  await uploadBytes(fileRef, file, { contentType: file.type || "image/jpeg" });
+  await uploadBytes(fileRef, uploadFile, { contentType: uploadFile.type || "image/jpeg" });
   const downloadUrl = await getDownloadURL(fileRef);
   const documentId = await recordDocument({
     entityType: "payment",
@@ -132,9 +214,38 @@ export async function uploadPaymentProof({ orderId, paymentId, file }) {
     documentType: "payment_proof",
     downloadUrl,
     storagePath: path,
-    contentType: file.type || null,
-    sizeBytes: file.size,
-    notes: `Proof for order ${orderId}`
+    contentType: uploadFile.type || null,
+    sizeBytes: uploadFile.size,
+    notes: uploadFile.size < file.size ? `Proof for order ${orderId}; compressed from ${file.size} bytes` : `Proof for order ${orderId}`
+  });
+  return { documentId, downloadUrl, storagePath: path };
+}
+
+// Uploads the photo of containers collected at delivery. Reuses the
+// payment-proofs/ prefix on purpose: storage.rules already scopes that path to
+// the owner with the same 10 MB image guard, so container proof needs no new
+// rule (touching storage.rules is gated — see AGENTS.md). One photo per return
+// (all returned containers fit one frame); a timestamp keeps re-saves distinct.
+// Called BEFORE the delivery transaction so the documentId lands on the
+// depositEvent's linkedDocumentId in the same commit — a return credit must not
+// record without the proof the owner thought they attached.
+export async function uploadContainerReturnProof({ orderId, file }) {
+  const uploadFile = await preparedImage(file);
+  const order = safeSegment(orderId, "unknown-order");
+  const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
+  const path = `payment-proofs/${order}/return-${stamp}.${extensionFor(uploadFile)}`;
+  const fileRef = storageRef(storage, path);
+  await uploadBytes(fileRef, uploadFile, { contentType: uploadFile.type || "image/jpeg" });
+  const downloadUrl = await getDownloadURL(fileRef);
+  const documentId = await recordDocument({
+    entityType: "order",
+    entityId: orderId,
+    documentType: "container_return_proof",
+    downloadUrl,
+    storagePath: path,
+    contentType: uploadFile.type || null,
+    sizeBytes: uploadFile.size,
+    notes: uploadFile.size < file.size ? `Containers returned for order ${orderId}; compressed from ${file.size} bytes` : `Containers returned for order ${orderId}`
   });
   return { documentId, downloadUrl, storagePath: path };
 }
@@ -147,11 +258,12 @@ export async function uploadPaymentProof({ orderId, paymentId, file }) {
 // PUBLIC storefront reads it (tokens bypass storage.rules by design; product
 // photos are public content anyway).
 export async function uploadProductImage({ productId, file }) {
+  const uploadFile = await preparedImage(file);
   const product = safeSegment(productId, "unknown-product");
   const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
-  const path = `product-images/${product}/photo-${stamp}.${extensionFor(file)}`;
+  const path = `product-images/${product}/photo-${stamp}.${extensionFor(uploadFile)}`;
   const fileRef = storageRef(storage, path);
-  await uploadBytes(fileRef, file, { contentType: file.type || "image/jpeg" });
+  await uploadBytes(fileRef, uploadFile, { contentType: uploadFile.type || "image/jpeg" });
   const downloadUrl = await getDownloadURL(fileRef);
   const documentId = await recordDocument({
     entityType: "product",
@@ -159,9 +271,9 @@ export async function uploadProductImage({ productId, file }) {
     documentType: "product_image",
     downloadUrl,
     storagePath: path,
-    contentType: file.type || null,
-    sizeBytes: file.size,
-    notes: null
+    contentType: uploadFile.type || null,
+    sizeBytes: uploadFile.size,
+    notes: uploadFile.size < file.size ? `Compressed from ${file.size} bytes` : null
   });
   return { documentId, downloadUrl, storagePath: path };
 }
@@ -170,10 +282,11 @@ export async function uploadProductImage({ productId, file }) {
 // trace into a sentence the owner can act on.
 export const MAX_PROOF_BYTES = 10 * 1024 * 1024;
 export const MAX_INVOICE_BYTES = 5 * 1024 * 1024;
+export const MAX_SOURCE_IMAGE_BYTES = 30 * 1024 * 1024;
 
 export function validateProofFile(file) {
   if (!file) return "No file selected.";
   if (!/^image\//.test(file.type || "")) return "Choose a photo — that file is not an image.";
-  if (file.size > MAX_PROOF_BYTES) return `Photo is ${(file.size / 1024 / 1024).toFixed(1)} MB. Maximum is 10 MB.`;
+  if (file.size > MAX_SOURCE_IMAGE_BYTES) return `Photo is ${(file.size / 1024 / 1024).toFixed(1)} MB. Maximum source size is 30 MB.`;
   return null;
 }

@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Order record · Vietnam Sparkle</title>
-    <link rel="stylesheet" href="./assets/styles.css?v=order-card-20260716-1">
+    <link rel="stylesheet" href="./assets/styles.css?v=order-actions-20260718-1">
   </head>
   <body>
     <main class="page has-admin-dock">
@@ -26,6 +26,14 @@
         </section>
         <p id="order-load-status" class="muted"></p>
         <section id="order-summary" class="panel order-record-summary"></section>
+        <section class="panel" aria-labelledby="order-actions-heading">
+          <div class="order-record-heading">
+            <div><span class="pill">Manage</span><h2 id="order-actions-heading">Order actions</h2></div>
+            <span id="order-action-status" class="muted" role="status" aria-live="polite"></span>
+          </div>
+          <div id="order-cancellation-request"></div>
+          <div id="order-actions" class="button-row" style="flex-wrap:wrap"></div>
+        </section>
         <section class="panel order-invoice-section">
           <div class="order-invoice-heading"><div><span class="pill">Document</span><h2>Invoice</h2></div><div class="button-row"><button id="order-invoice-download" class="primary" type="button" disabled>Download PDF</button><button id="order-invoice-email" class="secondary hidden" type="button">Email</button><a id="order-invoice-whatsapp" class="button-link secondary hidden" href="#" target="_blank" rel="noopener">WhatsApp</a></div></div>
           <p id="order-invoice-status" class="muted"></p>
@@ -33,6 +41,10 @@
         </section>
         <section class="panel"><h2>Items</h2><div class="customer-table-wrap"><table class="customer-table"><thead><tr><th>Item</th><th style="text-align:right">Qty</th><th style="text-align:right">Unit price</th><th style="text-align:right">Line total</th></tr></thead><tbody id="order-item-rows"></tbody></table></div></section>
         <section class="panel"><h2>Financial summary</h2><div id="order-money" class="order-record-money"></div></section>
+        <section class="panel" id="order-cancellation-panel" hidden>
+          <div class="order-invoice-heading"><div><span class="pill">Cancellation</span><h2>Cancellation &amp; refund</h2></div><span id="order-cancellation-status" class="muted" role="status" aria-live="polite"></span></div>
+          <div id="order-cancellation-body" class="stack"></div>
+        </section>
         <section class="panel"><h2>Payment history</h2><div id="order-payments" class="stack"></div></section>
         <section class="panel"><h2>Stored documents</h2><p class="muted">Invoices, order confirmations, and payment-proof photos that were actually uploaded for this order.</p><div id="order-documents" class="stack"></div></section>
         <section class="panel"><h2>Container and deposit history</h2><div id="order-deposits" class="stack"></div></section>
@@ -48,9 +60,111 @@
         </section>
         <section class="panel"><h2>Audit timeline</h2><p class="muted">Newest activity first. Built from retained order, payment, document, deposit, return, and correction records.</p><div id="order-audit-timeline" class="order-audit-timeline"></div></section>
         <section class="panel"><h2>Record metadata</h2><dl id="order-metadata" class="order-record-metadata"></dl><p class="muted compliance-note">This is a retained operational and financial record. Corrections should be recorded through normal payment, return, cancellation, or order-management actions rather than deleting the record.</p></section>
+
+        <dialog id="delivery-payment-dialog" class="edit-dialog">
+          <form id="delivery-payment-form" class="form-grid" style="min-width:min(560px,90vw)">
+            <h3 class="span-2" style="margin:0">Mark delivered — <span id="delivery-payment-customer"></span></h3>
+            <p class="muted span-2" style="margin:0">Amount due: <strong id="delivery-payment-due">0 VND</strong></p>
+            <div id="delivery-cod-summary" class="span-2 delivery-cod-summary hidden"></div>
+            <fieldset id="delivery-overcredit-field" class="span-2 hidden" style="border:1px solid #e0b25a;border-radius:12px;padding:12px">
+              <legend style="padding:0 6px;font-weight:700">Deposit credit exceeds this order</legend>
+              <p class="muted" style="margin:0 0 8px">There is <strong id="delivery-overcredit-amount">0 VND</strong> left after clearing the order. What should happen to it?</p>
+              <div class="button-row" style="gap:12px;align-items:flex-start">
+                <label style="display:flex;gap:6px;align-items:flex-start"><input type="radio" name="delivery-overcredit" value="carry" checked><span><strong>Carry forward</strong><small class="muted" style="display:block">Keep it as customer credit for later orders.</small></span></label>
+                <label style="display:flex;gap:6px;align-items:flex-start"><input type="radio" name="delivery-overcredit" value="refund"><span><strong>Refund cash now</strong><small class="muted" style="display:block">Return the excess and leave this order at zero.</small></span></label>
+              </div>
+            </fieldset>
+            <input type="hidden" id="delivery-payment-order-id">
+
+            <div class="span-2 button-row">
+              <label class="button-row" style="gap:6px;cursor:pointer"><input type="radio" name="collected" value="collected" checked><span>Collected</span></label>
+              <label class="button-row" style="gap:6px;cursor:pointer"><input type="radio" name="collected" value="deferred"><span>Not collected today</span></label>
+            </div>
+
+            <div id="delivery-collected-fields" class="span-2 form-grid">
+              <label>Amount collected<input id="delivery-payment-amount" type="number" min="0" step="1000"></label>
+              <label>Method<select id="delivery-payment-method"><option value="cash">Cash</option><option value="transfer">Bank transfer</option><option value="bank_qr">QR code</option><option value="other">Other</option></select></label>
+              <label class="span-2">Reference (optional)<input id="delivery-payment-reference" type="text" maxlength="199" placeholder="Bank reference or note"></label>
+              <label class="span-2">Proof photo (optional)<input id="delivery-payment-proof" type="file" accept="image/*" capture="environment"><span class="muted">Transfer screenshot or signed receipt. Photos are compressed automatically; source max 30 MB.</span></label>
+            </div>
+
+            <div id="delivery-deferred-fields" class="span-2 form-grid hidden">
+              <label>Reason<select id="delivery-deferral-reason"><option value="customer_said_next_time">Customer said next time</option><option value="customer_not_home">Customer wasn't home</option><option value="driver_forgot_to_ask">Driver forgot to ask</option><option value="waived_by_owner">Waived by owner</option><option value="other">Other</option></select></label>
+              <label>Follow up by<input id="delivery-follow-up" type="date"></label>
+              <label class="span-2">Notes<textarea id="delivery-deferral-notes" rows="2" maxlength="999" placeholder="What did the customer say?"></textarea></label>
+            </div>
+
+            <div class="span-2">
+              <h4 style="margin:12px 0 8px">Containers returned this trip</h4>
+              <p class="muted" style="margin:0 0 8px" id="delivery-containers-help">Loading customer containers...</p>
+              <div id="delivery-containers-list" class="stack"></div>
+              <div id="delivery-return-proof-field" class="hidden" style="margin-top:10px">
+                <strong>Record what came back <span style="color:var(--danger,#b3261e)">*</span></strong>
+                <p class="muted" style="margin:4px 0 8px">A photo or a written account — one of the two before the order can close.</p>
+                <label>Photo of the returned containers<input id="delivery-return-proof" type="file" accept="image/*" capture="environment"><span class="muted">Compressed automatically; source max 30 MB.</span></label>
+                <label style="margin-top:8px">Or write what was collected<textarea id="delivery-return-note" rows="2" placeholder="e.g. 3 crates collected from Ms Hoa at the shop — phone camera not working"></textarea><span class="muted">Say what actually came back, and from whom. Saved against this delivery under your name.</span></label>
+              </div>
+            </div>
+
+            <div class="span-2">
+              <label class="button-row" style="gap:6px;cursor:pointer"><input type="checkbox" id="delivery-loss-checkbox"><span>Report lost or destroyed containers</span></label>
+              <p class="muted" id="delivery-loss-help" style="margin:4px 0 0"></p>
+              <div id="delivery-loss-fields" class="form-grid hidden" style="margin-top:8px">
+                <label>Container type<select id="delivery-loss-type"></select></label>
+                <label>Qty lost<input id="delivery-loss-qty" type="number" min="1" step="1" value="1"></label>
+                <label class="span-2">Reason / note<input id="delivery-loss-note" type="text" maxlength="199" placeholder="Broken jug, never returned, etc."></label>
+              </div>
+            </div>
+
+            <div class="span-2 button-row">
+              <button class="primary" type="submit">Save &amp; mark delivered</button>
+              <button class="ghost" type="button" id="delivery-payment-cancel-button">Discard</button>
+              <span class="muted" id="delivery-payment-status"></span>
+            </div>
+          </form>
+        </dialog>
+
+        <dialog id="edit-order-dialog" class="edit-dialog">
+          <form id="edit-order-form" class="form-grid" style="min-width:min(600px,90vw)">
+            <h3 class="span-2" style="margin:0">Edit order</h3>
+            <input type="hidden" id="edit-order-id">
+            <label>Customer name<input id="edit-customer-name" required minlength="2" maxlength="199" type="text"></label>
+            <label>Phone<input id="edit-phone" required minlength="6" maxlength="39" type="tel" pattern="(?=.*\d)[+0-9 ()\-]{6,40}"></label>
+            <label class="span-2">Address<input id="edit-address" required minlength="5" maxlength="499" type="text" autocomplete="street-address" aria-autocomplete="list" aria-controls="edit-address-autocomplete-list" aria-expanded="false"></label>
+            <div id="edit-address-autocomplete-list" class="span-2 edit-address-autocomplete" role="listbox" aria-label="Google Maps address suggestions" hidden></div>
+            <div class="span-2 button-row">
+              <button id="edit-address-verify" class="ghost" type="button">Find on Google Maps</button>
+              <span class="muted" id="edit-address-status"></span>
+            </div>
+            <div id="edit-address-map-wrap" class="span-2 address-map-wrap" hidden>
+              <div id="edit-address-map" class="address-confirm-map" aria-label="Map showing the delivery address"></div>
+              <div class="address-map-footer">
+                <p class="muted address-map-help">Drag the pin to the exact entrance, then confirm it.</p>
+                <div class="edit-address-map-actions">
+                  <button id="edit-address-reset-pin" class="ghost" type="button">Reset pin</button>
+                  <button id="edit-address-confirm" class="secondary" type="button">Use this address</button>
+                </div>
+              </div>
+            </div>
+            <label>Delivery date<input id="edit-delivery-date" required type="date"></label>
+            <label>Delivery window<select id="edit-delivery-window"></select></label>
+            <label class="span-2">Notes<textarea id="edit-notes" rows="3" maxlength="1999"></textarea></label>
+            <div class="span-2">
+              <h4 style="margin:0 0 8px">Items</h4>
+              <div id="edit-items-list" class="stack"></div>
+              <div class="button-row" style="margin-top:8px"><select id="edit-add-item-select"></select><button class="secondary" type="button" id="edit-add-item-button">Add product</button></div>
+              <div class="stats-grid" id="edit-totals" style="margin-top:12px"></div>
+            </div>
+            <div class="span-2 button-row">
+              <button class="primary" type="submit">Save changes</button>
+              <button class="ghost" type="button" id="edit-cancel-button">Discard</button>
+              <span class="muted" id="edit-status"></span>
+            </div>
+          </form>
+        </dialog>
       </div>
     </main>
-    <script type="module" src="./assets/orderApp.js?v=order-card-20260716-1"></script>
+    <script type="module" src="./assets/orderApp.js?v=order-actions-20260718-1"></script>
     <script type="module" src="./assets/dockMenu.js"></script>
   </body>
 </html>

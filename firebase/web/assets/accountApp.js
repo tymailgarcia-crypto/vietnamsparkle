@@ -23,18 +23,42 @@ import {
   where,
   writeBatch
 } from "./firebaseClient.js";
-import { buildCustomerId, formatCurrency, mergeThresholds, normalizePhoneE164VN, productImageUrl, THRESHOLD_DEFAULTS, withSubmitLock } from "./shared.js";
+import { buildCustomerId, formatCurrency, mergeThresholds, normalizePhoneWithCountry, phoneEntryErrorMessage, productImageUrl, setupPhoneCountryPicker, splitPhoneWithCountry, summarizeHeldContainers, THRESHOLD_DEFAULTS, withSubmitLock } from "./shared.js";
 import { mapsApiKey } from "./firebaseWebConfig.js";
 
 let accountMapsPromise = null;
 let pendingAddressConfirmation = null;
 let accountAddressMap = null;
 let accountAddressMarker = null;
+let accountAddressInfoWindow = null;
+let accountAddressAutocompleteTimer = null;
+let accountAddressAutocompleteRequestId = 0;
+let accountAddressAutocompletePredictions = [];
+let accountAddressAutocompleteActiveIndex = -1;
 let resolveMagicLinkEmail = null;
 // The saved address text currently being edited, or null when the form is in
 // "add" mode. The form is deliberately the only address editor on the page, so
 // both paths share one geocode-and-confirm flow.
 let editingAddressOriginal = null;
+
+const DA_NANG_DELIVERY_BOUNDS = Object.freeze({
+  west: 108.05,
+  south: 15.90,
+  east: 108.35,
+  north: 16.20
+});
+
+function isInsideDaNangDeliveryArea(position) {
+  const latValue = typeof position?.lat === "function" ? position.lat() : position?.lat;
+  const lngValue = typeof position?.lng === "function" ? position.lng() : position?.lng;
+  const lat = Number(latValue);
+  const lng = Number(lngValue);
+  return Number.isFinite(lat) && Number.isFinite(lng)
+    && lat >= DA_NANG_DELIVERY_BOUNDS.south
+    && lat <= DA_NANG_DELIVERY_BOUNDS.north
+    && lng >= DA_NANG_DELIVERY_BOUNDS.west
+    && lng <= DA_NANG_DELIVERY_BOUNDS.east;
+}
 
 function loadAccountMaps() {
   if (window.google?.maps) return Promise.resolve(window.google.maps);
@@ -51,10 +75,163 @@ function loadAccountMaps() {
   return accountMapsPromise;
 }
 
+function closeAccountAddressAutocomplete() {
+  accountAddressAutocompleteRequestId += 1;
+  accountAddressAutocompletePredictions = [];
+  accountAddressAutocompleteActiveIndex = -1;
+  const input = el("new-address-input");
+  const list = el("account-address-autocomplete-list");
+  if (list) {
+    list.hidden = true;
+    list.replaceChildren();
+  }
+  input?.setAttribute("aria-expanded", "false");
+  input?.removeAttribute("aria-activedescendant");
+}
+
+function setActiveAccountAddressSuggestion(index) {
+  if (!accountAddressAutocompletePredictions.length) return;
+  accountAddressAutocompleteActiveIndex = (index + accountAddressAutocompletePredictions.length)
+    % accountAddressAutocompletePredictions.length;
+  const input = el("new-address-input");
+  document.querySelectorAll("#account-address-autocomplete-list [role='option']").forEach((option, optionIndex) => {
+    const active = optionIndex === accountAddressAutocompleteActiveIndex;
+    option.setAttribute("aria-selected", String(active));
+    if (active) input?.setAttribute("aria-activedescendant", option.id);
+  });
+}
+
+async function chooseAccountAddressSuggestion(placePrediction) {
+  const input = el("new-address-input");
+  if (!input || !placePrediction) return;
+  const suggestedAddress = String(placePrediction.text || "").trim();
+  if (!suggestedAddress) return;
+  input.value = suggestedAddress.slice(0, 499);
+  resetPendingAddressConfirmation();
+  closeAccountAddressAutocomplete();
+  setAddressEditorStatus("Address selected — checking its pin on Google Maps...");
+  await findPinFor(input.value);
+}
+
+function renderAccountAddressSuggestions(predictions) {
+  const list = el("account-address-autocomplete-list");
+  const input = el("new-address-input");
+  if (!list || !input) return;
+  accountAddressAutocompletePredictions = predictions.slice(0, 5);
+  accountAddressAutocompleteActiveIndex = -1;
+  list.replaceChildren();
+  if (!accountAddressAutocompletePredictions.length) {
+    closeAccountAddressAutocomplete();
+    return;
+  }
+  accountAddressAutocompletePredictions.forEach((prediction, index) => {
+    const option = document.createElement("button");
+    option.id = `account-address-autocomplete-option-${index}`;
+    option.type = "button";
+    option.className = "account-address-suggestion";
+    option.setAttribute("role", "option");
+    option.setAttribute("aria-selected", "false");
+    option.textContent = String(prediction.text || "");
+    option.addEventListener("mouseenter", () => setActiveAccountAddressSuggestion(index));
+    option.addEventListener("click", () => void chooseAccountAddressSuggestion(prediction));
+    list.appendChild(option);
+  });
+  const attribution = document.createElement("div");
+  attribution.className = "account-address-attribution";
+  attribution.setAttribute("translate", "no");
+  attribution.textContent = "Google Maps";
+  list.appendChild(attribution);
+  list.hidden = false;
+  input.setAttribute("aria-expanded", "true");
+}
+
+async function fetchAccountAddressSuggestions() {
+  const input = el("new-address-input");
+  const queryText = String(input?.value || "").trim();
+  if (!mapsApiKey || queryText.length < 3) {
+    closeAccountAddressAutocomplete();
+    return;
+  }
+  const requestId = ++accountAddressAutocompleteRequestId;
+  try {
+    const maps = await loadAccountMaps();
+    const { AutocompleteSuggestion } = await maps.importLibrary("places");
+    const { suggestions } = await AutocompleteSuggestion.fetchAutocompleteSuggestions({
+      input: queryText,
+      includedRegionCodes: ["vn"],
+      region: "vn",
+      language: document.documentElement.lang || "en",
+      locationRestriction: DA_NANG_DELIVERY_BOUNDS
+    });
+    if (requestId !== accountAddressAutocompleteRequestId
+      || queryText !== String(input.value || "").trim()) return;
+    renderAccountAddressSuggestions((suggestions || [])
+      .map((suggestion) => suggestion.placePrediction)
+      .filter(Boolean));
+  } catch (error) {
+    if (requestId === accountAddressAutocompleteRequestId) closeAccountAddressAutocomplete();
+    console.warn("Google address suggestions unavailable; manual entry remains enabled.", error);
+  }
+}
+
+function scheduleAccountAddressSuggestions() {
+  clearTimeout(accountAddressAutocompleteTimer);
+  accountAddressAutocompleteTimer = setTimeout(() => void fetchAccountAddressSuggestions(), 320);
+}
+
+function handleAccountAddressAutocompleteKeydown(event) {
+  if (!accountAddressAutocompletePredictions.length) return;
+  if (event.key === "ArrowDown") {
+    event.preventDefault();
+    setActiveAccountAddressSuggestion(accountAddressAutocompleteActiveIndex + 1);
+  } else if (event.key === "ArrowUp") {
+    event.preventDefault();
+    setActiveAccountAddressSuggestion(accountAddressAutocompleteActiveIndex < 0
+      ? accountAddressAutocompletePredictions.length - 1
+      : accountAddressAutocompleteActiveIndex - 1);
+  } else if (event.key === "Enter") {
+    event.preventDefault();
+    void chooseAccountAddressSuggestion(accountAddressAutocompletePredictions[Math.max(0, accountAddressAutocompleteActiveIndex)]);
+  } else if (event.key === "Escape") {
+    closeAccountAddressAutocomplete();
+  }
+}
+
 function resetPendingAddressConfirmation() {
   pendingAddressConfirmation = null;
+  accountAddressInfoWindow?.close();
   el("account-address-map-wrap")?.setAttribute("hidden", "");
   updateAddressFormMode();
+}
+
+function openAddressEditor(text = null) {
+  const dialog = el("address-editor-dialog");
+  if (!dialog) return;
+  dialog.showModal();
+  if (text) {
+    beginEditAddress(text);
+    const title = el("address-editor-title");
+    if (title) title.textContent = "Edit delivery address";
+    return;
+  }
+  editingAddressOriginal = null;
+  resetPendingAddressConfirmation();
+  el("new-address-input")?.focus();
+}
+
+function resetAddressEditor() {
+  closeAccountAddressAutocomplete();
+  resetPendingAddressConfirmation();
+  editingAddressOriginal = null;
+  const input = el("new-address-input");
+  if (input) input.value = "";
+  const title = el("address-editor-title");
+  if (title) title.textContent = "Add delivery address";
+}
+
+function setAddressEditorStatus(message, isError = false) {
+  setStatus(el("addresses-status"), message, isError);
+  setStatus(el("address-dialog-status"), message, isError);
 }
 
 // Single place that decides what the address form looks like, because the
@@ -66,7 +243,7 @@ function updateAddressFormMode() {
   if (button) {
     button.textContent = pendingAddressConfirmation
       ? "Save confirmed address"
-      : (editing ? "Find new pin on map" : "Find on map");
+      : (editing ? "Find new pin on Google Maps" : "Find on Google Maps");
   }
   const input = el("new-address-input");
   if (input) {
@@ -86,7 +263,7 @@ function beginEditAddress(text) {
     input.scrollIntoView({ block: "center", behavior: "smooth" });
   }
   updateAddressFormMode();
-  setStatus(el("addresses-status"), "Edit the address, then find it on the map to confirm the pin.");
+  setAddressEditorStatus("Edit the address, then find it on the map to confirm the pin.");
 }
 
 function cancelEditAddress() {
@@ -94,7 +271,7 @@ function cancelEditAddress() {
   const input = el("new-address-input");
   if (input) input.value = "";
   resetPendingAddressConfirmation();
-  setStatus(el("addresses-status"), "");
+  setAddressEditorStatus("");
 }
 
 function normalizeDeliveryAddress(value) {
@@ -362,47 +539,15 @@ async function loadDepositEventsForUid(uid) {
   return snap.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() }));
 }
 
-async function loadReturnsForUid(uid) {
-  const snap = await getDocs(
-    query(collection(db, "returns"), where("authUid", "==", uid))
-  );
-  return snap.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() }));
-}
-
-function summarizeContainers(depositEvents, returns) {
-  const byType = {};
-  const bump = (type, deltaQty, deltaAmount, chargedDate) => {
-    const key = type || "other";
-    if (!byType[key]) byType[key] = { qty: 0, deposit: 0, oldestChargedDate: null };
-    byType[key].qty += deltaQty;
-    byType[key].deposit += deltaAmount;
-    if (chargedDate && (!byType[key].oldestChargedDate || chargedDate < byType[key].oldestChargedDate)) {
-      byType[key].oldestChargedDate = chargedDate;
-    }
-  };
-  depositEvents.forEach((event) => {
-    const qty = Number(event.qty || 0);
-    const amount = Number(event.amount || 0);
-    const eventDate = event.eventDate || null;
-    if (event.eventType === "charged") {
-      bump(event.containerType, qty, amount, eventDate);
-    } else if (event.eventType === "refunded" || event.eventType === "credited") {
-      bump(event.containerType, 0, -amount, null);
-    }
-  });
-  returns.forEach((ret) => {
-    const qty = Number(ret.qty || 0);
-    bump(ret.containerType, -qty, 0, null);
-  });
-  return Object.entries(byType)
-    .map(([type, totals]) => ({
-      type,
-      qty: totals.qty,
-      deposit: totals.deposit,
-      oldestChargedDate: totals.oldestChargedDate
-    }))
-    .filter((row) => row.qty > 0 || row.deposit > 0);
-}
+// Was a local aggregation that disagreed with the owner's. It subtracted qty
+// only from /returns docs — but nothing in this app has ever written one — so a
+// container handed back at delivery stayed on the customer's record forever,
+// and `forfeited` was ignored outright, leaving written-off containers showing
+// as held. My Account therefore told customers they were holding crates the
+// owner's screens knew they had returned. Now one shared summarizer, same
+// arithmetic on both sides. The dead /returns query was dropped with it: it was
+// a Firestore read per page load whose failure path could take out the whole
+// account page for data that is never written.
 
 const CONTAINER_EXPLANATIONS = {
   glass_crate: "Glass bottle crate — reusable, returned on your next delivery.",
@@ -618,9 +763,21 @@ function renderProfile() {
   el("profile-email").textContent = state.user?.email || "";
   el("profile-name").value = customer.name || "";
   el("profile-phone").value = customer.phone || "";
+  syncProfilePhoneCountry();
   el("profile-notes").value = customer.notes || "";
   renderAddresses();
 }
+
+function syncProfilePhoneCountry() {
+  const input = el("profile-phone");
+  const picker = el("profile-phone-country");
+  if (!input || !picker || !String(input.value).startsWith("+")) return;
+  const split = splitPhoneWithCountry(input.value, picker.value);
+  setupPhoneCountryPicker(el("profile-phone-country-picker"))?.setValue(split.dialCode);
+  input.value = split.nationalNumber;
+}
+
+setupPhoneCountryPicker(el("profile-phone-country-picker"));
 
 function renderAddresses() {
   const list = el("addresses-list");
@@ -651,7 +808,7 @@ function renderAddresses() {
     <div class="address-card${row.isPrimary ? " address-card-primary" : ""}">
       <div class="address-card-body">
         ${row.isPrimary ? '<span class="badge pay-paid" style="margin-bottom:4px">Default</span>' : ""}
-        <span class="badge ${row.hasPin ? "pay-paid" : "pay-unpaid"}" style="margin-bottom:4px">${row.hasPin ? "Pin confirmed" : "Pin needs refresh"}</span>
+        <span class="badge ${row.hasPin ? "pay-paid" : "pay-unpaid"}" style="margin-bottom:4px">${row.hasPin ? "Address confirmed" : "Address needs a map check"}</span>
         <div class="address-card-text">${escapeHtml(row.text)}</div>
       </div>
       <div class="address-card-actions">
@@ -665,7 +822,7 @@ function renderAddresses() {
   `).join("");
 
   list.querySelectorAll("[data-address-edit]").forEach((btn) => {
-    btn.addEventListener("click", () => beginEditAddress(btn.dataset.addressEdit));
+    btn.addEventListener("click", () => openAddressEditor(btn.dataset.addressEdit));
   });
   list.querySelectorAll("[data-address-primary]").forEach((btn) => {
     btn.addEventListener("click", () => promoteAddress(btn.dataset.addressPrimary));
@@ -772,23 +929,40 @@ async function removeAddress(text) {
   }
 }
 
-async function findPinFor(value, status) {
-  setStatus(status, "Searching Google Maps...");
+async function findPinFor(value) {
+  setAddressEditorStatus("Searching Google Maps...");
   const button = el("new-address-submit");
   if (button) button.disabled = true;
+  pendingAddressConfirmation = null;
+  accountAddressInfoWindow?.close();
   try {
     await loadAccountMaps();
     const geocoder = new google.maps.Geocoder();
     const match = await new Promise((resolve, reject) => {
-      geocoder.geocode({ address: value, region: "vn" }, (results, resultStatus) => {
+      geocoder.geocode({
+        address: value,
+        region: "vn",
+        componentRestrictions: { country: "vn" },
+        // Bias to the Da Nang metro so an ambiguous street name resolves
+        // locally instead of matching a same-named road elsewhere in Vietnam.
+        bounds: new google.maps.LatLngBounds(
+          { lat: DA_NANG_DELIVERY_BOUNDS.south, lng: DA_NANG_DELIVERY_BOUNDS.west },
+          { lat: DA_NANG_DELIVERY_BOUNDS.north, lng: DA_NANG_DELIVERY_BOUNDS.east }
+        )
+      }, (results, resultStatus) => {
         if (resultStatus === "OK" && results?.[0]) resolve(results[0]);
         else reject(new Error("We couldn't find that address. Add a district or nearby landmark and try again."));
       });
     });
     const position = match.geometry.location;
-    if (match.partial_match) {
-      throw new Error("Google Maps only found a partial match. Add a district or nearby landmark and try again.");
+    if (!isInsideDaNangDeliveryArea(position)) {
+      throw new Error("Google Maps found a result outside the Da Nang delivery area. Choose a Da Nang suggestion or enter a more complete local address.");
     }
+    // A partial match still gives a usable pin; drop it (draggable) and prompt
+    // the customer to nudge it to their exact entrance instead of dead-ending.
+    let currentApproximate = Boolean(match.partial_match);
+    let currentFormattedAddress = String(match.formatted_address || value);
+    let pinAddressLookupId = 0;
     const wrap = el("account-address-map-wrap");
     wrap.hidden = false;
     accountAddressMap = accountAddressMap || new google.maps.Map(el("account-address-map"), {
@@ -798,30 +972,118 @@ async function findPinFor(value, status) {
       mapTypeControl: false,
       fullscreenControl: false
     });
+    google.maps.event.trigger(accountAddressMap, "resize");
     accountAddressMap.setCenter(position);
     if (accountAddressMarker) accountAddressMarker.setMap(null);
-    accountAddressMarker = new google.maps.Marker({ map: accountAddressMap, position, draggable: true });
-    const formatted = match.formatted_address || null;
-    const capture = (pos) => {
+    accountAddressMarker = new google.maps.Marker({
+      map: accountAddressMap,
+      position,
+      draggable: true,
+      title: "Drag to your delivery entrance"
+    });
+
+    const capture = (pos, confirmedAddress) => {
+      const input = el("new-address-input");
+      const address = String(input?.value || confirmedAddress || value).trim();
       pendingAddressConfirmation = {
-        address: value,
+        address,
         lat: pos.lat(),
         lng: pos.lng(),
-        formattedAddress: formatted
+        formattedAddress: String(confirmedAddress || currentFormattedAddress || address).slice(0, 499)
       };
+      updateAddressFormMode();
+      setAddressEditorStatus("✓ Address and delivery pin confirmed. Save when ready.");
     };
-    capture(position);
-    accountAddressMarker.addListener("dragend", () => capture(accountAddressMarker.getPosition()));
+
+    const showPinConfirmation = () => {
+      const content = document.createElement("div");
+      content.style.maxWidth = "240px";
+
+      const title = document.createElement("strong");
+      title.textContent = "Is this your delivery entrance?";
+      content.appendChild(title);
+
+      const detail = document.createElement("p");
+      detail.style.margin = "6px 0 10px";
+      detail.textContent = currentApproximate
+        ? "Google found an approximate match. Drag the pin if needed, or confirm it here."
+        : "Drag the pin if it needs correcting, or confirm it here.";
+      content.appendChild(detail);
+
+      const resolvedAddress = document.createElement("p");
+      resolvedAddress.style.margin = "0 0 10px";
+      resolvedAddress.style.overflowWrap = "anywhere";
+      const addressLabel = document.createElement("strong");
+      addressLabel.textContent = "Address: ";
+      resolvedAddress.append(addressLabel, document.createTextNode(currentFormattedAddress));
+      content.appendChild(resolvedAddress);
+
+      const confirmButton = document.createElement("button");
+      confirmButton.type = "button";
+      confirmButton.className = "primary";
+      confirmButton.style.width = "100%";
+      confirmButton.textContent = "Use this address";
+      confirmButton.addEventListener("click", () => {
+        capture(accountAddressMarker.getPosition(), currentFormattedAddress);
+        accountAddressInfoWindow?.close();
+      });
+      content.appendChild(confirmButton);
+
+      accountAddressInfoWindow = accountAddressInfoWindow || new google.maps.InfoWindow({ maxWidth: 280 });
+      accountAddressInfoWindow.setContent(content);
+      accountAddressInfoWindow.open({ map: accountAddressMap, anchor: accountAddressMarker });
+    };
 
     const help = el("account-address-map-help");
     if (help) {
-      help.textContent = "Drag the pin to your exact entrance, then select “Save confirmed address”. This saved delivery profile will reuse the pin on future orders.";
+      help.textContent = "Check the suggested pin, correct it if needed, then choose “Use this address”. Future orders will reuse the confirmed pin.";
     }
     updateAddressFormMode();
-    setStatus(status, "Pin found. Check it, drag it if needed, then save.");
+    setAddressEditorStatus(currentApproximate
+      ? "Check the suggested pin. Drag it if needed, or choose “Use this address”."
+      : "Check the pin, then choose “Use this address”.");
+    showPinConfirmation();
+
+    accountAddressMarker.addListener("dragstart", () => {
+      pinAddressLookupId += 1;
+      pendingAddressConfirmation = null;
+      accountAddressInfoWindow?.close();
+      updateAddressFormMode();
+      setAddressEditorStatus("Pin moved — check its position, then choose “Use this address”.");
+    });
+    accountAddressMarker.addListener("dragend", async () => {
+      const draggedPosition = accountAddressMarker.getPosition();
+      const lookupId = ++pinAddressLookupId;
+      accountAddressMap.panTo(draggedPosition);
+      if (!isInsideDaNangDeliveryArea(draggedPosition)) {
+        setAddressEditorStatus("That pin is outside the Da Nang delivery area. Move it back into Da Nang to continue.", true);
+        return;
+      }
+      setAddressEditorStatus("Finding the address at the corrected pin...");
+      try {
+        const reverseMatches = await new Promise((resolve, reject) => {
+          geocoder.geocode({ location: draggedPosition }, (results, resultStatus) => {
+            if (resultStatus === "OK" && results?.[0]) resolve(results);
+            else reject(new Error("Google Maps could not find a street address at that pin."));
+          });
+        });
+        if (lookupId !== pinAddressLookupId) return;
+        currentFormattedAddress = String(reverseMatches[0].formatted_address || value);
+        currentApproximate = false;
+        closeAccountAddressAutocomplete();
+        const input = el("new-address-input");
+        if (input) input.value = currentFormattedAddress.slice(0, 499);
+        setAddressEditorStatus("Pin moved — check the updated address, then choose “Use this address”.");
+        showPinConfirmation();
+      } catch (error) {
+        if (lookupId !== pinAddressLookupId) return;
+        setAddressEditorStatus(`${error.message || String(error)} Move the pin again, or edit the address and search again.`, true);
+      }
+    });
+    wrap.scrollIntoView({ behavior: "smooth", block: "nearest" });
   } catch (error) {
     resetPendingAddressConfirmation();
-    setStatus(status, error.message || String(error), true);
+    setAddressEditorStatus(error.message || String(error), true);
   } finally {
     if (button) button.disabled = false;
   }
@@ -832,9 +1094,8 @@ async function handleAddressFormSubmit(event) {
   const input = el("new-address-input");
   if (!input) return;
   const value = String(input.value || "").trim();
-  const status = el("addresses-status");
   if (value.length < 5) {
-    setStatus(status, "Address is too short.", true);
+    setAddressEditorStatus("Address is too short.", true);
     return;
   }
   const { primary, additional } = currentAddressSet();
@@ -845,16 +1106,16 @@ async function handleAddressFormSubmit(event) {
   // how you re-pin a default without retyping it.
   const clashesWithSaved = value === primary || additional.includes(value);
   if (clashesWithSaved && !(isEdit && value === original)) {
-    setStatus(status, "That address is already saved.", true);
+    setAddressEditorStatus("That address is already saved.", true);
     return;
   }
 
   if (!pendingAddressConfirmation || pendingAddressConfirmation.address !== value) {
-    await findPinFor(value, status);
+    await findPinFor(value);
     return;
   }
 
-  setStatus(status, isEdit ? "Saving address..." : "Adding confirmed address...");
+  setAddressEditorStatus(isEdit ? "Saving address..." : "Adding confirmed address...");
   try {
     const pin = {
       lat: pendingAddressConfirmation.lat,
@@ -877,9 +1138,10 @@ async function handleAddressFormSubmit(event) {
     input.value = "";
     editingAddressOriginal = null;
     resetPendingAddressConfirmation();
-    setStatus(status, isEdit ? "Address updated." : "Confirmed address added.");
+    setAddressEditorStatus(isEdit ? "Address updated." : "Confirmed address added.");
+    el("address-editor-dialog")?.close();
   } catch (error) {
-    setStatus(status, error.message || String(error), true);
+    setAddressEditorStatus(error.message || String(error), true);
   }
 }
 
@@ -902,11 +1164,58 @@ function humanizeOrderStatus(status) {
   return CUSTOMER_STATUS_LABELS[status] || status || "unknown";
 }
 
+// Small overview of in-progress orders at the top of the account page, so a
+// signed-in customer sees "where's my order" without digging into history.
+// Open = anything not yet delivered and not cancelled.
+function renderOpenOrders(orders) {
+  const section = el("open-orders-section");
+  const list = el("open-orders-list");
+  if (!section || !list) return;
+
+  const open = (orders || []).filter((o) => o.status !== "delivered" && o.status !== "cancelled");
+  if (!open.length) {
+    section.classList.add("hidden");
+    list.innerHTML = "";
+    return;
+  }
+
+  section.classList.remove("hidden");
+  list.innerHTML = open.map((order) => {
+    const orderIdText = order.orderId || order.id;
+    const detailHref = `./customer-order.html?id=${encodeURIComponent(order.id)}`;
+    const due = Number(order.subtotal || 0) + Number(order.depositTotal || 0);
+    const balance = Number(order.balanceDue || 0);
+    return `
+      <div class="card open-order-card">
+        <div class="order-top">
+          <div>
+            <strong>${order.deliveryDate ? "Delivery " + escapeHtml(order.deliveryDate) : "Delivery date to be confirmed"}</strong>
+            <div class="muted" style="font-size:12px;font-family:monospace">${escapeHtml(orderIdText)}</div>
+          </div>
+          <span class="badge status-${order.status || "unknown"}">${escapeHtml(humanizeOrderStatus(order.status))}</span>
+        </div>
+        <div class="muted top-gap" style="font-size:13px">Total ${escapeHtml(formatCurrency(due))}${balance > 0 ? ` · <strong style="color:rgb(150,28,22)">Balance ${escapeHtml(formatCurrency(balance))}</strong>` : ""}</div>
+        <div class="button-row top-gap">
+          <a class="button-link secondary" href="${detailHref}">View order</a>
+          ${renderCancelAction(order)}
+        </div>
+      </div>
+    `;
+  }).join("");
+  list.querySelectorAll("[data-cancel-mine]").forEach((btn) => {
+    btn.addEventListener("click", () => handleCustomerCancel(btn.dataset.cancelMine));
+  });
+}
+
 function renderBalanceSummary(orders) {
   const outstanding = (orders || []).filter((o) => Number(o.balanceDue || 0) > 0 && o.status !== "cancelled" && o.status !== "pending_approval");
   const total = outstanding.reduce((sum, o) => sum + Number(o.balanceDue || 0), 0);
   const summary = el("balance-summary");
   if (!summary) return;
+
+  // Draw attention only when money is actually owed; the paid-up state stays calm.
+  const section = el("balance-section");
+  if (section) section.classList.toggle("has-outstanding", outstanding.length > 0);
 
   if (!outstanding.length) {
     summary.innerHTML = `<div style="color:rgb(15,90,73);font-weight:600;font-size:15px">You are all paid up. Thanks!</div>`;
@@ -976,42 +1285,18 @@ function escapeAttr(value) {
 }
 
 function renderCancelAction(order) {
-  const status = order.status;
-  if (status === "cancelled" || status === "delivered") return "";
-  if (status === "pending_approval") {
-    return `<button class="ghost" type="button" data-cancel-mine="${order.id}">Cancel this order</button>`;
-  }
-  if (order.cancellationRequested) {
-    return `<span class="muted">Cancellation requested — waiting for owner</span>`;
-  }
-  return `<button class="ghost" type="button" data-request-cancel="${order.id}">Request cancellation</button>`;
+  return order.status === "pending_approval"
+    ? `<button class="ghost" type="button" data-cancel-mine="${order.id}">Cancel this order</button>`
+    : "";
 }
 
 async function handleCustomerCancel(orderId) {
-  const reason = prompt("Reason for cancellation (optional). Leave blank if you prefer not to say.");
-  if (reason === null) return;
+  if (!window.confirm("Cancel this unapproved order?")) return;
   try {
     await updateDoc(doc(db, "orders", orderId), {
       status: "cancelled",
-      cancellationReason: reason.trim() || null,
       cancelledAt: new Date().toISOString(),
       cancelledBy: "customer",
-      updatedAt: new Date().toISOString()
-    });
-    await refreshAccount();
-  } catch (error) {
-    setStatus(el("account-status"), error.message || String(error), true);
-  }
-}
-
-async function handleCustomerRequestCancel(orderId) {
-  const reason = prompt("Please tell us why. The owner will review and confirm the cancellation.");
-  if (reason === null) return;
-  try {
-    await updateDoc(doc(db, "orders", orderId), {
-      cancellationRequested: true,
-      cancellationRequestReason: reason.trim() || null,
-      cancellationRequestedAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     });
     await refreshAccount();
@@ -1029,13 +1314,14 @@ function renderOrders(orders) {
   container.innerHTML = orders.map((order) => {
     const payStatus = order.paymentStatus || "unpaid";
     const orderIdText = order.orderId || order.id;
+    const detailHref = `./customer-order.html?id=${encodeURIComponent(order.id)}`;
     const reorderHref = `./index.html?reorder=${encodeURIComponent(order.id)}`;
     return `
     <article class="card">
       <div class="order-top">
         <div>
           <strong>${order.deliveryDate || "?"}</strong>
-          <div style="font-family:monospace;font-size:12px"><a href="${reorderHref}">${escapeHtml(orderIdText)}</a></div>
+          <div style="font-family:monospace;font-size:12px"><a href="${detailHref}">${escapeHtml(orderIdText)}</a></div>
         </div>
         <div class="button-row" style="gap:8px">
           <span class="badge status-${order.status || "unknown"}">${humanizeOrderStatus(order.status)}</span>
@@ -1050,6 +1336,7 @@ function renderOrders(orders) {
       </div>
       ${renderOrderThumbs(order.id)}
       <div class="button-row top-gap">
+        <a class="button-link secondary" href="${detailHref}">View order</a>
         <a class="button-link primary" href="./index.html?reorder=${encodeURIComponent(order.id)}">Reorder these items</a>
         ${renderCancelAction(order)}
       </div>
@@ -1059,9 +1346,6 @@ function renderOrders(orders) {
 
   container.querySelectorAll("[data-cancel-mine]").forEach((btn) => {
     btn.addEventListener("click", () => handleCustomerCancel(btn.dataset.cancelMine));
-  });
-  container.querySelectorAll("[data-request-cancel]").forEach((btn) => {
-    btn.addEventListener("click", () => handleCustomerRequestCancel(btn.dataset.requestCancel));
   });
 }
 
@@ -1079,15 +1363,12 @@ function hideClaimPanel() {
 
 async function loadAccountData() {
   paintLoadingPlaceholders();
-  const [orders, depositEvents, returns, itemsByOrderId] = await Promise.all([
+  const [orders, depositEvents, itemsByOrderId] = await Promise.all([
     loadFirstOrdersPage(state.user.uid).catch((e) => {
       throw new Error(`orders: ${e.message || e}`);
     }),
     loadDepositEventsForUid(state.user.uid).catch((e) => {
       throw new Error(`depositEvents: ${e.message || e}`);
-    }),
-    loadReturnsForUid(state.user.uid).catch((e) => {
-      throw new Error(`returns: ${e.message || e}`);
     }),
     loadOrderItemsForUid(state.user.uid).catch((error) => {
       // If a legacy import ever produced an orderItem without authUid the rule
@@ -1097,10 +1378,11 @@ async function loadAccountData() {
     })
   ]);
   state.itemsByOrderId = itemsByOrderId || {};
+  renderOpenOrders(orders);
   renderBalanceSummary(orders);
   renderOrders(orders);
   renderReorderList(orders);
-  const containerRows = summarizeContainers(depositEvents, returns);
+  const containerRows = summarizeHeldContainers(depositEvents);
   renderContainerSummary(containerRows);
   renderPickupRequest(containerRows.some((row) => row.qty > 0));
   updateLoadMoreButtons();
@@ -1309,12 +1591,11 @@ async function handleSaveProfile(event) {
   if (!state.customerRef || !state.user) return;
   const phoneInput = el("profile-phone");
   const rawPhone = phoneInput.value.trim();
-  const phoneE164 = rawPhone ? normalizePhoneE164VN(rawPhone) : null;
+  const phoneE164 = rawPhone ? normalizePhoneWithCountry(rawPhone, el("profile-phone-country")?.value) : null;
   if (rawPhone && !phoneE164) {
-    setStatus(el("profile-status"), "Phone must include the country code, e.g. +84 905 123 456.", true);
+    setStatus(el("profile-status"), phoneEntryErrorMessage(rawPhone), true);
     return;
   }
-  if (phoneE164) phoneInput.value = phoneE164;
   await withSubmitLock(event, async () => {
     try {
       setStatus(el("profile-status"), "Saving...");
@@ -1343,19 +1624,37 @@ el("magic-link-form").addEventListener("submit", handleSendMagicLink);
 el("magic-link-confirm-form")?.addEventListener("submit", handleMagicLinkEmailConfirmation);
 el("magic-link-start-over")?.addEventListener("click", handleMagicLinkStartOver);
 el("profile-form").addEventListener("submit", handleSaveProfile);
+el("open-add-address")?.addEventListener("click", () => openAddressEditor());
 el("add-address-form")?.addEventListener("submit", handleAddressFormSubmit);
-el("cancel-address-edit")?.addEventListener("click", cancelEditAddress);
+el("cancel-address-edit")?.addEventListener("click", () => {
+  cancelEditAddress();
+  el("address-editor-dialog")?.close();
+});
+el("address-editor-dialog")?.addEventListener("close", resetAddressEditor);
 el("account-address-reset-pin")?.addEventListener("click", () => {
   resetPendingAddressConfirmation();
-  setStatus(el("addresses-status"), "Pin reset — update the address if needed, then find it on the map again.");
+  setAddressEditorStatus("Pin reset — update the address if needed, then find it on the map again.");
   el("new-address-input")?.focus();
 });
-el("new-address-input")?.addEventListener("input", () => {
-  if (pendingAddressConfirmation) {
+const accountAddressInput = el("new-address-input");
+accountAddressInput?.addEventListener("input", () => {
+  if (pendingAddressConfirmation || !el("account-address-map-wrap")?.hidden) {
     resetPendingAddressConfirmation();
-    setStatus(el("addresses-status"), "Address changed — find it on the map again.");
+    setAddressEditorStatus("Address changed — choose a suggestion or find it on the map again.");
   }
+  closeAccountAddressAutocomplete();
+  scheduleAccountAddressSuggestions();
 });
+accountAddressInput?.addEventListener("focus", scheduleAccountAddressSuggestions);
+accountAddressInput?.addEventListener("keydown", handleAccountAddressAutocompleteKeydown);
+accountAddressInput?.addEventListener("blur", () => {
+  setTimeout(() => {
+    if (!el("account-address-autocomplete-list")?.contains(document.activeElement)) {
+      closeAccountAddressAutocomplete();
+    }
+  }, 120);
+});
+el("profile-phone")?.addEventListener("blur", syncProfilePhoneCountry);
 el("pickup-request-button")?.addEventListener("click", togglePickupRequest);
 el("signout-button").addEventListener("click", handleSignOut);
 const heroSignoutBtn = el("hero-signout-button");

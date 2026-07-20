@@ -19,7 +19,8 @@ import {
   humanizeContainerType,
   itemCountsForOrder,
   planItineraries,
-  renderItineraryCards,
+  pickBestItinerary,
+  renderRecommendedItinerary,
   tallyForOrders
 } from "./routePlanning.js";
 
@@ -38,13 +39,13 @@ const state = {
   addressLocations: {},
   driverFilter: "",
   statusFilter: "approved",
-  dateFrom: todayKey(),
-  dateTo: todayKey(),
   map: null,
   markers: [],
   geocoder: null,
   mapsReady: false,
   // Trip-planner state:
+  tripSelectionMode: false,
+  selectedOrderIds: new Set(),
   warehouse: null,
   productContainerType: {},
   orderItemsByOrderId: {}
@@ -61,13 +62,18 @@ function orderMatchesCustomerAddress(order) {
 }
 
 function locationForOrder(order) {
-  // Priority 1: the order's own address, if we've geocoded it (one-time
-  // deliveries and edited orders live here).
+  // Priority 1: the confirmed coordinates stored on the order. These preserve
+  // the actual delivery entrance even if the customer's default address moves.
+  const orderLoc = order.deliveryLocation;
+  if (orderLoc && typeof orderLoc.lat === "number" && typeof orderLoc.lng === "number") {
+    return orderLoc;
+  }
+  // Priority 2: the order's address geocoded during this map session.
   const key = normalizeAddress(order.address);
   if (key && state.addressLocations[key]) {
     return state.addressLocations[key];
   }
-  // Priority 2: the customer's stored location, but ONLY if the order is
+  // Priority 3: the customer's stored location, but ONLY if the order is
   // using the customer's default address. Otherwise the customer's home is
   // the wrong pin for this order.
   if (orderMatchesCustomerAddress(order)) {
@@ -165,11 +171,12 @@ function clearMarkers() {
   state.markers = [];
 }
 
-function pinSvg(color) {
+function pinSvg(color, selected = false) {
   const svg = `
     <svg xmlns="http://www.w3.org/2000/svg" width="28" height="40" viewBox="0 0 28 40">
-      <path d="M14 0 C6 0 0 6 0 14 c0 10 14 26 14 26 s14-16 14-26 C28 6 22 0 14 0 z" fill="${color}" stroke="white" stroke-width="2"/>
+      <path d="M14 0 C6 0 0 6 0 14 c0 10 14 26 14 26 s14-16 14-26 C28 6 22 0 14 0 z" fill="${color}" stroke="${selected ? "#172033" : "white"}" stroke-width="${selected ? "3" : "2"}"/>
       <circle cx="14" cy="14" r="5" fill="white"/>
+      ${selected ? `<path d="M10.5 14 L13 16.5 L17.8 11.7" fill="none" stroke="${color}" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>` : ""}
     </svg>`;
   return "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
 }
@@ -193,12 +200,12 @@ function makeInfoWindowHtml(order) {
         ${escapeHtml(humanizeStatus(order.status))} · ${escapeHtml(driverName(order.assignedDriverId))}
       </div>
       <div style="margin-top:8px;font-size:12px">
-        <a href="${boardHref}">Open on today board</a>
+        <a href="${boardHref}">Open order</a>
       </div>
     </div>`;
 }
 
-function renderMarkers(orders) {
+function renderMarkers(orders, fitViewport = true) {
   clearMarkers();
   if (!state.map) return;
   const bounds = new google.maps.LatLngBounds();
@@ -221,17 +228,24 @@ function renderMarkers(orders) {
       lng += 0.00008 * Math.sin(angle);
     }
     const position = { lat, lng };
+    const selected = state.selectedOrderIds.has(order.id);
     const marker = new google.maps.Marker({
       position,
       map: state.map,
-      title: order.customerName || "",
+      title: state.tripSelectionMode
+        ? `${selected ? "Remove" : "Add"} ${order.customerName || "order"} ${selected ? "from" : "to"} trip`
+        : order.customerName || "",
       icon: {
-        url: pinSvg(driverColor(order.assignedDriverId)),
+        url: pinSvg(driverColor(order.assignedDriverId), selected),
         scaledSize: new google.maps.Size(28, 40),
         anchor: new google.maps.Point(14, 40)
       }
     });
     marker.addListener("click", () => {
+      if (state.tripSelectionMode) {
+        toggleOrderSelection(order.id);
+        return;
+      }
       info.setContent(makeInfoWindowHtml(order));
       info.open({ anchor: marker, map: state.map });
     });
@@ -239,7 +253,7 @@ function renderMarkers(orders) {
     bounds.extend(position);
     placed += 1;
   });
-  if (placed > 0) {
+  if (placed > 0 && fitViewport) {
     state.map.fitBounds(bounds, { top: 80, right: 60, bottom: 80, left: 60 });
     if (placed === 1) {
       // Single pin — nudge to a neighbourhood zoom rather than a whole-city one.
@@ -274,8 +288,10 @@ function renderLegend() {
 function renderRows(orders) {
   const tbody = el("order-rows");
   if (!tbody) return;
+  const table = tbody.closest("table");
+  if (table) table.classList.toggle("trip-selection-active", state.tripSelectionMode);
   if (!orders.length) {
-    tbody.innerHTML = `<tr><td colspan="6" class="muted" style="padding:20px;text-align:center">No matching orders for this date.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" class="muted" style="padding:20px;text-align:center">No matching active orders.</td></tr>`;
     return;
   }
   tbody.innerHTML = orders.map((order) => {
@@ -289,15 +305,23 @@ function renderRows(orders) {
     const mapsHref = fullAddress
       ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(fullAddress)}`
       : "";
-    const hasPin = customer.location && typeof customer.location.lat === "number";
+    const hasPin = Boolean(locationForOrder(order));
     const pinMark = hasPin
       ? `<span title="Pinned on map" style="color:${driverColor(order.assignedDriverId)}">●</span>`
       : `<span title="No pin — geocoding failed or address missing" class="muted">○</span>`;
     const boardHref = `./order.html?id=${encodeURIComponent(order.id)}`;
+    const selected = state.selectedOrderIds.has(order.id);
+    const selectionLabel = selected ? "Remove from trip" : "Add to trip";
     return `
-      <tr>
+      <tr data-order-id="${escapeHtml(order.id)}" class="${selected ? "trip-selected-row" : ""}">
+        <td class="trip-select-column">
+          <input class="trip-select-checkbox" type="checkbox" data-trip-order-id="${escapeHtml(order.id)}"
+            aria-label="${selectionLabel}: ${escapeHtml(order.customerName || customer.name || order.id)}"
+            ${selected ? "checked" : ""} ${hasPin ? "" : 'disabled title="A confirmed map pin is required"'}>
+        </td>
         <td class="map-customer-name">${escapeHtml(order.customerName || customer.name || "Unknown")}</td>
         <td>${renderMapOrderThumbs(order.id)}</td>
+        <td>${renderDeliveryDate(order.deliveryDate)}</td>
         <td>${phoneCell}</td>
         <td>${pinMark} ${mapsHref ? `<a class="row-link address-map-link" href="${mapsHref}" target="_blank" rel="noopener" title="Open in Google Maps" aria-label="Open ${escapeHtml(fullAddress)} in Google Maps">${formatMapAddress(address)}</a>` : formatMapAddress(address)}</td>
         <td style="font-family:monospace;font-size:12px"><a href="${boardHref}">${formatOrderId(order.id)}</a></td>
@@ -305,6 +329,15 @@ function renderRows(orders) {
       </tr>
     `;
   }).join("");
+}
+
+function renderDeliveryDate(value) {
+  const date = String(value || "").trim();
+  if (!date) return `<span class="muted">—</span>`;
+  const today = todayKey();
+  if (date < today) return `<span class="map-delivery-date is-overdue">Overdue<br>${escapeHtml(date)}</span>`;
+  if (date === today) return `<span class="map-delivery-date is-today">Today</span>`;
+  return `<span class="map-delivery-date">${escapeHtml(date)}</span>`;
 }
 
 function renderMapOrderThumbs(orderId) {
@@ -392,6 +425,70 @@ function filteredOrders() {
   });
 }
 
+function selectedOrders() {
+  return state.orders.filter((order) => state.selectedOrderIds.has(order.id));
+}
+
+function selectableOrders(orders) {
+  return orders.filter((order) => Boolean(locationForOrder(order)));
+}
+
+function toggleOrderSelection(orderId) {
+  const order = state.orders.find((candidate) => candidate.id === orderId);
+  if (!order || !locationForOrder(order)) return;
+  if (state.selectedOrderIds.has(orderId)) state.selectedOrderIds.delete(orderId);
+  else state.selectedOrderIds.add(orderId);
+  render({ preserveMapViewport: true });
+}
+
+function clearTripSelection() {
+  state.selectedOrderIds.clear();
+  render({ preserveMapViewport: true });
+}
+
+function selectAllFilteredOrders() {
+  selectableOrders(filteredOrders()).forEach((order) => state.selectedOrderIds.add(order.id));
+  state.tripSelectionMode = true;
+  render({ preserveMapViewport: true });
+}
+
+function renderTripSelection(visibleOrders) {
+  const buildButton = el("build-trip-button");
+  const bar = el("trip-selection-bar");
+  const summary = el("trip-selection-summary");
+  const detail = el("trip-selection-detail");
+  const selectAllButton = el("select-filtered-button");
+  const clearButton = el("clear-trip-selection-button");
+  if (!buildButton || !bar || !summary || !detail || !selectAllButton || !clearButton) return;
+
+  const selected = selectedOrders();
+  const visibleIds = new Set(visibleOrders.map((order) => order.id));
+  const hiddenCount = selected.filter((order) => !visibleIds.has(order.id)).length;
+  const selectableVisible = selectableOrders(visibleOrders);
+  const unselectedVisible = selectableVisible.filter((order) => !state.selectedOrderIds.has(order.id));
+  const demand = tallyForOrders(selected, state.orderItemsByOrderId, state.productContainerType);
+  const demandChunks = Object.entries(demand)
+    .filter(([, qty]) => Number(qty) > 0)
+    .map(([type, qty]) => `${qty} ${humanizeContainerType(type).toLowerCase()}`);
+
+  buildButton.setAttribute("aria-pressed", String(state.tripSelectionMode));
+  buildButton.textContent = state.tripSelectionMode ? "Stop selecting" : "Build a trip";
+  bar.classList.toggle("hidden", !state.tripSelectionMode && selected.length === 0);
+  summary.textContent = selected.length
+    ? `${selected.length} stop${selected.length === 1 ? "" : "s"} selected`
+    : "No stops selected";
+  const details = [];
+  if (demandChunks.length) details.push(demandChunks.join(" · "));
+  if (hiddenCount) details.push(`${hiddenCount} hidden by the current filters`);
+  if (!selected.length) details.push("Select orders from the list or map pins.");
+  detail.textContent = details.join(" · ");
+  selectAllButton.textContent = unselectedVisible.length
+    ? `Select all shown (${selectableVisible.length})`
+    : "All shown selected";
+  selectAllButton.disabled = !state.tripSelectionMode || unselectedVisible.length === 0;
+  clearButton.disabled = selected.length === 0;
+}
+
 function renderMissingBanner(orders, placedCount) {
   const banner = el("missing-banner");
   if (!banner) return;
@@ -405,10 +502,9 @@ function renderMissingBanner(orders, placedCount) {
   banner.textContent = `${missing} of ${orders.length} matching order${orders.length === 1 ? "" : "s"} could not be pinned. Open the customer profile and check the address; the pin will fill in next time.`;
 }
 
-// Planner readiness: needs a single specific driver picked, a single-day
-// date range (from == to), that driver's loadout saved in Settings, and a
-// warehouse origin. When any prerequisite is missing we show a hint on the
-// planner panel and disable the button; nothing renders below.
+// Planner readiness: needs a single specific driver picked, that driver's
+// loadout saved in Settings, a warehouse origin, and at least one selected
+// stop. When a prerequisite is missing we explain it and disable planning.
 function plannerPrereqIssues() {
   const issues = [];
   if (!state.driverFilter || state.driverFilter === "__unassigned__") {
@@ -425,7 +521,7 @@ function plannerPrereqIssues() {
   return issues;
 }
 
-function renderPlannerHint(orders) {
+function renderPlannerHint() {
   const button = el("plan-trips-button");
   const hint = el("planner-hint");
   const cap = el("planner-capacity");
@@ -442,17 +538,24 @@ function renderPlannerHint(orders) {
   }
   const driver = state.drivers.find((d) => d.id === state.driverFilter);
   const loadout = driver?.standardLoadout || {};
-  const pinnedOrders = orders.filter((o) => o.deliveryLocation
-    && typeof o.deliveryLocation.lat === "number"
-    && typeof o.deliveryLocation.lng === "number");
-  const missing = orders.length - pinnedOrders.length;
+  const selected = selectedOrders();
+  const pinnedOrders = selected.filter((order) => Boolean(locationForOrder(order)));
+  const missing = selected.length - pinnedOrders.length;
+
+  if (!selected.length) {
+    button.disabled = true;
+    hint.textContent = "Select Build a trip, then choose orders from the list or tap their map pins.";
+    cap.innerHTML = "";
+    results.innerHTML = "";
+    return;
+  }
 
   button.disabled = pinnedOrders.length === 0;
   const demand = tallyForOrders(pinnedOrders, state.orderItemsByOrderId, state.productContainerType);
   const demandChunks = Object.entries(demand)
     .filter(([, qty]) => qty > 0)
     .map(([type, qty]) => `<strong>${qty}</strong> ${escapeHtmlShared(humanizeContainerType(type).toLowerCase())}`);
-  hint.innerHTML = `Ready to plan <strong>${escapeHtmlShared(driver.driverName)}</strong>'s ${escapeHtmlShared(state.dateFrom)} — <strong>${pinnedOrders.length}</strong> pinned order${pinnedOrders.length === 1 ? "" : "s"}${missing ? ` (${missing} skipped — no pin)` : ""}${demandChunks.length ? ` demanding ${demandChunks.join(" · ")}` : ""}.`;
+  hint.innerHTML = `Ready to plan <strong>${escapeHtmlShared(driver.driverName)}</strong>'s trip — <strong>${pinnedOrders.length}</strong> selected stop${pinnedOrders.length === 1 ? "" : "s"}${missing ? ` (${missing} skipped — no pin)` : ""}${demandChunks.length ? ` demanding ${demandChunks.join(" · ")}` : ""}.`;
 
   const loadoutChips = Object.entries(loadout)
     .filter(([, v]) => Number(v) > 0)
@@ -461,42 +564,44 @@ function renderPlannerHint(orders) {
   cap.innerHTML = loadoutChips ? `<div class="loadout-chips">${loadoutChips}</div>` : "";
 }
 
-function render() {
+function render(options = {}) {
   const orders = filteredOrders();
   renderRows(orders);
   renderLegend();
-  const placed = state.map ? renderMarkers(orders) : 0;
+  const placed = state.map ? renderMarkers(orders, !options.preserveMapViewport) : 0;
   renderMissingBanner(orders, placed || 0);
-  renderPlannerHint(orders);
+  renderTripSelection(orders);
+  renderPlannerHint();
   // Any filter/data change invalidates a previously-planned itinerary —
   // clear it so the driver doesn't act on stale ordering.
   const results = el("planner-results");
   if (results) results.innerHTML = "";
-  setStatus(`${orders.length} matching order${orders.length === 1 ? "" : "s"} in the selected range.`);
+  setStatus(`${orders.length} matching active order${orders.length === 1 ? "" : "s"}. Older active orders stay visible until they are completed or cancelled.`);
 }
 
 async function runPlanner() {
   const issues = plannerPrereqIssues();
   if (issues.length) return;
-  const orders = filteredOrders();
   const driver = state.drivers.find((d) => d.id === state.driverFilter);
   const loadout = driver?.standardLoadout || {};
   const warehouseLoc = state.warehouse.location;
-  const pinnedOrders = orders.filter((o) => o.deliveryLocation
-    && typeof o.deliveryLocation.lat === "number"
-    && typeof o.deliveryLocation.lng === "number");
+  const pinnedOrders = selectedOrders().filter((order) => Boolean(locationForOrder(order)));
   if (!pinnedOrders.length) return;
 
-  const stops = pinnedOrders.map((o) => ({
-    orderId: o.id,
-    customerName: o.customerName,
-    address: o.address,
-    location: { lat: o.deliveryLocation.lat, lng: o.deliveryLocation.lng },
-    counts: itemCountsForOrder(o, state.orderItemsByOrderId, state.productContainerType)
-  }));
+  const stops = pinnedOrders.map((order) => {
+    const location = locationForOrder(order);
+    return {
+      orderId: order.id,
+      customerName: order.customerName,
+      address: order.address,
+      location: { lat: location.lat, lng: location.lng },
+      counts: itemCountsForOrder(order, state.orderItemsByOrderId, state.productContainerType)
+    };
+  });
 
   const itineraries = planItineraries(stops, warehouseLoc, loadout);
-  el("planner-results").innerHTML = renderItineraryCards(itineraries, warehouseLoc, loadout);
+  const best = pickBestItinerary(itineraries);
+  el("planner-results").innerHTML = renderRecommendedItinerary(best, warehouseLoc);
 }
 
 async function loadDrivers() {
@@ -610,6 +715,8 @@ async function backfillMissingLocations() {
   const seenAddresses = new Set();
   const orderPending = [];
   state.orders.forEach((order) => {
+    const confirmed = order.deliveryLocation;
+    if (confirmed && typeof confirmed.lat === "number" && typeof confirmed.lng === "number") return;
     const key = normalizeAddress(order.address);
     if (!key || seenAddresses.has(key)) return;
     if (state.addressLocations[key]) return;
@@ -678,17 +785,16 @@ let ordersUnsub = null;
 let ordersWatchGeneration = 0;
 let ordersApplySequence = 0;
 
-function ordersQueryForRange() {
-  const filters = [];
-  if (state.dateFrom) filters.push(where("deliveryDate", ">=", state.dateFrom));
-  if (state.dateTo) filters.push(where("deliveryDate", "<=", state.dateTo));
-  return filters.length ? query(collection(db, "orders"), ...filters) : collection(db, "orders");
+function activeOrdersQuery() {
+  return query(collection(db, "orders"), where("status", "in", APPROVED_STATUSES));
 }
 
 function ordersFromSnapshot(snapshot) {
   return snapshot.docs
     .map((row) => ({ id: row.id, ...row.data() }))
-    .filter((order) => APPROVED_STATUSES.includes(order.status) || order.status === "delivered");
+    .filter((order) => APPROVED_STATUSES.includes(order.status))
+    .sort((a, b) => String(a.deliveryDate || "9999-12-31").localeCompare(String(b.deliveryDate || "9999-12-31"))
+      || String(a.id).localeCompare(String(b.id)));
 }
 
 async function applyOrdersSnapshot(snapshot, generation) {
@@ -701,6 +807,10 @@ async function applyOrdersSnapshot(snapshot, generation) {
   if (generation !== ordersWatchGeneration || requestId !== ordersApplySequence) return;
   state.orders = orders;
   state.orderItemsByOrderId = itemsByOrderId;
+  const activeIds = new Set(orders.map((order) => order.id));
+  Array.from(state.selectedOrderIds).forEach((orderId) => {
+    if (!activeIds.has(orderId)) state.selectedOrderIds.delete(orderId);
+  });
   render();
   if (state.mapsReady) {
     await backfillMissingLocations();
@@ -729,7 +839,7 @@ function watchOrders() {
       settled = true;
       resolve();
     };
-    ordersUnsub = onSnapshot(ordersQueryForRange(), (snapshot) => {
+    ordersUnsub = onSnapshot(activeOrdersQuery(), (snapshot) => {
       applyOrdersSnapshot(snapshot, generation)
         .then(settle)
         .catch((error) => {
@@ -746,23 +856,36 @@ function watchOrders() {
 }
 
 function initFilters() {
-  el("map-date").value = state.dateFrom;
   el("status-filter").value = state.statusFilter;
   el("driver-filter").addEventListener("change", (event) => {
     state.driverFilter = event.target.value;
+    state.selectedOrderIds.clear();
+    state.tripSelectionMode = false;
     render();
   });
   el("status-filter").addEventListener("change", (event) => {
     state.statusFilter = event.target.value;
     render();
   });
-  el("map-date").addEventListener("change", (event) => {
-    state.dateFrom = event.target.value;
-    state.dateTo = event.target.value;
-    watchOrders();
+  el("build-trip-button").addEventListener("click", () => {
+    state.tripSelectionMode = !state.tripSelectionMode;
+    render({ preserveMapViewport: true });
   });
+  el("select-filtered-button").addEventListener("click", selectAllFilteredOrders);
+  el("clear-trip-selection-button").addEventListener("click", clearTripSelection);
   el("refresh-button").addEventListener("click", watchOrders);
   el("plan-trips-button").addEventListener("click", runPlanner);
+
+  el("order-rows").addEventListener("change", (event) => {
+    const checkbox = event.target.closest("[data-trip-order-id]");
+    if (checkbox) toggleOrderSelection(checkbox.dataset.tripOrderId);
+  });
+  el("order-rows").addEventListener("click", (event) => {
+    if (!state.tripSelectionMode) return;
+    if (event.target.closest("a, button, input, select, textarea, .map-order-product")) return;
+    const row = event.target.closest("tr[data-order-id]");
+    if (row) toggleOrderSelection(row.dataset.orderId);
+  });
 }
 
 async function bootstrap() {

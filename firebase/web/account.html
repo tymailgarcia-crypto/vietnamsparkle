@@ -5,6 +5,87 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>My account · Vietnam Sparkle</title>
     <link rel="stylesheet" href="./assets/styles.css">
+    <style>
+      /* Keep the signed-in identity legible over the brightest part of the hero gradient. */
+      .hero #hero-auth-status {
+        color: #fff;
+        font-weight: 700;
+        text-shadow: 0 1px 2px rgba(4, 24, 54, .55);
+      }
+      #address-editor-dialog {
+        width: min(680px, calc(100% - 28px));
+        max-height: min(90vh, 760px);
+        overflow-y: auto;
+        border: 0;
+        border-radius: 16px;
+        padding: 0;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, .28);
+      }
+      #address-editor-dialog::backdrop { background: rgba(17, 34, 45, .46); }
+      .address-editor-heading {
+        padding: 20px 20px 0;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 12px;
+        align-items: center;
+      }
+      .address-editor-heading h3 { min-width: 0; overflow-wrap: anywhere; }
+      #add-address-form {
+        padding: 16px 20px 20px;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 12px;
+        align-items: start;
+      }
+      #add-address-form > label { display: grid; gap: 7px; min-width: 0; }
+      #add-address-form input { width: 100%; min-width: 0; }
+      .account-address-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+      .account-address-actions button { width: auto; min-height: 44px; }
+      #account-address-autocomplete-list {
+        overflow: hidden;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: #fff;
+        box-shadow: 0 8px 22px rgba(17, 34, 45, .14);
+      }
+      #account-address-autocomplete-list[hidden] { display: none; }
+      .account-address-suggestion {
+        display: block;
+        width: 100%;
+        min-height: 44px;
+        padding: 11px 12px;
+        border: 0;
+        border-bottom: 1px solid #e5e9e6;
+        border-radius: 0;
+        background: #fff;
+        color: inherit;
+        font: inherit;
+        text-align: left;
+        cursor: pointer;
+        overflow-wrap: anywhere;
+      }
+      .account-address-suggestion[aria-selected="true"] { background: #eef6f1; }
+      .account-address-attribution {
+        padding: 5px 10px;
+        color: #5e5e5e;
+        font: 400 12px Roboto, sans-serif;
+        text-align: right;
+      }
+      #account-address-map-wrap { width: 100%; }
+      #account-address-map { height: clamp(280px, 45vh, 440px); }
+      #address-dialog-status { width: 100%; min-height: 18px; margin: 0; font-size: 13px; }
+      @media (max-width: 520px) {
+        #address-editor-dialog { width: calc(100% - 20px); max-height: calc(100dvh - 20px); }
+        .address-editor-heading { padding: 16px 16px 0; }
+        .address-editor-heading h3 { font-size: 20px; line-height: 1.2; }
+        #add-address-form { padding: 14px 16px 18px; }
+        .account-address-actions { display: grid; grid-template-columns: minmax(0, 1fr); }
+        .account-address-actions button { width: 100%; white-space: normal; }
+        #account-address-map { height: min(42vh, 340px); }
+        .address-map-footer { align-items: stretch; }
+        .address-map-footer button { width: 100%; min-height: 44px; }
+      }
+    </style>
   </head>
   <body>
     <div id="app-loading" class="app-loading" role="status" aria-live="polite">
@@ -66,6 +147,10 @@
       </section>
 
       <section class="panel hidden" id="signed-in-view">
+        <section class="panel hidden open-orders-panel" id="open-orders-section" style="margin:0 0 20px">
+          <h3 style="margin:0 0 10px;font-size:15px">Open orders</h3>
+          <div id="open-orders-list" class="stack" style="gap:10px"></div>
+        </section>
         <h2 style="margin:0 0 12px">Your profile</h2>
         <span id="profile-email" class="hidden"></span>
         <button class="hidden" id="signout-button" type="button" tabindex="-1"></button>
@@ -77,7 +162,19 @@
           </label>
           <label>
             Phone
-            <input id="profile-phone" minlength="6" maxlength="39" type="tel" pattern="(?=.*\d)[-+0-9 ()]{6,40}" title="Digits, spaces, +, -, ( ) only. At least one digit required." placeholder="0901 234 501">
+            <span class="phone-entry" style="display:flex;gap:8px;align-items:stretch">
+              <span id="profile-phone-country-picker" class="phone-country-picker">
+                <input id="profile-phone-country" type="hidden" value="+84" data-phone-country-value>
+                <button class="phone-country-trigger" type="button" aria-haspopup="listbox" aria-expanded="false" aria-label="Choose phone country">
+                  <span data-phone-country-display>🇻🇳 +84</span><span class="phone-country-chevron" aria-hidden="true">⌄</span>
+                </button>
+                <span class="phone-country-menu" hidden>
+                  <input class="phone-country-search" type="search" placeholder="Search country or +code" aria-label="Search phone countries" autocomplete="off">
+                  <span class="phone-country-options" role="listbox"></span>
+                </span>
+              </span>
+              <input id="profile-phone" minlength="6" maxlength="39" type="tel" pattern="(?=.*\d)[-+0-9 ()]{6,40}" title="Use digits only. Spaces, +, brackets and dashes are okay." placeholder="901 234 501" style="min-width:0;flex:1 1 auto">
+            </span>
           </label>
           <label class="span-2">
             Notes for the driver
@@ -92,29 +189,42 @@
 
         <section class="panel address-panel" id="addresses-panel" style="margin-top:20px">
           <h3 style="margin:0 0 6px;font-size:15px">Delivery addresses</h3>
-          <p class="muted" style="margin:0 0 12px;font-size:13px">The primary address is selected automatically on new orders. Every saved address keeps its confirmed pin, so switching addresses does not require another Maps check.</p>
           <div id="addresses-list" class="stack" style="gap:10px"></div>
-          <form id="add-address-form" class="address-add-form" style="margin-top:14px">
-            <input id="new-address-input" type="text" placeholder="Add another delivery address" minlength="5" maxlength="499" required>
-            <button id="new-address-submit" class="secondary" type="submit">Find on map</button>
-            <button id="cancel-address-edit" class="ghost hidden" type="button">Cancel edit</button>
-          </form>
-          <div id="account-address-map-wrap" class="address-map-wrap" hidden>
-            <div id="account-address-map" class="address-confirm-map" aria-label="Map showing the new delivery address"></div>
-            <div class="address-map-footer">
-              <p class="muted address-map-help" id="account-address-map-help">Drag the pin to your exact entrance, then select “Save confirmed address”.</p>
-              <button id="account-address-reset-pin" class="ghost" type="button">Reset pin</button>
-            </div>
-          </div>
+          <button id="open-add-address" class="secondary" type="button" style="margin-top:14px">Add delivery address</button>
           <p class="muted" id="addresses-status" style="min-height:18px;margin:8px 0 0;font-size:13px"></p>
         </section>
+
+        <dialog id="address-editor-dialog" aria-labelledby="address-editor-title">
+          <form method="dialog" class="address-editor-heading">
+            <h3 id="address-editor-title" style="margin:0">Add delivery address</h3>
+            <button id="close-address-editor" class="ghost" type="submit" aria-label="Close address editor">Close</button>
+          </form>
+          <form id="add-address-form" class="address-add-form">
+            <label>Delivery address
+              <input id="new-address-input" type="text" placeholder="Street, ward, landmark" minlength="5" maxlength="499" autocomplete="street-address" aria-autocomplete="list" aria-controls="account-address-autocomplete-list" aria-expanded="false" required>
+            </label>
+            <div id="account-address-autocomplete-list" role="listbox" aria-label="Google Maps address suggestions" hidden></div>
+            <div class="account-address-actions">
+              <button id="new-address-submit" class="secondary" type="submit">Find on Google Maps</button>
+              <button id="cancel-address-edit" class="ghost hidden" type="button">Cancel edit</button>
+            </div>
+            <div id="account-address-map-wrap" class="address-map-wrap" hidden>
+              <div id="account-address-map" class="address-confirm-map" aria-label="Map showing the new delivery address"></div>
+              <div class="address-map-footer">
+                <p class="muted address-map-help" id="account-address-map-help">Check the suggested pin, correct it if needed, then confirm the address.</p>
+                <button id="account-address-reset-pin" class="ghost" type="button">Reset pin</button>
+              </div>
+            </div>
+            <p class="muted" id="address-dialog-status" aria-live="polite"></p>
+          </form>
+        </dialog>
 
         <section class="panel hidden" id="claim-panel" style="margin-top:24px">
           <h3 style="margin:0 0 8px">Already a customer with us?</h3>
           <p class="muted">Your new orders here work either way. If we already had you on file from past deliveries and you'd like to see that history too, message us with your email <strong id="claim-email"></strong> and we'll link your old orders to this account.</p>
         </section>
 
-        <section class="panel balance-compact" id="balance-section" style="margin-top:20px;background:rgba(11,122,99,0.06);border-radius:12px;padding:14px">
+        <section class="panel balance-compact" id="balance-section" style="margin-top:20px">
           <h3 style="margin:0 0 6px;font-size:15px">Your balance</h3>
           <div id="balance-summary"></div>
           <div id="how-to-pay" style="margin-top:10px"></div>
@@ -142,16 +252,21 @@
         </div>
 
         <div id="tab-containers" data-tab-panel="containers" class="hidden">
-          <p class="muted top-gap" style="margin-top:0">Return empties on your next delivery. The driver will refund or credit the deposit.</p>
-          <div id="pickup-request-card" class="card hidden" style="margin:0 0 14px">
-            <strong id="pickup-request-title"></strong>
-            <p class="muted" id="pickup-request-hint" style="margin:6px 0 10px"></p>
-            <div class="button-row">
-              <button id="pickup-request-button" class="secondary" type="button"></button>
-              <span class="muted" id="pickup-request-status" role="status" aria-live="polite"></span>
+          <details id="container-deposit-details" class="card" style="padding:0;overflow:hidden">
+            <summary style="cursor:pointer;padding:16px 18px;font-weight:700">Container &amp; deposit details</summary>
+            <div style="padding:0 18px 18px">
+              <p class="muted" style="margin:0 0 14px">Return empties on your next delivery. The driver will refund or credit the deposit.</p>
+              <div id="pickup-request-card" class="card hidden" style="margin:0 0 14px">
+                <strong id="pickup-request-title"></strong>
+                <p class="muted" id="pickup-request-hint" style="margin:6px 0 10px"></p>
+                <div class="button-row">
+                  <button id="pickup-request-button" class="secondary" type="button"></button>
+                  <span class="muted" id="pickup-request-status" role="status" aria-live="polite"></span>
+                </div>
+              </div>
+              <div id="container-summary" class="stack"></div>
             </div>
-          </div>
-          <div id="container-summary" class="stack"></div>
+          </details>
         </div>
       </section>
     </main>

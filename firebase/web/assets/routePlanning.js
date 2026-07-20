@@ -253,6 +253,19 @@ export function planItineraries(stops, warehouseLoc, loadout) {
   });
 }
 
+// Pick the single itinerary the driver should actually run. Fewer trips means
+// fewer warehouse reloads and less driving, so that wins first; ties break on
+// total distance, then on placing the most orders. The planner still computes
+// every strategy — the driver just never has to compare them.
+export function pickBestItinerary(itineraries) {
+  if (!itineraries.length) return null;
+  return itineraries.slice().sort((a, b) => {
+    if (a.unassigned.length !== b.unassigned.length) return a.unassigned.length - b.unassigned.length;
+    if (a.trips.length !== b.trips.length) return a.trips.length - b.trips.length;
+    return a.totalKm - b.totalKm;
+  })[0];
+}
+
 // ------------------------------------------------------------ rendering
 
 const TRIP_COLORS = ["#1b68e9", "#27ae60", "#d35400", "#8e44ad", "#0e6251", "#c0392b"];
@@ -334,70 +347,61 @@ function renderTripLegend(trips) {
   }).join("")}</div>`;
 }
 
-function renderUtilization(tally, loadout) {
-  const types = Array.from(new Set([...Object.keys(loadout || {}), ...Object.keys(tally || {})]));
-  const chips = types
-    .filter((t) => Number(loadout?.[t] || 0) > 0 || Number(tally?.[t] || 0) > 0)
-    .map((t) => {
-      const used = tally?.[t] || 0;
-      const cap = Number(loadout?.[t] || 0);
-      const pct = cap > 0 ? Math.round((used / cap) * 100) : null;
-      return `<span class="loadout-chip">${escapeHtml(humanizeContainerType(t))} <strong>${used}</strong>/${cap}${pct != null ? ` · ${pct}%` : ""}</span>`;
-    }).join("");
-  return chips ? `<div class="loadout-chips" style="margin-top:10px">${chips}</div>` : "";
+// Compact "what's on the truck for this trip" chips — just the counts the
+// driver loads, no capacity fractions or percentages. Utilization math was the
+// biggest source of on-screen numbers and the driver doesn't act on it.
+function renderTripLoad(tally) {
+  const chips = Object.entries(tally || {})
+    .filter(([, qty]) => Number(qty) > 0)
+    .map(([type, qty]) => `<span class="loadout-chip">${escapeHtml(humanizeContainerType(type))} <strong>${qty}</strong></span>`)
+    .join("");
+  return chips ? `<div class="loadout-chips" style="margin-top:8px">${chips}</div>` : "";
 }
 
-export function renderItineraryCards(itineraries, warehouseLoc, loadout) {
-  if (!itineraries.length) return "";
-  return itineraries.map((it) => {
-    const totalMin = estimateMinutes(it.totalKm);
-    const preview = renderPreviewSvg(warehouseLoc, it.trips);
-    const legend = renderTripLegend(it.trips);
-    const unassignedLine = it.unassigned.length
-      ? `<div class="capacity-warning" style="display:block;margin-top:10px">${it.unassigned.length} order${it.unassigned.length === 1 ? "" : "s"} couldn't be placed — a single order exceeds a container-type capacity. Fix the loadout or split the order.</div>`
-      : "";
-    const trips = it.trips.map((trip, tripIdx) => {
-      const color = TRIP_COLORS[tripIdx % TRIP_COLORS.length];
-      const stopsHtml = trip.selected.map((stop) => `
-        <li>
-          <strong>${escapeHtml(stop.customerName || "?")}</strong>
-          <span class="muted"> — ${escapeHtml(stop.address || "")}</span>
-        </li>
-      `).join("");
-      const util = renderUtilization(trip.counts, loadout);
-      const mapsHref = buildMapsDirUrl(warehouseLoc, trip.selected);
-      const minutes = estimateMinutes(trip.km);
-      return `
-        <div class="trip-block">
-          <div class="trip-header">
-            <span class="trip-color-dot" style="background:${color}"></span>
-            <strong>Trip ${tripIdx + 1}</strong>
-            <span class="muted">· ${trip.selected.length} stops · ${trip.km.toFixed(1)} km · ~${formatDurationMinutes(minutes)}</span>
-            <a class="button-link primary" href="${escapeHtml(mapsHref)}" target="_blank" rel="noopener">Open in Google Maps</a>
-          </div>
-          ${util}
-          <ol class="route-stop-list" style="margin:8px 0 0;padding-left:22px">${stopsHtml}</ol>
-        </div>
-      `;
-    }).join("");
+// Render the one recommended plan as a plain-language suggestion the driver can
+// act on: a single headline sentence (volume · trips · distance · time), the
+// route sketch, then one navigable block per trip. No competing strategies, no
+// utilization percentages — just how to run the day.
+export function renderRecommendedItinerary(it, warehouseLoc) {
+  if (!it || !it.trips.length) return "";
+  const totalMin = estimateMinutes(it.totalKm);
+  const preview = renderPreviewSvg(warehouseLoc, it.trips);
+  const legend = it.trips.length > 1 ? renderTripLegend(it.trips) : "";
+  const tripWord = it.trips.length === 1 ? "one trip" : `${it.trips.length} trips`;
+  const headline = `Run ${it.totalStops} order${it.totalStops === 1 ? "" : "s"} in <strong>${tripWord}</strong> — about <strong>${it.totalKm.toFixed(0)} km</strong> and ~${formatDurationMinutes(totalMin)} of driving.`;
+  const unassignedLine = it.unassigned.length
+    ? `<div class="capacity-warning" style="display:block;margin-top:10px">${it.unassigned.length} order${it.unassigned.length === 1 ? "" : "s"} won't fit the loadout — split the order or adjust the truck load.</div>`
+    : "";
+  const trips = it.trips.map((trip, tripIdx) => {
+    const color = TRIP_COLORS[tripIdx % TRIP_COLORS.length];
+    const stopsHtml = trip.selected.map((stop) => `
+      <li>
+        <strong>${escapeHtml(stop.customerName || "?")}</strong>
+        <span class="muted"> — ${escapeHtml(stop.address || "")}</span>
+      </li>
+    `).join("");
+    const load = renderTripLoad(trip.counts);
+    const mapsHref = buildMapsDirUrl(warehouseLoc, trip.selected);
     return `
-      <article class="card route-result-card">
-        <div class="order-top">
-          <div>
-            <strong>${escapeHtml(it.label)}</strong>
-            <div class="muted" style="font-size:12px">${escapeHtml(it.description)}</div>
-            <div class="muted" style="font-size:12px;margin-top:4px">
-              <strong>${it.totalStops}</strong> stops · <strong>${it.trips.length}</strong> trip${it.trips.length === 1 ? "" : "s"}
-              · <strong>${it.totalKm.toFixed(1)} km</strong> straight-line
-              · ~${formatDurationMinutes(totalMin)} drive
-            </div>
-          </div>
+      <div class="trip-block">
+        <div class="trip-header">
+          <span class="trip-color-dot" style="background:${color}"></span>
+          <strong>Trip ${tripIdx + 1}</strong>
+          <span class="muted">· ${trip.selected.length} stop${trip.selected.length === 1 ? "" : "s"} · ${trip.km.toFixed(0)} km</span>
+          <a class="button-link primary" href="${escapeHtml(mapsHref)}" target="_blank" rel="noopener">Navigate</a>
         </div>
-        ${preview}
-        ${legend}
-        ${unassignedLine}
-        <div class="trip-list" style="margin-top:14px">${trips}</div>
-      </article>
+        ${load}
+        <ol class="route-stop-list" style="margin:8px 0 0;padding-left:22px">${stopsHtml}</ol>
+      </div>
     `;
   }).join("");
+  return `
+    <article class="card route-result-card">
+      <p class="planner-suggestion">${headline}</p>
+      ${preview}
+      ${legend}
+      ${unassignedLine}
+      <div class="trip-list" style="margin-top:14px">${trips}</div>
+    </article>
+  `;
 }

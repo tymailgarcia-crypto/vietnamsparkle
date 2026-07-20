@@ -27,12 +27,17 @@ import {
   buildOrderId,
   buildPaymentId,
   computeDepositBreakdown,
+  containerReturnProofProblem,
+  containerReturnProofType,
+  describeDepositBalanceProblem,
   escapeHtml,
   formatCurrency,
+  isBrokenDepositBalance,
   localDateKey,
   mergeThresholds,
   normalizePhone,
   paymentStatusFor,
+  productImageUrl,
   requireRole,
   setDeliveryWindow,
   THRESHOLD_DEFAULTS,
@@ -49,10 +54,20 @@ import {
 } from "./invoice.js";
 import {
   ensureInvoicePdfUploaded,
+  uploadContainerReturnProof,
   uploadPaymentProof,
   validateProofFile
 } from "./storageUploads.js";
+import {
+  OPEN_ORDER_STATUSES,
+  OPEN_ORDER_TIMING_FILTERS,
+  filterOpenOrdersByTiming,
+  importantNoteIsValid,
+  normalizeImportantNote,
+  openOrderGroupKey
+} from "./adminDashboardModel.js";
 import { mapsApiKey } from "./firebaseWebConfig.js";
+import { createEditOrderAddressController } from "./editOrderAddress.js";
 
 const mergeCustomersFn = httpsCallable(functions, "mergeCustomers");
 
@@ -69,12 +84,22 @@ function monthStartKey(dateKey = todayKey()) {
   return /^\d{4}-\d{2}-\d{2}$/.test(dateKey) ? `${dateKey.slice(0, 7)}-01` : todayKey();
 }
 
+function financeRangeFor(period) {
+  const now = new Date();
+  const to = localDateKey(now);
+  if (period === "month") {
+    return { from: monthStartKey(to), to, label: "This month" };
+  }
+  return { from: to, to, label: "Today" };
+}
+
 let financeLoadSequence = 0;
 
 const state = {
   products: [],
   drivers: [],
   orders: [],
+  openOrders: [],
   orderItems: [],
   payments: [],
   depositEvents: [],
@@ -82,17 +107,18 @@ const state = {
   thresholds: { ...THRESHOLD_DEFAULTS },
   selectedDate: initialSelectedDate(),
   statusFilter: "all",
-  financeFrom: monthStartKey(),
+  timingFilter: "all",
+  financePeriod: "today",
+  financeFrom: todayKey(),
   financeTo: todayKey()
 };
 
 const STATUS_FILTERS = [
-  { key: "all", label: "All", match: () => true },
   { key: "to_approve", label: "To approve", match: (o) => o.status === "pending_approval" },
   { key: "to_assign", label: "To assign", match: (o) => o.status === "new" },
   { key: "to_send", label: "To send", match: (o) => o.status === "assigned" },
   { key: "en_route", label: "En route", match: (o) => o.status === "out_for_delivery" },
-  { key: "done", label: "Done", match: (o) => o.status === "delivered" || o.status === "cancelled" }
+  { key: "all", label: "All active", match: () => true }
 ];
 
 function byId(rows) {
@@ -122,13 +148,11 @@ function renderHero() {
     .reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
   const unpaid = todayOrders.filter((order) => order.paymentStatus !== "paid").length;
 
-  document.getElementById("hero-stats").innerHTML = `
-    <div class="card"><span class="muted">Today orders</span><strong>${todayOrders.length}</strong></div>
-    <div class="card money-card">
-      <div class="money-row"><span>Cash today</span><strong>${formatCurrency(cash)}</strong></div>
-      <div class="money-row"><span>Transfer today</span><strong>${formatCurrency(transfer)}</strong></div>
-      <div class="money-row"><span>Unpaid</span><strong>${unpaid}</strong></div>
-    </div>
+  document.getElementById("daily-kpis").innerHTML = `
+    <div class="daily-kpi"><span>Today orders</span><strong>${todayOrders.length}</strong></div>
+    <div class="daily-kpi"><span>Cash today</span><strong>${formatCurrency(cash)}</strong></div>
+    <div class="daily-kpi"><span>Transfer today</span><strong>${formatCurrency(transfer)}</strong></div>
+    <div class="daily-kpi"><span>Unpaid</span><strong>${unpaid}</strong></div>
   `;
 }
 
@@ -137,6 +161,25 @@ function setFinanceStatus(message, isError = false) {
   if (!node) return;
   node.textContent = message || "";
   node.style.color = isError ? "var(--danger, #b3261e)" : "var(--muted)";
+  node.classList.toggle("is-error", isError);
+}
+
+function renderFinancePeriodFilter() {
+  document.querySelectorAll("[data-finance-period]").forEach((button) => {
+    const active = button.dataset.financePeriod === state.financePeriod;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+}
+
+async function selectFinancePeriod(period) {
+  if (!["today", "month"].includes(period)) return;
+  const range = financeRangeFor(period);
+  state.financePeriod = period;
+  state.financeFrom = range.from;
+  state.financeTo = range.to;
+  renderFinancePeriodFilter();
+  await refreshFinanceSummary();
 }
 
 function validFinanceRange(from, to) {
@@ -196,28 +239,30 @@ function computeFinanceSummary(orders, payments, depositEvents) {
 
 function renderFinanceSummary(summary, from, to) {
   document.getElementById("finance-stats").innerHTML = `
-    <div class="card">
-      <span class="muted">Delivered sales</span>
+    <div class="finance-stat">
+      <span>Delivered sales</span>
       <strong>${formatCurrency(summary.revenue)}</strong>
       <div class="muted">Subtotal only · ${summary.deliveredCount} delivered order${summary.deliveredCount === 1 ? "" : "s"}</div>
     </div>
-    <div class="card">
-      <span class="muted">Collected</span>
+    <div class="finance-stat">
+      <span>Collected</span>
       <strong>${formatCurrency(summary.collected)}</strong>
       <div class="muted">Cash ${formatCurrency(summary.methodTotals.cash)} · Bank/QR ${formatCurrency(summary.methodTotals.bank)} · Other ${formatCurrency(summary.methodTotals.other)}</div>
     </div>
-    <div class="card">
-      <span class="muted">Current outstanding on range orders</span>
+    <div class="finance-stat">
+      <span>Outstanding</span>
       <strong>${formatCurrency(summary.outstanding)}</strong>
       <div class="muted">${summary.outstandingCount} order${summary.outstandingCount === 1 ? "" : "s"} still owe · includes deposits</div>
     </div>
-    <div class="card">
-      <span class="muted">Deposits held at end date</span>
+    <div class="finance-stat">
+      <span>Deposits held</span>
       <strong>${formatCurrency(summary.depositsHeld)}</strong>
       <div class="muted">All customer deposit events through ${escapeHtml(to)}</div>
     </div>
   `;
-  setFinanceStatus(`${from} to ${to}. Collections follow payment dates; outstanding is the current balance on orders in this range.`);
+  const label = financeRangeFor(state.financePeriod).label;
+  const dates = from === to ? from : `${from} to ${to}`;
+  setFinanceStatus(`${label} (${dates}). Collections follow payment dates; outstanding is the current balance on these orders.`);
 }
 
 async function refreshFinanceSummary() {
@@ -372,7 +417,7 @@ async function ensureDepositCharge(order) {
       qty: entry.qty,
       amount: entry.amount,
       eventType: "charged",
-      eventDate: state.selectedDate,
+      eventDate: order.deliveryDate || todayKey(),
       linkedDocumentId: null,
       notes: "Auto-charged on approval"
     });
@@ -391,10 +436,22 @@ async function updateOrderStatus(orderId, nextStatus) {
   });
 }
 
+async function returnOrderToAssignment(orderId) {
+  const order = state.orders.find((row) => row.id === orderId);
+  if (!order || order.status !== "out_for_delivery") return;
+  await updateDoc(doc(db, "orders", orderId), {
+    status: "assigned",
+    updatedAt: new Date().toISOString()
+  });
+}
+
 // Lazy Maps SDK loader for geocode-on-approval. Same pattern as mapApp.js /
 // settingsApp.js — kept local rather than extracted because the surface is
 // tiny and the route planner is the only other future consumer.
 const mapsSdkState = { ready: false, geocoder: null, loadPromise: null };
+let orderMap = null;
+let orderMapMarker = null;
+let orderMiniMapObserver = null;
 
 function loadMapsSdk() {
   if (mapsSdkState.ready) return Promise.resolve();
@@ -432,6 +489,113 @@ function geocodeAddress(address) {
     });
   });
 }
+
+// ---- Edit-order address re-confirmation -----------------------------------
+// When an admin changes an order's address, the new pin must be eyeballed on
+// the map before save — the same checkpoint the new-customer and public-order
+// flows already enforce. State is seeded from the order's existing pin on open,
+// so an unchanged address needs no re-confirmation.
+const editAddressState = {
+  map: null,
+  marker: null,
+  pending: null,
+  confirmed: null,        // { lat, lng, formattedAddress, geocodedAt }
+  confirmedForAddress: "" // the trimmed address string `confirmed` belongs to
+};
+
+function setEditAddressStatus(message, isError = false) {
+  const node = document.getElementById("edit-address-status");
+  if (!node) return;
+  node.textContent = message || "";
+  node.style.color = isError ? "var(--danger, #b3261e)" : "var(--muted)";
+}
+
+// Called when the edit dialog opens. Seeds the confirmed pin from the order so
+// that leaving the address untouched saves without a re-check.
+function resetEditAddressConfirm(order) {
+  editAddressState.pending = null;
+  const wrap = document.getElementById("edit-address-map-wrap");
+  if (wrap) wrap.hidden = true;
+  const existing = order?.deliveryLocation;
+  if (existing && typeof existing.lat === "number" && typeof existing.lng === "number") {
+    editAddressState.confirmed = { ...existing };
+    editAddressState.confirmedForAddress = String(order.address || "").trim();
+    setEditAddressStatus("Pin on file. If you change the address, re-check it on the map.");
+  } else {
+    editAddressState.confirmed = null;
+    editAddressState.confirmedForAddress = "";
+    setEditAddressStatus("Find the address on Google Maps to confirm the delivery pin.");
+  }
+}
+
+async function findEditAddress() {
+  const address = document.getElementById("edit-address").value.trim();
+  if (address.length < 5) {
+    setEditAddressStatus("Enter a fuller delivery address first.", true);
+    return;
+  }
+  const button = document.getElementById("edit-address-verify");
+  button.disabled = true;
+  setEditAddressStatus("Searching Google Maps...");
+  editAddressState.confirmed = null;
+  editAddressState.confirmedForAddress = "";
+  try {
+    await loadMapsSdk();
+    const geocoder = new google.maps.Geocoder();
+    const match = await new Promise((resolve, reject) => {
+      geocoder.geocode({
+        address,
+        region: "vn",
+        componentRestrictions: { country: "vn" },
+        bounds: new google.maps.LatLngBounds({ lat: 15.90, lng: 108.05 }, { lat: 16.20, lng: 108.35 })
+      }, (results, status) => {
+        if (status === "OK" && results?.[0]) resolve(results[0]);
+        else reject(new Error("We couldn't find that address. Add a district or nearby landmark and try again."));
+      });
+    });
+    const position = match.geometry.location;
+    const wrap = document.getElementById("edit-address-map-wrap");
+    wrap.hidden = false;
+    editAddressState.map = editAddressState.map || new google.maps.Map(document.getElementById("edit-address-map"), {
+      center: position,
+      zoom: 17,
+      streetViewControl: false,
+      mapTypeControl: false,
+      fullscreenControl: false
+    });
+    editAddressState.map.setCenter(position);
+    google.maps.event.trigger(editAddressState.map, "resize");
+    if (editAddressState.marker) editAddressState.marker.setMap(null);
+    editAddressState.marker = new google.maps.Marker({ map: editAddressState.map, position, draggable: true });
+    const capture = (pin) => {
+      editAddressState.pending = {
+        lat: pin.lat(),
+        lng: pin.lng(),
+        formattedAddress: match.formatted_address || address,
+        geocodedAt: new Date().toISOString()
+      };
+      editAddressState.confirmed = null;
+      setEditAddressStatus("Check the pin, drag it to the exact entrance if needed, then use this location.");
+    };
+    capture(position);
+    editAddressState.marker.addListener("dragend", () => capture(editAddressState.marker.getPosition()));
+  } catch (error) {
+    editAddressState.pending = null;
+    document.getElementById("edit-address-map-wrap")?.setAttribute("hidden", "");
+    setEditAddressStatus(error.message || String(error), true);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function confirmEditAddress() {
+  if (!editAddressState.pending) return;
+  editAddressState.confirmed = { ...editAddressState.pending };
+  editAddressState.confirmedForAddress = document.getElementById("edit-address").value.trim();
+  setEditAddressStatus("✓ Delivery location confirmed on Google Maps.");
+}
+
+const editAddressController = createEditOrderAddressController({ loadMaps: loadMapsSdk });
 
 // Best-effort resolve of the delivery pin for a freshly-approved order.
 // Priority: geocode the order's own address; fall back to the customer's
@@ -604,43 +768,57 @@ function renderDriverSelect(order) {
   `;
 }
 
+function renderImportanceButton(order) {
+  const active = order.important === true;
+  const label = active ? "Edit important note" : "Mark important";
+  return `<button class="ghost ${active ? "is-important" : ""}" type="button" data-important-order="${escapeHtml(order.id)}" aria-label="${label}">${active ? "&#9733; Important" : "&#9734; Important"}</button>`;
+}
+
+function renderImportantNote(order, className = "important-note") {
+  if (order.important !== true) return "";
+  const note = normalizeImportantNote(order.importantNote);
+  return `<div class="${className}"><span class="important-label">Important</span>${note ? ` ${escapeHtml(note)}` : ""}</div>`;
+}
+
 function renderStateActions(order) {
-  const editButton = `<button class="ghost" data-edit="${order.id}">Edit details</button>`;
-  const invoiceButton = `<button class="ghost" data-invoice="${order.id}">Invoice</button>`;
+  const managementActions = `
+    <span class="order-management-actions">
+      ${renderImportanceButton(order)}
+      <button class="ghost" data-cancel="${escapeHtml(order.id)}">Cancel order</button>
+      <button class="ghost" data-edit="${escapeHtml(order.id)}">Edit details</button>
+    </span>`;
+  const contactAction = renderQuickCallAction(order);
   switch (order.status) {
     case "pending_approval":
       return `
         <button class="primary" data-approve="${order.id}">Approve</button>
-        ${editButton}
-        ${invoiceButton}
-        <button class="ghost" data-cancel="${order.id}">Cancel order</button>
+        ${managementActions}
+        ${contactAction}
       `;
     case "new":
       return `
         ${renderDriverSelect(order)}
-        ${editButton}
-        ${invoiceButton}
-        <button class="ghost" data-cancel="${order.id}">Cancel order</button>
+        ${managementActions}
+        ${contactAction}
       `;
     case "assigned":
       return `
         ${renderDriverSelect(order)}
         <button class="primary" data-status="${order.id}" data-next="out_for_delivery">Send out for delivery</button>
-        ${editButton}
-        ${invoiceButton}
-        <button class="ghost" data-cancel="${order.id}">Cancel order</button>
+        ${managementActions}
+        ${contactAction}
       `;
     case "out_for_delivery":
       return `
         <button class="primary" data-collect="${order.id}">Mark delivered &amp; record payment</button>
-        ${invoiceButton}
-        <button class="ghost" data-cancel="${order.id}">Cancel order</button>
-        ${renderQuickCallAction(order)}
+        <button class="secondary" data-return-assignment="${order.id}">Reset</button>
+        ${managementActions}
+        ${contactAction}
       `;
     case "delivered":
-      return `<span class="muted">Delivered</span> ${invoiceButton}`;
+      return `<span class="muted">Delivered</span> <button class="ghost" data-invoice="${order.id}">Invoice</button> ${order.important === true ? renderImportanceButton(order) : ""} ${contactAction}`;
     case "cancelled":
-      return `<span class="muted">Cancelled${order.cancellationReason ? ` — ${escapeHtml(order.cancellationReason)}` : ""}</span>`;
+      return `<span class="muted">Cancelled${order.cancellationReason ? ` — ${escapeHtml(order.cancellationReason)}` : ""}</span> ${order.important === true ? renderImportanceButton(order) : ""}`;
     default:
       return `<span class="muted">Unknown status: ${escapeHtml(order.status)}</span>`;
   }
@@ -658,13 +836,184 @@ function renderQuickCallAction(order) {
   if (!href) return "";
   const customer = String(order.customerName || "customer").trim() || "customer";
   const phone = String(order.phone || "").trim();
-  return `<a class="button-link secondary" style="padding:6px 10px;font-size:13px;border-radius:10px;margin-left:auto" href="${escapeHtml(href)}" aria-label="Call ${escapeHtml(customer)}${phone ? ` at ${escapeHtml(phone)}` : ""}">Call customer</a>`;
+  const digits = phone.replace(/\D/g, "");
+  const messageDigits = digits.startsWith("0") ? `84${digits.slice(1)}` : digits;
+  const message = `Hi ${customer}, this is Vietnam Sparkle about order ${order.id}.`;
+  const icon = (kind) => {
+    if (kind === "phone") return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.6 10.8c1.7 3.3 3.3 4.9 6.6 6.6l2.2-2.2c.3-.3.7-.4 1.1-.3 1.2.4 2.5.6 3.8.6.6 0 1 .4 1 1v3.8c0 .6-.4 1-1 1C10.6 21.3 2.7 13.4 2.7 3.7c0-.6.4-1 1-1h3.8c.6 0 1 .4 1 1 0 1.3.2 2.6.6 3.8.1.4 0 .8-.3 1.1l-2.2 2.2Z"/></svg>`;
+    if (kind === "whatsapp") return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 3.5A11.8 11.8 0 0 0 12.1 0C5.6 0 .3 5.3.3 11.8c0 2.1.5 4.1 1.6 5.9L.2 24l6.5-1.7c1.7.9 3.6 1.4 5.5 1.4 6.5 0 11.8-5.3 11.8-11.8 0-3.2-1.2-6.1-3.5-8.4Zm-8.4 18.2c-1.7 0-3.4-.5-4.9-1.3l-.4-.2-3.8 1 1-3.7-.2-.4a9.7 9.7 0 1 1 8.3 4.6Zm5.3-7.3c-.3-.1-1.7-.8-2-.9-.3-.1-.5-.1-.7.1-.2.3-.8.9-1 1.1-.2.2-.4.2-.7.1-1.7-.8-2.8-1.5-3.9-3.4-.3-.5.3-.5.8-1.6.1-.2 0-.4 0-.6l-.9-2c-.2-.6-.5-.5-.7-.5h-.6c-.2 0-.6.1-.9.4-.3.3-1.2 1.2-1.2 2.9s1.2 3.3 1.4 3.6c.2.2 2.4 3.7 5.9 5.2 2.2.9 3.1 1 4.2.8.7-.1 1.7-.7 1.9-1.3.2-.6.2-1.2.2-1.3-.1-.1-.3-.2-.6-.3Z"/></svg>`;
+    if (kind === "chat") return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 3h16a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H9l-5 4v-4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm3 6h10V7H7v2Zm0 4h7v-2H7v2Z"/></svg>`;
+    return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 2h14a3 3 0 0 1 3 3v10a3 3 0 0 1-3 3h-6l-4.8 4v-4H5a3 3 0 0 1-3-3V5a3 3 0 0 1 3-3Z"/><path class="zalo-letter" d="M7 7h7l-7 6h7"/></svg>`;
+  };
+  return `
+    <details class="customer-contact">
+      <summary aria-label="Contact ${escapeHtml(customer)}${phone ? ` at ${escapeHtml(phone)}` : ""}" title="Contact customer">${icon("chat")}</summary>
+      <div class="customer-contact-menu">
+        <a class="contact-whatsapp" href="https://wa.me/${messageDigits}?text=${encodeURIComponent(message)}" target="_blank" rel="noopener" aria-label="WhatsApp ${escapeHtml(customer)}" title="WhatsApp">${icon("whatsapp")}</a>
+        <a class="contact-zalo" href="https://zalo.me/${messageDigits}" target="_blank" rel="noopener" aria-label="Zalo ${escapeHtml(customer)}" title="Zalo">${icon("zalo")}</a>
+        <a href="${escapeHtml(href)}" aria-label="Call ${escapeHtml(customer)}" title="Phone">${icon("phone")}</a>
+      </div>
+    </details>`;
+}
+
+document.addEventListener("click", (event) => {
+  document.querySelectorAll("#today-board details.customer-contact[open]").forEach((details) => {
+    if (!details.contains(event.target)) details.removeAttribute("open");
+  });
+});
+
+function compactDashboardAddress(value) {
+  const original = String(value || "").trim();
+  const normalize = (part) => part.normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/đ/g, "d")
+    .trim();
+  const parts = original.split(",").map((part) => part.trim()).filter(Boolean);
+  while (parts.length) {
+    const tail = normalize(parts[parts.length - 1]);
+    if (!/^(?:viet\s*nam|(?:tp\.?\s*)?da\s*nang(?:\s*city)?)$/.test(tail)) break;
+    parts.pop();
+  }
+  const withoutWard = parts.filter((part) => !/\b(?:phuong|ward)\b/.test(normalize(part)));
+  const concise = (withoutWard.length ? withoutWard : parts).slice(-2);
+  return concise.join(", ") || original;
 }
 
 function mapDirectionsHref(address) {
   const trimmed = String(address || "").trim();
   if (!trimmed) return "";
   return `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(trimmed)}`;
+}
+
+function productForOrderItem(item) {
+  return state.products.find((product) => product.id === item.productId)
+    || state.products.find((product) => product.productName === item.productName)
+    || item.productName;
+}
+
+function renderOrderItemThumbs(order) {
+  const items = productLinesForOrder(order.id);
+  if (!items.length) return "";
+  const thumbs = items.map((item) => {
+    const name = String(item.productName || "Product");
+    const quantity = Number(item.quantity || 0);
+    const imageUrl = productImageUrl(productForOrderItem(item));
+    if (!imageUrl) return "";
+    const title = quantity > 1 ? `${name} ×${quantity}` : name;
+    return `
+      <span class="map-order-product" title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}">
+        <img class="map-order-product-image" src="${escapeHtml(imageUrl)}" alt="${escapeHtml(name)}" loading="lazy">
+        ${quantity > 1 ? `<span class="map-order-product-badge">×${quantity}</span>` : ""}
+      </span>`;
+  }).join("");
+  return thumbs ? `<div class="map-order-thumbs" aria-label="Ordered items">${thumbs}</div>` : "";
+}
+
+function deliveryPosition(order) {
+  const location = order?.deliveryLocation;
+  const rawLat = location?.lat ?? location?.latitude;
+  const rawLng = location?.lng ?? location?.longitude;
+  if (rawLat == null || rawLng == null) return null;
+  const lat = Number(rawLat);
+  const lng = Number(rawLng);
+  return Number.isFinite(lat) && Number.isFinite(lng) ? { lat, lng } : null;
+}
+
+function renderOrderMiniMap(order) {
+  const position = deliveryPosition(order);
+  if (!position) return "";
+  return `
+    <button class="order-mini-map" type="button"
+      data-open-map="${escapeHtml(order.id)}"
+      data-mini-map-lat="${position.lat}"
+      data-mini-map-lng="${position.lng}"
+      aria-label="Enlarge delivery map for ${escapeHtml(order.customerName || "customer")}">
+      <span class="order-mini-map-canvas" aria-hidden="true"></span>
+      <span class="order-mini-map-label">Tap to enlarge</span>
+    </button>`;
+}
+
+async function hydrateOrderMiniMap(button) {
+  if (button.dataset.mapReady === "true") return;
+  button.dataset.mapReady = "true";
+  try {
+    await loadMapsSdk();
+    if (!button.isConnected) return;
+    const position = {
+      lat: Number(button.dataset.miniMapLat),
+      lng: Number(button.dataset.miniMapLng)
+    };
+    const map = new google.maps.Map(button.querySelector(".order-mini-map-canvas"), {
+      center: position,
+      zoom: 12,
+      disableDefaultUI: true,
+      clickableIcons: false,
+      gestureHandling: "none",
+      keyboardShortcuts: false
+    });
+    new google.maps.Marker({ map, position });
+  } catch (error) {
+    button.classList.add("is-unavailable");
+    button.title = error.message || String(error);
+  }
+}
+
+function initializeOrderMiniMaps(board) {
+  if (orderMiniMapObserver) orderMiniMapObserver.disconnect();
+  const previews = Array.from(board.querySelectorAll("[data-mini-map-lat]"));
+  if (!previews.length) return;
+  if (!("IntersectionObserver" in window)) {
+    previews.forEach(hydrateOrderMiniMap);
+    return;
+  }
+  orderMiniMapObserver = new IntersectionObserver((entries, observer) => {
+    entries.forEach((entry) => {
+      if (!entry.isIntersecting) return;
+      observer.unobserve(entry.target);
+      hydrateOrderMiniMap(entry.target);
+    });
+  }, { rootMargin: "180px 0px" });
+  previews.forEach((button) => orderMiniMapObserver.observe(button));
+}
+
+async function openOrderMap(order) {
+  const dialog = document.getElementById("order-map-dialog");
+  const status = document.getElementById("order-map-status");
+  const address = String(order.address || "").trim();
+  document.getElementById("order-map-customer").textContent = order.customerName || "Customer";
+  document.getElementById("order-map-address").textContent = address || "No address on this order";
+  const directions = document.getElementById("order-map-directions");
+  directions.hidden = true;
+  status.textContent = "Loading map...";
+  dialog.showModal();
+  try {
+    await loadMapsSdk();
+    const location = await resolveDeliveryLocation(order, order.customerId);
+    if (!location) throw new Error("No confirmed pin was found for this address.");
+    const position = { lat: Number(location.lat), lng: Number(location.lng) };
+    orderMap = orderMap || new google.maps.Map(document.getElementById("order-map-canvas"), {
+      center: position,
+      zoom: 17,
+      streetViewControl: false,
+      mapTypeControl: false,
+      fullscreenControl: true
+    });
+    orderMap.setCenter(position);
+    orderMap.setZoom(17);
+    google.maps.event.trigger(orderMap, "resize");
+    if (orderMapMarker) orderMapMarker.setMap(null);
+    orderMapMarker = new google.maps.Marker({
+      map: orderMap,
+      position,
+      title: order.customerName || address || "Delivery location"
+    });
+    directions.href = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(`${position.lat},${position.lng}`)}`;
+    directions.hidden = false;
+    status.textContent = location.formattedAddress || "Confirmed delivery pin";
+  } catch (error) {
+    status.textContent = error.message || String(error);
+  }
 }
 
 // Proof photos attached to this order's payments. Reads state.payments, which
@@ -676,12 +1025,24 @@ function renderProofThumbs(order) {
   return `
     <div class="proof-thumbs">
       ${proofs.map((p) => `
-        <a href="${escapeHtml(p.proofUrl)}" target="_blank" rel="noopener" title="Payment proof — ${escapeHtml(formatCurrency(p.amount))}">
+        <button class="ghost" type="button" data-proof-preview="${escapeHtml(p.proofUrl)}" data-proof-amount="${escapeHtml(formatCurrency(p.amount))}" style="padding:0;border:0;background:transparent" title="Preview payment proof — ${escapeHtml(formatCurrency(p.amount))}">
           <img src="${escapeHtml(p.proofUrl)}" alt="Payment proof for ${escapeHtml(order.id)}" loading="lazy">
-        </a>
+        </button>
       `).join("")}
     </div>
   `;
+}
+
+function openProofPreview(button) {
+  const url = button.dataset.proofPreview;
+  if (!url) return;
+  const dialog = document.getElementById("proof-preview-dialog");
+  const image = document.getElementById("proof-preview-image");
+  const link = document.getElementById("proof-preview-new-tab");
+  document.getElementById("proof-preview-title").textContent = `Payment proof · ${button.dataset.proofAmount || ""}`;
+  image.src = url;
+  link.href = url;
+  dialog.showModal();
 }
 
 function renderOrderCompact(order) {
@@ -699,22 +1060,29 @@ function renderOrderCompact(order) {
     `
     : "";
   const address = order.address || "";
+  const displayAddress = compactDashboardAddress(address);
+  const miniMap = renderOrderMiniMap(order);
   const driver = driverName(order.assignedDriverId);
-  const orderIdLink = `<a class="muted" style="font-family:monospace;font-size:11px" href="./order.html?id=${encodeURIComponent(order.id)}">${escapeHtml(order.id)}</a>`;
+  const orderIdLink = `<a class="order-id-link" href="./order.html?id=${encodeURIComponent(order.id)}" title="Open order ${escapeHtml(order.id)}">${escapeHtml(order.id)}</a>`;
   const pickupBadge = state.customersById?.[order.customerId]?.emptiesPickupRequested === true
     ? `<span class="badge" title="Requested from the customer's account page" style="background:rgba(11,122,99,0.14);color:#0b7a63;font-weight:700">♻ Pick up empties</span>`
     : "";
+  const deliveryTiming = openOrderTiming(order, todayKey());
   return `
-    <div class="compact-order">
+    <div class="compact-order" data-order-card="${escapeHtml(order.id)}">
       <div class="top">
         <div class="who">${nameCell}</div>
         <span class="badge status-${escapeHtml(order.status)}">${escapeHtml(order.status)}</span>
       </div>
+      <div class="order-delivery-timing ${deliveryTiming.overdue ? "is-overdue" : ""}">${escapeHtml(deliveryTiming.label)}</div>
       ${pickupBadge ? `<div class="where">${pickupBadge}</div>` : ""}
       <div class="where">${orderIdLink}</div>
-      ${address ? `<div class="where">${escapeHtml(address)}</div>` : ""}
-      <div class="where">${escapeHtml(driver)} · ${formatCurrency(order.subtotal + order.depositTotal)}</div>
+      ${address ? `<div class="where order-address-row"><span>${escapeHtml(displayAddress)}</span>${miniMap ? "" : `<button class="ghost" type="button" data-open-map="${escapeHtml(order.id)}">Open map</button>`}</div>` : ""}
+      ${miniMap}
+      ${renderOrderItemThumbs(order)}
+      <div class="where order-total-line"><span>${escapeHtml(driver)}</span><strong>${formatCurrency(order.subtotal + order.depositTotal)}</strong></div>
       ${renderProofThumbs(order)}
+      ${renderImportantNote(order, "order-important-note")}
       ${cancellationBanner}
       <div class="compact-actions">
         ${cancellationActions}
@@ -724,14 +1092,14 @@ function renderOrderCompact(order) {
   `;
 }
 
-function renderStatusFilter(todayOrders) {
+function renderStatusFilter(orders) {
   const bar = document.getElementById("order-status-filter");
   if (!bar) return;
   if (!STATUS_FILTERS.some((f) => f.key === state.statusFilter)) {
     state.statusFilter = "all";
   }
   bar.innerHTML = STATUS_FILTERS.map((f) => {
-    const count = todayOrders.filter(f.match).length;
+    const count = orders.filter(f.match).length;
     const isActive = f.key === state.statusFilter;
     return `<button type="button" data-filter="${f.key}" class="${isActive ? "active" : ""}">${escapeHtml(f.label)} (${count})</button>`;
   }).join("");
@@ -743,28 +1111,52 @@ function renderStatusFilter(todayOrders) {
   });
 }
 
+function renderTimingFilter(orders) {
+  const select = document.getElementById("order-timing-filter");
+  if (!select) return;
+  if (!OPEN_ORDER_TIMING_FILTERS.some((filter) => filter.key === state.timingFilter)) {
+    state.timingFilter = "all";
+  }
+  const today = todayKey();
+  select.innerHTML = OPEN_ORDER_TIMING_FILTERS.map((filter) => {
+    const count = filter.key === "all"
+      ? orders.length
+      : orders.filter((order) => openOrderGroupKey(order, today) === filter.key).length;
+    return `<option value="${filter.key}">${escapeHtml(filter.label)} (${count})</option>`;
+  }).join("");
+  select.value = state.timingFilter;
+}
+
 function renderOrderBoard() {
   const board = document.getElementById("today-board");
-  const todayOrders = state.orders
-    .filter((order) => order.deliveryDate === state.selectedDate)
-    .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+  const activeOrders = state.orders.filter((order) => OPEN_ORDER_STATUSES.includes(order.status));
+  const count = document.getElementById("active-orders-count");
+  if (count) count.textContent = String(activeOrders.length);
 
-  renderStatusFilter(todayOrders);
+  const activeFilter = STATUS_FILTERS.find((f) => f.key === state.statusFilter) || STATUS_FILTERS[0];
+  renderStatusFilter(activeOrders);
+  renderTimingFilter(activeOrders.filter(activeFilter.match));
 
-  if (!todayOrders.length) {
-    board.innerHTML = `<div class="card"><strong>No orders for ${escapeHtml(state.selectedDate)}</strong><div class="muted">Website orders land here. Use the Customers page to look up a customer and create an order from their profile.</div></div>`;
+  if (!activeOrders.length) {
+    board.innerHTML = `<div class="card"><strong>All caught up</strong><div class="muted">There are no unfinished orders. Delivered and cancelled orders remain available on the Orders page.</div></div>`;
     return;
   }
 
-  const activeFilter = STATUS_FILTERS.find((f) => f.key === state.statusFilter) || STATUS_FILTERS[0];
-  const visibleOrders = todayOrders.filter(activeFilter.match);
+  const timingFilter = OPEN_ORDER_TIMING_FILTERS.find((filter) => filter.key === state.timingFilter)
+    || OPEN_ORDER_TIMING_FILTERS[0];
+  const visibleOrders = filterOpenOrdersByTiming(
+    activeOrders.filter(activeFilter.match),
+    todayKey(),
+    timingFilter.key
+  );
 
   if (!visibleOrders.length) {
-    board.innerHTML = `<div class="card"><strong>No orders in “${escapeHtml(activeFilter.label)}”</strong><div class="muted">Try a different filter above.</div></div>`;
+    board.innerHTML = `<div class="card"><strong>No matching active orders</strong><div class="muted">No ${escapeHtml(activeFilter.label.toLowerCase())} orders match “${escapeHtml(timingFilter.label)}”. Try a different filter.</div></div>`;
     return;
   }
 
   board.innerHTML = visibleOrders.map(renderOrderCompact).join("");
+  initializeOrderMiniMaps(board);
 
   board.querySelectorAll("[data-approve]").forEach((button) => {
     button.addEventListener("click", async () => {
@@ -807,6 +1199,26 @@ function renderOrderBoard() {
         setStatus(error.message || String(error), true);
       }
     });
+  });
+  board.querySelectorAll("[data-return-assignment]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      if (!confirm("Return this delivery to the assignment stage? The assigned driver will be kept.")) return;
+      try {
+        await returnOrderToAssignment(button.dataset.returnAssignment);
+        await refreshDashboard();
+      } catch (error) {
+        setStatus(error.message || String(error), true);
+      }
+    });
+  });
+  board.querySelectorAll("[data-open-map]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const order = state.orders.find((row) => row.id === button.dataset.openMap);
+      if (order) openOrderMap(order);
+    });
+  });
+  board.querySelectorAll("[data-proof-preview]").forEach((button) => {
+    button.addEventListener("click", () => openProofPreview(button));
   });
   board.querySelectorAll("[data-edit]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -962,6 +1374,7 @@ async function openEditDialog(order) {
   document.getElementById("edit-customer-name").value = order.customerName || "";
   document.getElementById("edit-phone").value = order.phone || "";
   document.getElementById("edit-address").value = order.address || "";
+  editAddressController.reset(order);
   document.getElementById("edit-delivery-date").value = order.deliveryDate || "";
   setDeliveryWindow(document.getElementById("edit-delivery-window"), order.deliveryWindow || "");
   document.getElementById("edit-notes").value = order.notes || "";
@@ -1012,20 +1425,35 @@ async function saveEditedOrder(event) {
     return;
   }
 
+  const order = state.orders.find((row) => row.id === orderId);
+  const newAddress = document.getElementById("edit-address").value.trim();
+  const oldAddress = String(order?.address || "").trim();
+  const addressChanged = newAddress !== oldAddress;
+  const confirmedEditLocation = editAddressController.confirmedFor(newAddress);
+  const locationReconfirmed = editAddressController.hasFreshConfirmationFor(newAddress);
+  // A changed address must be re-verified on the map before it can be saved —
+  // no silent geocode. The confirmed pin has to belong to the address as it
+  // now reads in the field, so editing after confirming forces another check.
+  if (addressChanged && !confirmedEditLocation) {
+    if (statusNode) {
+      statusNode.textContent = "Confirm the new address on Google Maps before saving.";
+      statusNode.style.color = "var(--danger, #b3261e)";
+    }
+    editAddressController.setStatus("Find the new address on the map and confirm the pin.", true);
+    document.getElementById("edit-address-verify")?.focus();
+    return;
+  }
+
   await withSubmitLock(event, async () => {
     try {
       if (statusNode) statusNode.textContent = "Saving...";
 
-      const order = state.orders.find((row) => row.id === orderId);
       const amountPaid = Number(order?.amountPaid || 0);
       const totals = computeEditTotals();
       const balanceDue = totals.subtotal + totals.depositTotal - amountPaid;
 
-      const newAddress = document.getElementById("edit-address").value.trim();
-      const oldAddress = String(order?.address || "").trim();
-      const addressChanged = newAddress !== oldAddress;
-      const deliveryLocationPatch = addressChanged
-        ? { deliveryLocation: await resolveDeliveryLocation({ ...order, address: newAddress }, order?.customerId) }
+      const deliveryLocationPatch = (addressChanged || locationReconfirmed)
+        ? { deliveryLocation: confirmedEditLocation }
         : {};
 
       const batch = writeBatch(db);
@@ -1144,7 +1572,9 @@ function humanizeContainerType(key) {
 }
 
 const deliveryDialogState = {
-  heldContainers: {}
+  heldContainers: {},
+  balanceDue: 0,
+  amountOverridden: false
 };
 
 async function loadHeldContainersForCustomer(customerId) {
@@ -1169,9 +1599,12 @@ async function loadHeldContainersForCustomer(customerId) {
       byType[type].amount -= amount;
     }
   });
+  // Types that net to a clean zero are dropped; negatives are deliberately kept
+  // so renderHeldContainers can flag them. Filtering them out here is what let a
+  // broken balance masquerade as "nothing on file".
   const result = {};
   Object.entries(byType).forEach(([type, data]) => {
-    if (data.qty > 0) {
+    if (data.qty !== 0 || Math.abs(data.amount) >= 1) {
       result[type] = {
         qty: data.qty,
         outstandingAmount: data.amount,
@@ -1182,17 +1615,45 @@ async function loadHeldContainersForCustomer(customerId) {
   return result;
 }
 
+// The dialog only ever offers returns and write-offs against containers the
+// customer is genuinely holding, so every consumer splits the map the same way.
+function heldTypesFrom(held) {
+  return Object.keys(held).filter((type) => Number(held[type]?.qty || 0) > 0);
+}
+
+function brokenBalancesFrom(held) {
+  return Object.entries(held)
+    .filter(([, info]) => isBrokenDepositBalance(info.qty, info.outstandingAmount))
+    .map(([type, info]) => ({ type, qty: Number(info.qty || 0), amount: Number(info.outstandingAmount || 0) }));
+}
+
+function brokenBalanceWarningHtml(broken) {
+  if (!broken.length) return "";
+  const lines = broken.map((row) => `<li><strong>${escapeHtml(humanizeContainerType(row.type))}</strong> — ${escapeHtml(describeDepositBalanceProblem(row.qty, row.amount))}</li>`).join("");
+  return `<div class="card" style="border:2px solid var(--danger,#b3261e)">
+    <strong style="color:var(--danger,#b3261e)">This customer's container record is wrong</strong>
+    <ul class="muted" style="margin:6px 0 0;padding-left:18px">${lines}</ul>
+    <div class="muted top-gap">Deliver and take payment as normal — but don't record returns or write-offs against this customer until it's corrected, or the next deposit they pay will vanish into the gap. Check their deposit history on the customer page.</div>
+  </div>`;
+}
+
 function renderHeldContainers(held) {
   const container = document.getElementById("delivery-containers-list");
   const help = document.getElementById("delivery-containers-help");
-  const types = Object.keys(held);
+  const types = heldTypesFrom(held);
+  const warning = brokenBalanceWarningHtml(brokenBalancesFrom(held));
   if (!types.length) {
-    if (help) help.textContent = "This customer has no containers on file. Any return here would be a fresh entry — use loss report if a container needs writing off.";
-    container.innerHTML = "";
+    if (help) {
+      help.textContent = warning
+        ? "Nothing can be returned here until the record below is corrected."
+        : "This customer isn't holding any containers, so there's nothing to return and nothing to write off. If they hand one back anyway, take it — but there's no deposit of theirs to give back, so note it on the order instead.";
+    }
+    container.innerHTML = warning;
+    recalcAdminDeliveryCod();
     return;
   }
   if (help) help.textContent = "Enter qty returned this trip and pick how to handle the deposit. Leave qty 0 for containers that stayed with the customer.";
-  container.innerHTML = types.map((type) => {
+  container.innerHTML = warning + types.map((type) => {
     const info = held[type];
     return `
       <div class="card">
@@ -1207,7 +1668,7 @@ function renderHeldContainers(held) {
               <input type="number" data-return-qty="${escapeHtml(type)}" min="0" max="${Number(info.qty || 0)}" step="1" value="0" style="width:64px">
             </label>
             <select data-return-handling="${escapeHtml(type)}">
-              <option value="credit">Credit next order</option>
+              <option value="credit">Apply to this order</option>
               <option value="refund">Refund cash now</option>
               <option value="keep">Owner will decide later</option>
             </select>
@@ -1216,15 +1677,98 @@ function renderHeldContainers(held) {
       </div>
     `;
   }).join("");
+  container.querySelectorAll("[data-return-qty], [data-return-handling]").forEach((node) => {
+    node.addEventListener("input", recalcAdminDeliveryCod);
+    node.addEventListener("change", recalcAdminDeliveryCod);
+  });
+  recalcAdminDeliveryCod();
 }
 
+function collectAdminDeliveryReturns() {
+  const returns = [];
+  document.querySelectorAll("[data-return-qty]").forEach((input) => {
+    const type = input.dataset.returnQty;
+    const returnedQty = Number(input.value || 0);
+    if (returnedQty <= 0) return;
+    const handling = document.querySelector(`[data-return-handling="${type}"]`)?.value || "keep";
+    if (handling === "keep") return;
+    // Clamp to what they actually hold. The input carries a max, but a balance
+    // can only ever be pushed below zero by a write that outran the ledger, so
+    // the number is re-checked here rather than trusted from the DOM.
+    const heldQty = Number(deliveryDialogState.heldContainers[type]?.qty || 0);
+    if (heldQty <= 0) return;
+    returns.push({
+      type,
+      returnedQty: Math.min(returnedQty, heldQty),
+      handling,
+      depositPerUnit: deliveryDialogState.heldContainers[type]?.depositPerUnit || 0
+    });
+  });
+  return returns;
+}
+
+function recalcAdminDeliveryCod() {
+  const returns = collectAdminDeliveryReturns();
+  const creditTotal = returns.filter((r) => r.handling === "credit").reduce((sum, r) => sum + r.returnedQty * r.depositPerUnit, 0);
+  const refundTotal = returns.filter((r) => r.handling === "refund").reduce((sum, r) => sum + r.returnedQty * r.depositPerUnit, 0);
+  const due = Number(deliveryDialogState.balanceDue || 0);
+  const cashToCollect = Math.max(0, due - creditTotal);
+  const amountInput = document.getElementById("delivery-payment-amount");
+  if (!deliveryDialogState.amountOverridden && amountInput) amountInput.value = cashToCollect;
+  const collected = document.querySelector('input[name="collected"]:checked')?.value === "collected";
+  const cashPaid = collected ? Number(amountInput?.value || 0) : 0;
+  const overCredit = Math.min(creditTotal, Math.max(0, cashPaid + creditTotal - due));
+  const summary = document.getElementById("delivery-cod-summary");
+  if (summary && (creditTotal > 0 || refundTotal > 0)) {
+    const lines = [`<div><span>Order due</span><strong>${escapeHtml(formatCurrency(due))}</strong></div>`];
+    if (creditTotal > 0) lines.push(`<div><span>− Deposit credit applied</span><strong>−${escapeHtml(formatCurrency(creditTotal))}</strong></div>`);
+    lines.push(`<div class="delivery-cod-total"><span>Cash to collect</span><strong>${escapeHtml(formatCurrency(cashToCollect))}</strong></div>`);
+    if (refundTotal > 0) lines.push(`<div><span>Cash to refund (separate)</span><strong>${escapeHtml(formatCurrency(refundTotal))}</strong></div>`);
+    if (overCredit > 0) lines.push(`<div><span class="muted" style="grid-column:1/-1">Choose below whether to refund the ${escapeHtml(formatCurrency(overCredit))} excess or carry it forward.</span></div>`);
+    summary.innerHTML = lines.join("");
+    summary.classList.remove("hidden");
+  } else if (summary) {
+    summary.innerHTML = "";
+    summary.classList.add("hidden");
+  }
+  // Photo is mandatory whenever a container physically changed hands.
+  document.getElementById("delivery-return-proof-field")?.classList.toggle("hidden", returns.length === 0);
+  document.getElementById("delivery-overcredit-field")?.classList.toggle("hidden", overCredit <= 0);
+  const amountNode = document.getElementById("delivery-overcredit-amount");
+  if (amountNode) amountNode.textContent = formatCurrency(overCredit);
+}
+
+// Only containers the customer is actually holding can be written off. Listing
+// every product type here is what allowed a loss report against a customer who
+// held nothing — a 0 VND forfeit that drove their balance below zero.
 function populateLossTypeSelect() {
   const select = document.getElementById("delivery-loss-type");
   if (!select) return;
-  const heldTypes = Object.keys(deliveryDialogState.heldContainers);
-  const productTypes = state.products.map((p) => p.containerType).filter(Boolean);
-  const allTypes = Array.from(new Set([...heldTypes, ...productTypes]));
-  select.innerHTML = allTypes.map((t) => `<option value="${escapeHtml(t)}">${escapeHtml(humanizeContainerType(t))}</option>`).join("");
+  const held = deliveryDialogState.heldContainers;
+  const heldTypes = heldTypesFrom(held);
+  select.innerHTML = heldTypes.map((t) => `<option value="${escapeHtml(t)}">${escapeHtml(humanizeContainerType(t))} (${Number(held[t].qty)} held)</option>`).join("");
+  select.onchange = syncLossQtyMax;
+  const nothingToWriteOff = heldTypes.length === 0;
+  const checkbox = document.getElementById("delivery-loss-checkbox");
+  if (checkbox) {
+    checkbox.disabled = nothingToWriteOff;
+    if (nothingToWriteOff) checkbox.checked = false;
+  }
+  const help = document.getElementById("delivery-loss-help");
+  if (help) help.textContent = nothingToWriteOff ? "Nothing to write off — this customer has no containers on file." : "";
+  syncLossQtyMax();
+  toggleLossFields();
+}
+
+// Keeps the qty ceiling in step with the selected type, so five jugs can't be
+// written off against a customer holding two.
+function syncLossQtyMax() {
+  const select = document.getElementById("delivery-loss-type");
+  const qtyInput = document.getElementById("delivery-loss-qty");
+  if (!select || !qtyInput) return;
+  const heldQty = Number(deliveryDialogState.heldContainers[select.value]?.qty || 0);
+  qtyInput.max = heldQty > 0 ? heldQty : 1;
+  if (Number(qtyInput.value || 0) > heldQty) qtyInput.value = heldQty > 0 ? heldQty : 1;
 }
 
 function toggleLossFields() {
@@ -1267,6 +1811,21 @@ async function openDeliveryPaymentDialog(order) {
   // next order's payment silently inherits the previous order's proof photo.
   const proofInput = document.getElementById("delivery-payment-proof");
   if (proofInput) proofInput.value = "";
+  // Same trap for the container-return photo: a stale selection here would
+  // attach the previous order's empties as proof for this one.
+  const returnProofInput = document.getElementById("delivery-return-proof");
+  if (returnProofInput) returnProofInput.value = "";
+  // Same trap for the written alternative: last order's explanation must not
+  // become this order's proof.
+  const returnNoteInput = document.getElementById("delivery-return-note");
+  if (returnNoteInput) returnNoteInput.value = "";
+  document.getElementById("delivery-return-proof-field")?.classList.add("hidden");
+  document.getElementById("delivery-cod-summary")?.classList.add("hidden");
+  document.getElementById("delivery-overcredit-field")?.classList.add("hidden");
+  const carryRadio = document.querySelector('input[name="delivery-overcredit"][value="carry"]');
+  if (carryRadio) carryRadio.checked = true;
+  deliveryDialogState.balanceDue = Number(order.balanceDue || 0);
+  deliveryDialogState.amountOverridden = false;
   document.getElementById("delivery-deferral-reason").value = "customer_said_next_time";
   document.getElementById("delivery-follow-up").value = daysFromToday(state.thresholds.followUpDays);
   document.getElementById("delivery-deferral-notes").value = "";
@@ -1365,30 +1924,70 @@ async function saveDeliveryPayment(event) {
     };
   }
 
-  const containerReturns = [];
-  document.querySelectorAll("[data-return-qty]").forEach((input) => {
-    const type = input.dataset.returnQty;
-    const returnedQty = Number(input.value || 0);
-    if (returnedQty <= 0) return;
-    const handlingSelect = document.querySelector(`[data-return-handling="${type}"]`);
-    const handling = handlingSelect ? handlingSelect.value : "keep";
-    if (handling === "keep") return;
-    const held = deliveryDialogState.heldContainers[type];
-    const depositPerUnit = held ? held.depositPerUnit : 0;
-    containerReturns.push({ type, returnedQty, handling, depositPerUnit });
-  });
+  const containerReturns = collectAdminDeliveryReturns();
+  const overCreditChoice = document.querySelector('input[name="delivery-overcredit"]:checked')?.value || "carry";
 
+  // A container that physically changed hands must leave a record before the
+  // order can close — a credit/refund with no account of it is exactly how a
+  // deposit goes missing (driver credits it but forgets to take the empty).
+  // Photo OR written note, per containerReturnProofProblem: a photo of an empty
+  // floor proves nothing, so the note is a real alternative rather than a lesser
+  // one. Mirrors orderApp.js::saveDeliveryPayment via the shared rule.
+  const returnProofInput = document.getElementById("delivery-return-proof");
+  const returnProofFile = returnProofInput && returnProofInput.files && returnProofInput.files[0]
+    ? returnProofInput.files[0]
+    : null;
+  const returnNote = String(document.getElementById("delivery-return-note")?.value || "").trim();
+  if (containerReturns.length > 0) {
+    const proofProblem = containerReturnProofProblem({ hasPhoto: !!returnProofFile, note: returnNote });
+    if (proofProblem) {
+      if (statusNode) {
+        statusNode.textContent = proofProblem;
+        statusNode.style.color = "var(--danger, #b3261e)";
+      }
+      return;
+    }
+    const problem = returnProofFile ? validateProofFile(returnProofFile) : null;
+    if (problem) {
+      if (statusNode) {
+        statusNode.textContent = problem;
+        statusNode.style.color = "var(--danger, #b3261e)";
+      }
+      return;
+    }
+  }
+  const returnProofType = containerReturns.length > 0
+    ? containerReturnProofType({ hasPhoto: !!returnProofFile, note: returnNote })
+    : null;
+  const returnProofNote = containerReturns.length > 0 && returnNote ? returnNote : null;
+
+  // A write-off has to come out of a balance that exists. Without these guards a
+  // loss report against a customer holding nothing books a 0 VND forfeit and
+  // leaves their ledger below zero, where it silently swallows the next real
+  // deposit they pay.
   const lossCheckbox = document.getElementById("delivery-loss-checkbox");
   let lossReport = null;
   if (lossCheckbox && lossCheckbox.checked) {
     const lossType = document.getElementById("delivery-loss-type").value;
     const lossQty = Number(document.getElementById("delivery-loss-qty").value || 0);
     const lossNote = document.getElementById("delivery-loss-note").value.trim() || null;
-    if (lossQty > 0 && lossType) {
-      const held = deliveryDialogState.heldContainers[lossType];
-      const depositPerUnit = held ? held.depositPerUnit : 0;
-      lossReport = { lossType, lossQty, depositPerUnit, lossNote };
+    const held = deliveryDialogState.heldContainers[lossType];
+    const heldQty = Number(held?.qty || 0);
+    const reject = (message) => {
+      if (statusNode) {
+        statusNode.textContent = message;
+        statusNode.style.color = "var(--danger, #b3261e)";
+      }
+    };
+    if (!lossType || heldQty <= 0) {
+      reject("This customer has no containers on file, so there is nothing to report lost.");
+      return;
     }
+    if (lossQty <= 0 || lossQty > heldQty) {
+      reject(`Qty lost must be between 1 and ${heldQty}.`);
+      return;
+    }
+    lossReport = { lossType, lossQty, depositPerUnit: held.depositPerUnit || 0, lossNote };
   }
 
   await withSubmitLock(event, async () => {
@@ -1418,6 +2017,16 @@ async function saveDeliveryPayment(event) {
         proofUrl = proof.downloadUrl;
         if (statusNode) statusNode.textContent = "Saving...";
       }
+      // Same pre-transaction reasoning as the payment proof above: uploading
+      // inside the closure would duplicate on retry, and a failed upload must
+      // abort the save rather than book a credit whose proof never landed.
+      let returnProofDocumentId = null;
+      if (containerReturns.length > 0 && returnProofFile) {
+        if (statusNode) statusNode.textContent = "Uploading container photo…";
+        const returnProof = await uploadContainerReturnProof({ orderId, file: returnProofFile });
+        returnProofDocumentId = returnProof.documentId;
+        if (statusNode) statusNode.textContent = "Saving...";
+      }
       // The transaction re-reads the order every retry, so newAmountPaid is
       // always computed against the freshest server value — a concurrent tab
       // recording a payment won't be silently overwritten.
@@ -1426,12 +2035,35 @@ async function saveDeliveryPayment(event) {
         const orderSnap = await tx.get(orderRef);
         if (!orderSnap.exists()) throw new Error("Order no longer exists.");
         const order = orderSnap.data();
+        // Guard the non-idempotent amountPaid increment: a delivered order must
+        // not be re-run through this dialog. The action is only offered while
+        // out_for_delivery, but a stale tab could still submit — and without this
+        // the fresh-id cash payment would be created a second time and double-
+        // count. Mirrors orderApp.js::saveDeliveryPayment. It also keeps the
+        // deterministic `${orderId}-deposit-credit` line create-only, which the
+        // append-only payments rule relies on.
+        if (order.status === "delivered") throw new Error("This order is already delivered.");
         const receivedBy = auth.currentUser ? auth.currentUser.email : "owner";
+        const total = Number(order.subtotal || 0) + Number(order.depositTotal || 0);
+
+        // Returned deposits handled as a credit reduce what's owed on THIS order.
+        // Modelled as a non-cash `deposit_credit` payment so the balance formula
+        // and the nightly reconciliation (both sum payments) stay correct with no
+        // server change. A refund is cash handed back — a deposit event only, it
+        // never touches the order balance. Mirrors orderApp.js::saveDeliveryPayment,
+        // which is the source of truth for this money math.
+        const creditTotal = containerReturns
+          .filter((r) => r.handling === "credit")
+          .reduce((s, r) => s + r.returnedQty * r.depositPerUnit, 0);
+        const cashPaid = paymentSnapshot.collected ? paymentSnapshot.amount : 0;
+        const grossAmountPaid = Number(order.amountPaid || 0) + cashPaid + creditTotal;
+        const grossBalance = total - grossAmountPaid;
+        const refundableExcess = Math.min(creditTotal, Math.max(0, -grossBalance));
+        const excessRefund = overCreditChoice === "refund" ? refundableExcess : 0;
+        const newAmountPaid = grossAmountPaid - excessRefund;
+        const newBalance = total - newAmountPaid;
 
         if (paymentSnapshot.collected) {
-          const newAmountPaid = Number(order.amountPaid || 0) + paymentSnapshot.amount;
-          const total = Number(order.subtotal || 0) + Number(order.depositTotal || 0);
-          const newBalance = total - newAmountPaid;
           tx.set(doc(db, "payments", paymentId), {
             orderId,
             customerId: order.customerId || null,
@@ -1446,14 +2078,6 @@ async function saveDeliveryPayment(event) {
             notes: "Collected at delivery",
             deferred: false,
             createdAt: now
-          });
-          tx.update(orderRef, {
-            status: "delivered",
-            deliveryPaymentEventId: paymentId,
-            amountPaid: newAmountPaid,
-            balanceDue: newBalance,
-            paymentStatus: paymentStatusFor(newAmountPaid, newBalance),
-            updatedAt: now
           });
         } else {
           tx.set(doc(db, "payments", paymentId), {
@@ -1473,18 +2097,89 @@ async function saveDeliveryPayment(event) {
             followUpBy: paymentSnapshot.followUpBy,
             createdAt: now
           });
-          tx.update(orderRef, {
-            status: "delivered",
-            deliveryPaymentEventId: paymentId,
-            followUpBy: paymentSnapshot.followUpBy,
-            updatedAt: now
+        }
+
+        // Deposit credit as its own payment line — deterministic id so a re-save
+        // overwrites rather than double-credits. Carries whichever proof was
+        // given; the note is spelled into `notes` when there is no photo, so a
+        // credit closed on someone's word is visible in payment history and on
+        // the invoice breakdown without anyone having to go looking for it.
+        if (creditTotal > 0) {
+          tx.set(doc(db, "payments", `${orderId}-deposit-credit`), {
+            orderId,
+            customerId: order.customerId || null,
+            authUid: order.authUid || null,
+            paymentDate: today,
+            method: "deposit_credit",
+            amount: creditTotal,
+            reference: null,
+            receivedBy,
+            proofDocumentId: returnProofDocumentId,
+            proofUrl: null,
+            proofType: returnProofType,
+            proofNote: returnProofNote,
+            notes: returnProofDocumentId
+              ? "Deposit credit from containers returned at delivery"
+              : `Deposit credit from containers returned at delivery — no photo, recorded on note: "${returnProofNote}"`,
+            deferred: false,
+            createdAt: now
           });
         }
+
+        if (excessRefund > 0) {
+          tx.set(doc(db, "payments", `${orderId}-deposit-excess-refund`), {
+            orderId,
+            customerId: order.customerId || null,
+            authUid: order.authUid || null,
+            paymentDate: today,
+            method: "deposit_refund",
+            amount: -excessRefund,
+            reference: null,
+            receivedBy,
+            proofDocumentId: returnProofDocumentId,
+            proofUrl: null,
+            proofType: returnProofType,
+            proofNote: returnProofNote,
+            notes: "Cash refund of excess returned-container deposit credit",
+            deferred: false,
+            createdAt: now
+          });
+        }
+
+        // Order money is now written on BOTH paths: a deferral that still returned
+        // containers reduces the balance instead of silently losing the credit when
+        // the customer later pays. For a pure deferral (no cash, no credit) these
+        // resolve to the order's existing values — a harmless no-op.
+        const orderUpdate = {
+          status: "delivered",
+          deliveryPaymentEventId: paymentId,
+          amountPaid: newAmountPaid,
+          balanceDue: newBalance,
+          paymentStatus: paymentStatusFor(newAmountPaid, newBalance),
+          depositOverCreditDisposition: refundableExcess > 0 ? overCreditChoice : null,
+          depositOverCreditAmount: refundableExcess,
+          updatedAt: now
+        };
+        if (!paymentSnapshot.collected) orderUpdate.followUpBy = paymentSnapshot.followUpBy;
+        tx.update(orderRef, orderUpdate);
 
         containerReturns.forEach((r) => {
           const amount = r.returnedQty * r.depositPerUnit;
           const eventType = r.handling === "refund" ? "refunded" : "credited";
-          tx.set(doc(db, "depositEvents", buildDepositEventId()), {
+          // Deterministic id per order+type keeps a re-save idempotent — same
+          // scheme as orderApp.js:saveDeliveryPayment. There is exactly one
+          // physical handover per order and container type, so a second save
+          // must overwrite that event, not append a duplicate the ledger would
+          // then count twice. A fresh id here made this path the only one that
+          // leaned entirely on the delivered-guard above.
+          // Unlike the `${orderId}-deposit-credit` payment line — /payments is
+          // append-only (`update, delete: if false`) so its fixed id is safe
+          // ONLY because the guard keeps it create-only — /depositEvents allows
+          // `update, delete: if isOwner()`, and both delivery dialogs are
+          // owner-gated, so overwriting is genuinely permitted here.
+          // The loss report below deliberately keeps a fresh id: repeat losses
+          // of the same type ARE separate events.
+          tx.set(doc(db, "depositEvents", `${orderId}-ret-${r.type}`), {
             orderId,
             customerId: order.customerId || null,
             authUid: order.authUid || null,
@@ -1493,8 +2188,10 @@ async function saveDeliveryPayment(event) {
             amount,
             eventType,
             eventDate: today,
-            linkedDocumentId: null,
-            notes: `Returned at delivery — ${r.handling === "refund" ? "refunded cash" : "credited to next order"}`,
+            linkedDocumentId: returnProofDocumentId,
+            proofType: returnProofType,
+            proofNote: returnProofNote,
+            notes: `Returned at delivery — ${r.handling === "refund" ? "refunded cash" : "applied to this order"}`,
             createdAt: now
           });
         });
@@ -1540,7 +2237,8 @@ async function saveDeliveryPayment(event) {
 }
 
 const invoiceState = {
-  currentDoc: null
+  currentCtx: null,
+  previousShare: null
 };
 
 async function loadBusinessSettings() {
@@ -1550,6 +2248,19 @@ async function loadBusinessSettings() {
     return businessDoc ? businessDoc.data() : {};
   } catch (_) {
     return {};
+  }
+}
+
+async function loadPreviousInvoiceShare(orderId) {
+  try {
+    const snap = await getDocs(query(collection(db, "documents"), where("entityId", "==", orderId)));
+    return snap.docs
+      .map((item) => ({ id: item.id, ...item.data() }))
+      .filter((item) => item.entityType === "order" && ["invoice", "order_confirmation"].includes(item.documentType))
+      .sort((a, b) => invoiceShareTime(b.uploadedAt) - invoiceShareTime(a.uploadedAt))[0] || null;
+  } catch (error) {
+    console.warn("Could not check previous invoice shares:", error);
+    return null;
   }
 }
 
@@ -1564,12 +2275,15 @@ async function openInvoiceDialog(order) {
   slot.innerHTML = `<div style="padding:24px;color:var(--muted);text-align:center">Loading invoice…</div>`;
   if (statusNode) statusNode.textContent = "";
   if (whatsappBtn) whatsappBtn.style.display = "none";
+  invoiceState.currentCtx = null;
+  invoiceState.previousShare = null;
   dialog.showModal();
 
   try {
-    const [settings, itemsSnap] = await Promise.all([
+    const [settings, itemsSnap, previousShare] = await Promise.all([
       loadBusinessSettings(),
-      getDocs(query(collection(db, "orderItems"), where("orderId", "==", order.id)))
+      getDocs(query(collection(db, "orderItems"), where("orderId", "==", order.id))),
+      loadPreviousInvoiceShare(order.id)
     ]);
     const items = itemsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
     const ctx = invoiceContext({ order, items, settings });
@@ -1577,6 +2291,7 @@ async function openInvoiceDialog(order) {
     await attachQrToPreview(ctx, slot);
 
     invoiceState.currentCtx = ctx;
+    invoiceState.previousShare = previousShare;
     downloadBtn.disabled = false;
     downloadBtn.dataset.orderId = order.id;
 
@@ -1605,6 +2320,41 @@ async function downloadInvoice() {
   }
 }
 
+function invoiceShareTime(value) {
+  const date = value && typeof value.toDate === "function" ? value.toDate() : new Date(value);
+  return Number.isNaN(date.getTime()) ? 0 : date.getTime();
+}
+
+function invoiceShareDate(value) {
+  const time = invoiceShareTime(value);
+  return time ? new Date(time).toLocaleString() : "an earlier time";
+}
+
+function confirmRepeatedInvoiceShare(ctx, nextChannel) {
+  const order = ctx?.order;
+  const previousAt = order?.invoiceLastSharedAt || invoiceState.previousShare?.uploadedAt;
+  if (!previousAt) return true;
+  const previousChannel = order.invoiceLastSharedChannel === "whatsapp"
+    ? " by WhatsApp"
+    : (order.invoiceLastSharedChannel === "email" ? " by Email" : "");
+  return window.confirm(
+    `Duplicate message warning\n\nThis invoice was already prepared for the customer${previousChannel} on ${invoiceShareDate(previousAt)}.\n\nSend it again via ${nextChannel}?`
+  );
+}
+
+async function recordInvoiceShare(ctx, channel) {
+  const sharedAt = new Date().toISOString();
+  await updateDoc(doc(db, "orders", ctx.order.id), {
+    invoiceLastSharedAt: serverTimestamp(),
+    invoiceLastSharedChannel: channel,
+    updatedAt: sharedAt
+  });
+  // Keep the open dialog in sync so a second channel click warns immediately,
+  // without waiting for the live order listener to deliver the server write.
+  ctx.order.invoiceLastSharedAt = sharedAt;
+  ctx.order.invoiceLastSharedChannel = channel;
+}
+
 async function emailInvoice() {
   const ctx = invoiceState.currentCtx;
   const statusNode = document.getElementById("invoice-status");
@@ -1613,10 +2363,12 @@ async function emailInvoice() {
     if (statusNode) statusNode.textContent = "No customer email on file.";
     return;
   }
+  if (!confirmRepeatedInvoiceShare(ctx, "Email")) return;
   await withSubmitLock(document.getElementById("invoice-email-button"), async () => {
     try {
       if (statusNode) statusNode.textContent = "Uploading PDF…";
       const { downloadUrl } = await ensureInvoicePdfUploaded(ctx);
+      await recordInvoiceShare(ctx, "email");
       window.location.href = buildEmailShare(ctx, downloadUrl);
       if (statusNode) statusNode.textContent = "Email opened with a link to the PDF. No attachment needed.";
     } catch (error) {
@@ -1633,6 +2385,7 @@ async function whatsappInvoice() {
     if (statusNode) statusNode.textContent = "No customer phone on file.";
     return;
   }
+  if (!confirmRepeatedInvoiceShare(ctx, "WhatsApp")) return;
   // The tab has to be opened synchronously inside the click handler — opening
   // it after the upload await makes it a popup and the browser blocks it.
   const tab = window.open("", "_blank", "noopener");
@@ -1640,6 +2393,7 @@ async function whatsappInvoice() {
     try {
       if (statusNode) statusNode.textContent = "Uploading PDF…";
       const { downloadUrl } = await ensureInvoicePdfUploaded(ctx);
+      await recordInvoiceShare(ctx, "whatsapp");
       const share = buildWhatsAppShare(ctx, downloadUrl);
       if (tab) {
         tab.location.href = share;
@@ -1676,14 +2430,23 @@ function chunkArray(arr, size) {
   return chunks;
 }
 
-async function refreshDashboard() {
+async function refreshDashboard(preloadedOpenOrders = null) {
   const date = state.selectedDate;
   setStatus("Loading Firestore data...");
 
-  state.orders = await loadCollection("orders", [where("deliveryDate", "==", date)]);
-  const dayPayments = await loadCollection("payments", [where("paymentDate", "==", date)]);
+  const [dayOrders, openOrders, dayPayments] = await Promise.all([
+    loadCollection("orders", [where("deliveryDate", "==", date)]),
+    Array.isArray(preloadedOpenOrders)
+      ? Promise.resolve(preloadedOpenOrders)
+      : loadCollection("orders", [where("status", "in", OPEN_ORDER_STATUSES)]),
+    loadCollection("payments", [where("paymentDate", "==", date)])
+  ]);
+  state.openOrders = openOrders;
+  const ordersById = new Map(dayOrders.map((order) => [order.id, order]));
+  openOrders.forEach((order) => ordersById.set(order.id, order));
+  state.orders = [...ordersById.values()];
 
-  const orderIds = state.orders.map((order) => order.id);
+  const orderIds = openOrders.map((order) => order.id);
   const items = [];
   const orderPayments = [];
   const deposits = [];
@@ -1708,12 +2471,11 @@ async function refreshDashboard() {
   state.orderItems = items;
   state.depositEvents = deposits;
 
-  // Join the customer docs for today's orders — currently only for the
+  // Join the customer docs for active orders — currently only for the
   // "pick up my empties" flag, which lives on the customer (intent isn't
-  // tied to one order). One read per unique customer on the board; a board
-  // day is a handful of customers, so no chunked query needed. Best-effort:
+  // tied to one order). One read per unique customer on the board. Best-effort:
   // a failed read just means no badge, never a broken board.
-  const uniqueCustomerIds = [...new Set(state.orders.map((o) => o.customerId).filter(Boolean))];
+  const uniqueCustomerIds = [...new Set(openOrders.map((o) => o.customerId).filter(Boolean))];
   const customerSnaps = await Promise.all(uniqueCustomerIds.map(async (id) => {
     try {
       const snap = await getDoc(doc(db, "customers", id));
@@ -1731,12 +2493,9 @@ async function refreshDashboard() {
 
 // --- Actionable order alerts ------------------------------------------------
 //
-// Deliberately NOT date-scoped, unlike everything else on this page. The board
-// only loads `deliveryDate == selectedDate`, but approval doesn't follow the
-// delivery date: an order placed this afternoon for tomorrow needs approving
-// now, and would never once appear on today's board. So this watches every
-// pending_approval order there is, and the toast carries the delivery date so
-// the owner can jump to the day it lives on.
+// The active board now spans every delivery date. This separate pending query
+// remains because notifications and the tab-title badge care specifically
+// about approval work, while the board also includes assignment and delivery.
 //
 // Owner-only, and cheap: the orders read rule already grants owners the whole
 // collection, and a single equality filter needs no composite index. This is
@@ -1746,6 +2505,7 @@ async function refreshDashboard() {
 const ALERT_BASE_TITLE = document.title;
 
 const pendingAlerts = {
+  openUnsub: null,
   unsub: null,
   seeded: false,
   count: 0,
@@ -1777,6 +2537,120 @@ function renderPendingBadge() {
     : ALERT_BASE_TITLE;
 }
 
+const OPEN_ORDER_FILTER_KEYS = {
+  pending_approval: "to_approve",
+  new: "to_assign",
+  assigned: "to_send",
+  out_for_delivery: "en_route"
+};
+
+function humanDeliveryDate(dateKey) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) return "Delivery date missing";
+  const date = new Date(`${dateKey}T00:00:00+07:00`);
+  return date.toLocaleDateString("en-GB", {
+    timeZone: "Asia/Ho_Chi_Minh",
+    weekday: "short",
+    day: "numeric",
+    month: "short"
+  });
+}
+
+function openOrderTiming(order, today) {
+  const dateKey = String(order.deliveryDate || "");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) {
+    return { label: "Needs delivery date", overdue: true };
+  }
+  if (dateKey === today) return { label: "Today", overdue: false };
+  const days = Math.round((Date.parse(`${dateKey}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 86400000);
+  if (days < 0) {
+    const overdueDays = Math.abs(days);
+    return {
+      label: `${overdueDays} day${overdueDays === 1 ? "" : "s"} overdue · ${humanDeliveryDate(dateKey)}`,
+      overdue: true
+    };
+  }
+  return { label: days === 1 ? "Tomorrow" : humanDeliveryDate(dateKey), overdue: false };
+}
+
+function findDashboardOrder(orderId) {
+  return state.openOrders.find((order) => order.id === orderId)
+    || state.orders.find((order) => order.id === orderId)
+    || null;
+}
+
+function openImportanceDialog(orderId) {
+  const order = findDashboardOrder(orderId);
+  if (!order) return;
+  const dialog = document.getElementById("importance-dialog");
+  const noteInput = document.getElementById("importance-note");
+  document.getElementById("importance-order-id").value = order.id;
+  document.getElementById("importance-order-label").textContent = `${order.customerName || "Unknown customer"} · ${order.id}`;
+  noteInput.value = order.important === true ? normalizeImportantNote(order.importantNote) : "";
+  noteInput.setCustomValidity("");
+  document.getElementById("importance-status").textContent = "";
+  document.getElementById("importance-clear-button").classList.toggle("hidden", order.important !== true);
+  dialog.showModal();
+  noteInput.focus();
+}
+
+function patchImportanceInState(orderId, important, importantNote) {
+  const patch = { important, importantNote };
+  state.openOrders = state.openOrders.map((order) => order.id === orderId ? { ...order, ...patch } : order);
+  state.orders = state.orders.map((order) => order.id === orderId ? { ...order, ...patch } : order);
+  renderOrderBoard();
+}
+
+async function saveImportantOrder(event) {
+  event.preventDefault();
+  const orderId = document.getElementById("importance-order-id").value;
+  const noteInput = document.getElementById("importance-note");
+  const note = normalizeImportantNote(noteInput.value);
+  const status = document.getElementById("importance-status");
+  noteInput.setCustomValidity(importantNoteIsValid(note) ? "" : "Enter a note before marking this order important.");
+  if (!importantNoteIsValid(note)) {
+    noteInput.reportValidity();
+    status.textContent = "Note is required.";
+    return;
+  }
+
+  await withSubmitLock(event, async () => {
+    try {
+      status.textContent = "Saving…";
+      await updateDoc(doc(db, "orders", orderId), {
+        important: true,
+        importantNote: note,
+        importantUpdatedAt: serverTimestamp()
+      });
+      patchImportanceInState(orderId, true, note);
+      document.getElementById("importance-dialog").close();
+      setStatus("Important note saved.");
+    } catch (error) {
+      status.textContent = error.message || String(error);
+    }
+  }, { busyLabel: "Saving…" });
+}
+
+async function clearImportantOrder() {
+  const orderId = document.getElementById("importance-order-id").value;
+  const status = document.getElementById("importance-status");
+  const button = document.getElementById("importance-clear-button");
+  await withSubmitLock(button, async () => {
+    try {
+      status.textContent = "Removing…";
+      await updateDoc(doc(db, "orders", orderId), {
+        important: false,
+        importantNote: null,
+        importantUpdatedAt: serverTimestamp()
+      });
+      patchImportanceInState(orderId, false, null);
+      document.getElementById("importance-dialog").close();
+      setStatus("Important label removed.");
+    } catch (error) {
+      status.textContent = error.message || String(error);
+    }
+  }, { busyLabel: "Removing…" });
+}
+
 function dismissAlert(card) {
   card.classList.add("is-dismissing");
   setTimeout(() => card.remove(), 180);
@@ -1806,24 +2680,24 @@ function armAlertDismiss(card, ms) {
   document.addEventListener("visibilitychange", onVisible);
 }
 
-async function jumpToPendingOrder(order) {
-  state.statusFilter = "to_approve";
-  if (order.deliveryDate && order.deliveryDate !== state.selectedDate) {
-    state.selectedDate = order.deliveryDate;
-    const dateInput = document.getElementById("working-date");
-    if (dateInput) dateInput.value = state.selectedDate;
+async function jumpToOpenOrder(order) {
+  state.statusFilter = OPEN_ORDER_FILTER_KEYS[order.status] || "all";
+  await refreshDashboard(state.openOrders);
+  const card = [...document.querySelectorAll("[data-order-card]")]
+    .find((node) => node.dataset.orderCard === order.id);
+  if (card) {
+    card.scrollIntoView({ block: "center", behavior: "smooth" });
+    card.querySelector("button.primary, select, a")?.focus();
   }
-  await refreshDashboard();
+}
+
+async function jumpToPendingOrder(order) {
+  await jumpToOpenOrder(order);
 }
 
 async function jumpToCancellationRequest(order) {
   state.statusFilter = "all";
-  if (order.deliveryDate && order.deliveryDate !== state.selectedDate) {
-    state.selectedDate = order.deliveryDate;
-    const dateInput = document.getElementById("working-date");
-    if (dateInput) dateInput.value = state.selectedDate;
-  }
-  await refreshDashboard();
+  await refreshDashboard(state.openOrders);
   const action = [...document.querySelectorAll("[data-approve-cancel]")]
     .find((button) => button.dataset.approveCancel === order.id);
   if (action) {
@@ -1878,6 +2752,21 @@ function showCancellationAlert(order) {
   armAlertDismiss(card, 15000);
 }
 
+function watchOpenOrders() {
+  if (pendingAlerts.openUnsub) return;
+  const openQuery = query(collection(db, "orders"), where("status", "in", OPEN_ORDER_STATUSES));
+  pendingAlerts.openUnsub = onSnapshot(openQuery, (snap) => {
+    state.openOrders = snap.docs.map((item) => ({ id: item.id, ...item.data() }));
+    refreshDashboard(state.openOrders).catch((error) => {
+      console.warn("Could not refresh active-order cards:", error);
+      setStatus("Could not refresh active orders. Reload the dashboard to try again.", true);
+    });
+  }, (error) => {
+    console.warn("Open-order watch stopped:", error);
+    setStatus("Live active-order updates stopped. Reload the dashboard to reconnect.", true);
+  });
+}
+
 function watchPendingApprovals() {
   if (pendingAlerts.unsub) return;
   pendingAlerts.seeded = false;
@@ -1897,16 +2786,11 @@ function watchPendingApprovals() {
       pendingAlerts.seeded = true;
       return;
     }
-    let touchesSelectedDate = false;
     snap.docChanges().forEach((change) => {
       if (change.type !== "added") return;
       const order = { id: change.doc.id, ...change.doc.data() };
       showOrderAlert(order);
-      if (order.deliveryDate === state.selectedDate) touchesSelectedDate = true;
     });
-    // The board is a point-in-time read. Without this the toast announces an
-    // order that isn't in the list behind it.
-    if (touchesSelectedDate) refreshDashboard();
   }, (error) => {
     // A dead listener must not read as a broken dashboard; the board itself is
     // still correct, it just stops self-updating.
@@ -1929,15 +2813,10 @@ function watchCancellationRequests() {
       pendingAlerts.cancellationSeeded = true;
       return;
     }
-    let touchesSelectedDate = false;
     snap.docChanges().forEach((change) => {
       const order = { id: change.doc.id, ...change.doc.data() };
       if (change.type === "added") showCancellationAlert(order);
-      if (order.deliveryDate === state.selectedDate) touchesSelectedDate = true;
     });
-    // Keep an already-open board in sync when another tab creates, approves,
-    // or dismisses a request for the selected delivery date.
-    if (touchesSelectedDate) refreshDashboard();
   }, (error) => {
     console.warn("Cancellation-request watch stopped:", error);
   });
@@ -1957,15 +2836,19 @@ function watchCancellationRequests() {
 // day so a dead cron keeps nagging until someone actually fixes it.
 
 const RECON_ALERT_DISMISS_KEY = "reconAlertDismissed";
+const RECON_EVENT_DISMISS_KEY = "reconEventAlertDismissed";
 const RECON_STALE_HOURS = 30;
+// The dashboard only nudges about real-time corrections from the last day; the
+// full list lives on the reconciliation page.
+const RECON_EVENT_WINDOW_HOURS = 24;
 
 function reconAlertToken(runId, kind) {
   return kind === "stale" ? `${runId}|stale|${todayKey()}` : `${runId}|${kind}`;
 }
 
-function showReconAlert({ token, title, detail }) {
+function showReconAlert({ token, title, detail, dismissKey = RECON_ALERT_DISMISS_KEY }) {
   let dismissed = null;
-  try { dismissed = localStorage.getItem(RECON_ALERT_DISMISS_KEY); } catch (_) {}
+  try { dismissed = localStorage.getItem(dismissKey); } catch (_) {}
   if (dismissed === token) return;
   const card = document.createElement("div");
   card.className = "order-alert";
@@ -1976,7 +2859,7 @@ function showReconAlert({ token, title, detail }) {
     <button type="button" class="order-alert-view primary">Open report</button>
   `;
   const remember = () => {
-    try { localStorage.setItem(RECON_ALERT_DISMISS_KEY, token); } catch (_) {}
+    try { localStorage.setItem(dismissKey, token); } catch (_) {}
   };
   card.querySelector(".order-alert-dismiss").addEventListener("click", () => {
     remember();
@@ -2033,15 +2916,58 @@ async function checkReconciliationHealth() {
     return;
   }
   if (drifted > 0) {
+    // Drift used to be routine (non-atomic client writes). Since payment writes
+    // are transactional and /payments is append-only, a stored total can no
+    // longer drift from its payments through the normal app — so a correction
+    // now points at a real cause: a math bug, or a manual/admin data edit.
+    // Word it as "investigate", not "handled".
     showReconAlert({
       token: reconAlertToken(run.id, "drift"),
-      title: `Reconciliation corrected ${drifted} order${drifted === 1 ? "" : "s"}`,
-      detail: "Last night's run found stored totals that didn't match their payments."
+      title: `${drifted} order total${drifted === 1 ? "" : "s"} didn't match — investigate`,
+      detail: "Last night's run corrected stored totals that no longer matched their payments. This shouldn't happen on its own now — check what changed these orders."
     });
   }
 }
 
+// The reconcileOnPaymentWrite trigger fixes a drifted order the instant a
+// payment changes and logs it to reconciliationEvents. The full list lives on
+// the reconciliation page; the dashboard only shows a small nudge when there
+// has been one in the last day. Separate dismiss key from the nightly toast so
+// the two do not overwrite each other's dismissed state.
+async function checkRealtimeCorrections() {
+  let events = [];
+  try {
+    const snap = await getDocs(query(
+      collection(db, "reconciliationEvents"),
+      orderBy("at", "desc"),
+      limit(20)
+    ));
+    events = snap.docs.map((d) => d.data() || {});
+  } catch (error) {
+    console.warn("Real-time reconciliation check skipped:", error);
+    return;
+  }
+
+  const cutoff = Date.now() - RECON_EVENT_WINDOW_HOURS * 36e5;
+  const recent = events.filter((ev) => {
+    const at = ev.at && typeof ev.at.toDate === "function" ? ev.at.toDate().getTime() : 0;
+    return at >= cutoff;
+  });
+  if (!recent.length) return;
+
+  showReconAlert({
+    dismissKey: RECON_EVENT_DISMISS_KEY,
+    token: `event|${todayKey()}|${recent.length}`,
+    title: `${recent.length} order total${recent.length === 1 ? "" : "s"} auto-corrected today — investigate`,
+    detail: "The real-time reconciler fixed a total that drifted outside a normal delivery. Open the reconciliation page for details."
+  });
+}
+
 function stopWatchingPendingApprovals() {
+  if (pendingAlerts.openUnsub) {
+    pendingAlerts.openUnsub();
+    pendingAlerts.openUnsub = null;
+  }
   if (pendingAlerts.unsub) {
     pendingAlerts.unsub();
     pendingAlerts.unsub = null;
@@ -2054,6 +2980,7 @@ function stopWatchingPendingApprovals() {
   pendingAlerts.count = 0;
   pendingAlerts.cancellationSeeded = false;
   pendingAlerts.cancellationCount = 0;
+  state.openOrders = [];
   renderPendingBadge();
 }
 
@@ -2062,11 +2989,7 @@ async function bootstrapDashboard() {
   state.drivers = await loadCollection("drivers");
   const settings = await loadBusinessSettings();
   state.thresholds = mergeThresholds(settings.thresholds);
-  document.getElementById("working-date").value = state.selectedDate;
-  document.getElementById("finance-from").value = state.financeFrom;
-  document.getElementById("finance-to").value = state.financeTo;
   await refreshDashboard();
-  await refreshFinanceSummary();
 }
 
 document.getElementById("login-form").addEventListener("submit", async (event) => {
@@ -2080,22 +3003,22 @@ document.getElementById("login-form").addEventListener("submit", async (event) =
   }
 });
 
-document.getElementById("working-date").addEventListener("change", async (event) => {
-  state.selectedDate = event.target.value || todayKey();
-  await refreshDashboard();
+document.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-important-order]");
+  if (button) openImportanceDialog(button.dataset.importantOrder);
 });
-
-document.getElementById("finance-range-form").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const from = document.getElementById("finance-from").value;
-  const to = document.getElementById("finance-to").value;
-  if (!validFinanceRange(from, to)) {
-    setFinanceStatus("Choose a valid range where From is not after To.", true);
-    return;
-  }
-  state.financeFrom = from;
-  state.financeTo = to;
-  await withSubmitLock(event, refreshFinanceSummary, { busyLabel: "Updating..." });
+document.getElementById("importance-form").addEventListener("submit", saveImportantOrder);
+document.getElementById("importance-note").addEventListener("input", (event) => {
+  event.target.setCustomValidity("");
+  document.getElementById("importance-status").textContent = "";
+});
+document.getElementById("importance-clear-button").addEventListener("click", clearImportantOrder);
+document.getElementById("importance-cancel-button").addEventListener("click", () => {
+  document.getElementById("importance-dialog").close();
+});
+document.getElementById("order-timing-filter")?.addEventListener("change", (event) => {
+  state.timingFilter = event.target.value;
+  renderOrderBoard();
 });
 
 document.getElementById("edit-order-form").addEventListener("submit", saveEditedOrder);
@@ -2107,8 +3030,24 @@ document.getElementById("delivery-payment-form").addEventListener("submit", save
 document.getElementById("delivery-payment-cancel-button").addEventListener("click", () => {
   document.getElementById("delivery-payment-dialog").close();
 });
+document.getElementById("order-map-close").addEventListener("click", () => {
+  document.getElementById("order-map-dialog").close();
+});
+document.getElementById("proof-preview-close").addEventListener("click", () => {
+  document.getElementById("proof-preview-dialog").close();
+});
+document.getElementById("proof-preview-dialog").addEventListener("close", () => {
+  document.getElementById("proof-preview-image").src = "";
+});
 document.querySelectorAll('input[name="collected"]').forEach((radio) => {
-  radio.addEventListener("change", toggleDeliveryPaymentFields);
+  radio.addEventListener("change", () => {
+    toggleDeliveryPaymentFields();
+    recalcAdminDeliveryCod();
+  });
+});
+document.getElementById("delivery-payment-amount")?.addEventListener("input", () => {
+  deliveryDialogState.amountOverridden = document.getElementById("delivery-payment-amount").value.trim() !== "";
+  recalcAdminDeliveryCod();
 });
 const lossCheckboxNode = document.getElementById("delivery-loss-checkbox");
 if (lossCheckboxNode) lossCheckboxNode.addEventListener("change", toggleLossFields);
@@ -2140,8 +3079,10 @@ onAuthStateChanged(auth, async (user) => {
   authView.classList.add("hidden");
   appView.classList.remove("hidden");
   await bootstrapDashboard();
+  watchOpenOrders();
   watchPendingApprovals();
   watchCancellationRequests();
-  // Fire-and-forget: it catches its own errors and must not block the board.
+  // Fire-and-forget: each catches its own errors and must not block the board.
   checkReconciliationHealth();
+  checkRealtimeCorrections();
 });

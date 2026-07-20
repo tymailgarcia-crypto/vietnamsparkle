@@ -6,6 +6,8 @@ import {
   getDoc,
   getDocs,
   onAuthStateChanged,
+  runTransaction,
+  serverTimestamp,
   setDoc,
   updateDoc
 } from "./firebaseClient.js";
@@ -36,7 +38,14 @@ import { uploadProductImage, validateProofFile } from "./storageUploads.js";
 
 const state = {
   products: [],
-  layout: "cards"
+  layout: "cards",
+  // Owner-private stock/cost, keyed by product id. Loaded from /inventory,
+  // which lives in a separate owner-only collection — supplier cost and exact
+  // stock must never reach the public catalog. inventoryAvailable stays false
+  // if the read is denied (hosting can reach prod before the rule does), which
+  // disables the stock editor without breaking the rest of the builder.
+  inventoryByProduct: {},
+  inventoryAvailable: false
 };
 
 function el(id) {
@@ -63,6 +72,38 @@ const CONTAINER_LABELS = {
   mixed: "mixed containers"
 };
 
+// --- Inventory (owner-private stock & cost) ---------------------------------
+// Moved here from settingsApp.js on 2026-07-18 so stock/cost sits next to the
+// product it belongs to. The data model is unchanged: public info stays in
+// /products, exact stock and supplier cost stay in owner-only /inventory, and
+// every stock take appends one immutable /inventoryMovements record. No product
+// gets an /inventory doc until it is first counted — it reads "Not counted".
+
+function inventoryNumber(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+// Terse one-line stock/cost line for a builder row. Mirrors the dialog but
+// stays short. Shows on-hand, available (= onHand − reserved), supplier cost,
+// and gross margin per unit once counted.
+function inventoryRowSummary(product, inventory) {
+  if (!state.inventoryAvailable) return "Stock & cost unavailable — deploy the /inventory rule";
+  const onHand = inventoryNumber(inventory?.onHand);
+  const reserved = inventoryNumber(inventory?.reserved) || 0;
+  const costPrice = inventoryNumber(inventory?.costPrice);
+  if (onHand === null && costPrice === null) return "Not counted";
+  const unit = product.unitLabel || "units";
+  const stock = onHand === null
+    ? "stock not counted"
+    : `${onHand} ${unit} on hand · ${onHand - reserved} available`;
+  const margin = costPrice === null
+    ? "cost not recorded"
+    : `${formatCurrency(costPrice)} cost · ${formatCurrency(Number(product.unitPrice || 0) - costPrice)} margin/unit`;
+  return `${stock} · ${margin}`;
+}
+
 function renderProductCard(product) {
   const img = productImageUrl(product);
   const thumb = img
@@ -84,9 +125,11 @@ function renderProductCard(product) {
           · ${deposit > 0 ? `${escapeHtml(formatCurrency(deposit))} deposit (${escapeHtml(container)})` : "no deposit"}
           ${product.notes ? ` · ${escapeHtml(product.notes)}` : ""}
         </div>
+        <div class="muted catalog-admin-meta" data-inventory-summary="${escapeHtml(product.id)}">${escapeHtml(inventoryRowSummary(product, state.inventoryByProduct[product.id] || {}))}</div>
       </div>
       <div class="button-row catalog-admin-actions">
         <button class="secondary" type="button" data-edit="${escapeHtml(product.id)}">Edit</button>
+        <button class="secondary" type="button" data-inventory="${escapeHtml(product.id)}">Stock &amp; cost</button>
         ${product.active === true
           ? `<button class="ghost" type="button" data-retire="${escapeHtml(product.id)}">Retire</button>`
           : `<button class="primary" type="button" data-restore="${escapeHtml(product.id)}">Put back on sale</button>`}
@@ -109,6 +152,9 @@ function renderProducts() {
 
   document.querySelectorAll("[data-edit]").forEach((btn) => {
     btn.addEventListener("click", () => openProductDialog(state.products.find((p) => p.id === btn.dataset.edit)));
+  });
+  document.querySelectorAll("[data-inventory]").forEach((btn) => {
+    btn.addEventListener("click", () => openInventoryDialog(state.products.find((p) => p.id === btn.dataset.inventory)));
   });
   document.querySelectorAll("[data-retire]").forEach((btn) => {
     btn.addEventListener("click", () => setActive(btn.dataset.retire, false, btn));
@@ -216,7 +262,7 @@ function openProductDialog(product) {
   if (fileInput) fileInput.value = "";
   const fileHint = el("product-image-file-hint");
   if (fileHint) {
-    fileHint.textContent = "Uploads immediately and fills the URL above. Max 10 MB.";
+    fileHint.textContent = "Uploads immediately and fills the URL above. Photos are compressed automatically; source max 30 MB.";
     fileHint.style.color = "";
   }
   updateImagePreview();
@@ -280,6 +326,140 @@ async function saveProduct(event) {
   });
 }
 
+// --- Stock & cost dialog ----------------------------------------------------
+// A separate dialog from the product editor on purpose: product details save to
+// public /products, while stock/cost save to owner-only /inventory with an
+// audit movement. Different collections, different audit behaviour — mixing the
+// two forms would blur which write goes where.
+
+function recomputeInventoryDialog() {
+  const product = state.products.find((p) => p.id === el("inventory-product-id").value);
+  if (!product) return;
+  const reserved = inventoryNumber(el("inventory-reserved").dataset.value) || 0;
+  const onHand = inventoryNumber(el("inventory-on-hand").value.trim());
+  const costPrice = inventoryNumber(el("inventory-cost").value.trim());
+  const unit = product.unitLabel || "units";
+  el("inventory-available").textContent = onHand === null ? "—" : `${onHand - reserved} ${unit}`;
+  const retail = Number(product.unitPrice || 0);
+  el("inventory-margin").textContent = costPrice === null
+    ? `Retail ${formatCurrency(retail)} · supplier cost not set`
+    : `Retail ${formatCurrency(retail)} · ${formatCurrency(costPrice)} cost · ${formatCurrency(retail - costPrice)} gross margin per unit`;
+}
+
+function openInventoryDialog(product) {
+  if (!product) return;
+  const inventory = state.inventoryByProduct[product.id] || {};
+  const unit = product.unitLabel || "units";
+  el("inventory-dialog-title").textContent = `Stock & cost — ${product.productName || product.id}`;
+  el("inventory-product-id").value = product.id;
+  const onHand = inventoryNumber(inventory.onHand);
+  const costPrice = inventoryNumber(inventory.costPrice);
+  const reserved = inventoryNumber(inventory.reserved) || 0;
+  el("inventory-on-hand").value = onHand === null ? "" : onHand;
+  el("inventory-cost").value = costPrice === null ? "" : costPrice;
+  const reservedNode = el("inventory-reserved");
+  reservedNode.textContent = `${reserved} ${unit}`;
+  reservedNode.dataset.value = String(reserved);
+  const disabled = !state.inventoryAvailable;
+  el("inventory-on-hand").disabled = disabled;
+  el("inventory-cost").disabled = disabled;
+  el("inventory-save-button").disabled = disabled;
+  const status = el("inventory-status");
+  status.textContent = disabled
+    ? "Inventory access is not active yet. Deploy the Firestore /inventory rule before editing stock."
+    : "";
+  status.style.color = disabled ? "var(--danger, #b3261e)" : "";
+  recomputeInventoryDialog();
+  el("inventory-dialog").showModal();
+}
+
+async function saveProductInventory(event) {
+  if (event?.preventDefault) event.preventDefault();
+  const productId = el("inventory-product-id").value;
+  const product = state.products.find((p) => p.id === productId);
+  const status = el("inventory-status");
+  const button = el("inventory-save-button");
+  if (!product || !state.inventoryAvailable) return;
+  const onHandRaw = el("inventory-on-hand").value.trim();
+  const costRaw = el("inventory-cost").value.trim();
+  const onHand = Number(onHandRaw);
+  const costPrice = Number(costRaw);
+  status.style.color = "var(--danger, #b3261e)";
+  if (onHandRaw === "" || !Number.isInteger(onHand) || onHand < 0) {
+    status.textContent = "Enter a whole on-hand quantity of 0 or more.";
+    return;
+  }
+  if (costRaw === "" || !Number.isFinite(costPrice) || costPrice < 0) {
+    status.textContent = "Enter a supplier cost of 0 or more.";
+    return;
+  }
+  await withSubmitLock(button, async () => {
+    status.style.color = "";
+    status.textContent = "Saving…";
+    try {
+      const inventoryRef = doc(db, "inventory", productId);
+      // Allocate the movement id before the transaction. If Firestore retries
+      // the closure, it rewrites the same not-yet-committed row instead of
+      // producing duplicate audit movements.
+      const movementRef = doc(collection(db, "inventoryMovements"));
+      let savedInventory = null;
+      await runTransaction(db, async (transaction) => {
+        const snapshot = await transaction.get(inventoryRef);
+        const current = snapshot.exists() ? snapshot.data() : {};
+        const storedReserved = inventoryNumber(current.reserved);
+        if (storedReserved !== null && (!Number.isInteger(storedReserved) || storedReserved < 0)) {
+          throw new Error("Stored reserved stock is invalid. Review this inventory record before counting.");
+        }
+        const reserved = storedReserved || 0;
+        const previousOnHandValue = inventoryNumber(current.onHand);
+        if (previousOnHandValue !== null && (!Number.isInteger(previousOnHandValue) || previousOnHandValue < 0)) {
+          throw new Error("Stored on-hand stock is invalid. Review this inventory record before counting.");
+        }
+        const previousOnHand = previousOnHandValue || 0;
+        const previousCostPrice = inventoryNumber(current.costPrice);
+        const now = serverTimestamp();
+        const payload = {
+          productId,
+          onHand,
+          reserved,
+          available: onHand - reserved,
+          costPrice,
+          lastCountedAt: now,
+          updatedAt: now,
+          updatedByUid: auth.currentUser?.uid || null,
+          updatedByEmail: auth.currentUser?.email || null
+        };
+        transaction.set(inventoryRef, payload, { merge: true });
+        transaction.set(movementRef, {
+          productId,
+          qty: onHand - previousOnHand,
+          reason: "stock_take_adjustment",
+          linkedOrderId: null,
+          linkedPurchaseId: null,
+          beforeOnHand: previousOnHand,
+          afterOnHand: onHand,
+          costPriceBefore: previousCostPrice,
+          costPriceAfter: costPrice,
+          at: now,
+          byUid: auth.currentUser?.uid || null,
+          byEmail: auth.currentUser?.email || null
+        });
+        savedInventory = { ...current, ...payload };
+      });
+      const saved = { ...savedInventory, lastCountedAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+      state.inventoryByProduct[productId] = saved;
+      const summaryNode = [...document.querySelectorAll("[data-inventory-summary]")]
+        .find((node) => node.getAttribute("data-inventory-summary") === productId);
+      if (summaryNode) summaryNode.textContent = inventoryRowSummary(product, saved);
+      status.textContent = "Saved.";
+      el("inventory-dialog").close();
+    } catch (error) {
+      status.style.color = "var(--danger, #b3261e)";
+      status.textContent = error.message || String(error);
+    }
+  }, { busyLabel: "Saving…" });
+}
+
 // --- Customer storefront layout ---------------------------------------------
 
 function renderLayoutButtons() {
@@ -314,9 +494,25 @@ async function loadProducts() {
   try {
     const snap = await getDocs(collection(db, "products"));
     state.products = snap.docs.map((d) => ({ id: d.id, ...(d.data() || {}) }));
+    await loadInventory();
     renderProducts();
   } catch (error) {
     setStatus(`Could not load products: ${error.message || error}`);
+  }
+}
+
+// Owner-private stock/cost. Kept in a separate try/catch (it never throws) so a
+// denied /inventory read leaves the rest of the builder working — the rows just
+// show "Not counted"/unavailable and the Stock & cost editor stays disabled.
+async function loadInventory() {
+  try {
+    const snap = await getDocs(collection(db, "inventory"));
+    state.inventoryByProduct = Object.fromEntries(snap.docs.map((row) => [row.id, { id: row.id, ...row.data() }]));
+    state.inventoryAvailable = true;
+  } catch (error) {
+    state.inventoryByProduct = {};
+    state.inventoryAvailable = false;
+    console.warn("Could not load inventory:", error);
   }
 }
 
@@ -335,6 +531,10 @@ el("add-product-button").addEventListener("click", () => openProductDialog(null)
 el("refresh-button").addEventListener("click", loadProducts);
 el("product-form").addEventListener("submit", saveProduct);
 el("product-cancel-button").addEventListener("click", () => el("product-dialog").close());
+el("inventory-form").addEventListener("submit", saveProductInventory);
+el("inventory-cancel-button").addEventListener("click", () => el("inventory-dialog").close());
+el("inventory-on-hand").addEventListener("input", recomputeInventoryDialog);
+el("inventory-cost").addEventListener("input", recomputeInventoryDialog);
 el("product-image-url").addEventListener("input", updateImagePreview);
 el("product-image-file").addEventListener("change", handleImageFilePick);
 el("product-name").addEventListener("input", updateImagePreview);
