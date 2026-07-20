@@ -55,11 +55,12 @@ Acceptance:
 - [ ] Push the verified source checkpoint.
 - [ ] Tag the exact release candidate.
 - [ ] Prove the hosted tree matches the tagged candidate by content hash.
-- [ ] Write the rollback command and identify the previous known-good Hosting release.
+- [x] Write the rollback procedure and identify the previous known-good Hosting release.
 
 Evidence/commit/deploy:
 
 - 2026-07-20: Codex committed the six production-essential files alone as `77acc23`; all six matched production by SHA-256, four modules passed staged syntax checks, and focused checks passed 8/8 + 24/24 + 8/8. The other agent's pre-existing staged `adminApp.js` hunk remained staged and was not included. Ownership/blocker inventory: `RELEASE-RECONCILIATION.md`.
+- 2026-07-20: Authenticated Hosting inventory recorded live version `ceb7745d6aa10c3d` and the immediately preceding fully verified rollback target `9d83a2219e228e81`. `HANDOVER.md` documents the Console rollback route and tagged-worktree redeploy route. A pushed release commit, Git tag, and full tagged-tree hash proof are still required.
 
 ### P0-02 — Make public order submission idempotent
 
@@ -283,19 +284,20 @@ Required matrix:
 Evidence:
 
 - _Record fixture IDs, device/browser, result, screenshots where useful, and cleanup performed._
+- 2026-07-20 monitoring-only check: Cloud Scheduler was ENABLED for 03:00 `Asia/Ho_Chi_Minh`. Direct Cloud Run logs confirmed successful nightly completions on July 16–20 local, all with zero failures and zero drift; the latest scanned 9 orders and skipped 1. This verifies scheduler health only, not the remaining authenticated QA matrix or intentional-payment event check.
 
 ### P0-12 — Establish backup, restore, access, and handover safety
 
 **Status:** [!]
-**Owner:** Codex — repository runbook complete; blocked on Firebase reauthentication and Ty's backup/restore decisions
+**Owner:** Codex — authenticated inventory complete; blocked on access redundancy and Ty's backup/restore decisions
 **Files/area:** Firebase/Google Cloud settings and `HANDOVER.md` (new)
 
-There is no current Firestore backup/restore runbook. The repository's sheet export is dated 2026-07-05 and is not a production database backup. PITR, delete protection, and scheduled backup status were not verified; Firebase CLI credentials also required reauthentication during the audit.
+The repository's sheet export is dated 2026-07-05 and is not a production database backup. Authenticated checks found that production Firestore has no PITR, no delete protection, no backup schedule, and no backups. Ty is the sole Firebase project owner and sole Cloud Billing administrator; a recovery contact and backup administrator remain unconfirmed.
 
 Acceptance:
 
 - [ ] Confirm project owner(s), billing owner, recovery email, and at least one backup administrator.
-- [ ] Verify Firestore PITR/delete protection or scheduled export policy.
+- [x] Verify and record Firestore PITR/delete-protection/backup state.
 - [ ] Perform and document a restore test into a safe non-production target.
 - [x] Document Firebase CLI login, project selection, deploy scopes, rollback, custom-claim setup, Maps key, App Check key, and domain configuration.
 - [x] Document monitoring locations for Functions, Eventarc, Firestore, Storage, reconciliation, and billing/quota alerts.
@@ -304,7 +306,8 @@ Acceptance:
 
 Evidence/commit:
 
-- 2026-07-20: `HANDOVER.md` created with scoped release/rollback, claims, backup/restore-drill, monitoring, Maps/App Check/domain, and escalation procedures. Tracked-tree and Git-history credential scans found no private-key/service-account signature. Firebase CLI credentials were expired and the in-app console required sign-in, so owners, billing, PITR/delete protection, backup schedule, restore drill, alerts, and contacts remain explicitly open.
+- 2026-07-20: `HANDOVER.md` created with scoped release/rollback, claims, backup/restore-drill, monitoring, Maps/App Check/domain, and escalation procedures. Tracked-tree and Git-history credential scans found no private-key/service-account signature.
+- 2026-07-20 after reauthentication: project and billing IAM confirm `tymailgarcia@gmail.com` is the sole project owner and sole billing administrator. Firestore `(default)` is Standard/Native in `asia-east2` with PITR disabled, delete protection disabled, one-hour version retention, no backup schedule, and no backups. No settings were changed. P0-12 remains blocked on adding backup access/recovery contacts, approving protection and retention, producing a backup, and completing a non-production restore drill.
 
 ## P1 — finish before broad customer use
 
@@ -353,6 +356,7 @@ Add one row when work starts and update the same row when it stops. Detailed fil
 |---|---|---|---|---|---|
 | 2026-07-20 11:08 | Board creation | Codex | complete | `SHIP-READINESS.md` | Created from parallel customer/admin/technical audit; no app files changed. |
 | 2026-07-20 11:17 | P0-12 + P0-01 safe slice | Codex | blocked after repository work | `HANDOVER.md`, `RELEASE-RECONCILIATION.md`, `SHIP-READINESS.md`; six standalone web files | Six production-identical essentials committed as `77acc23`; handover/runbook committed as `62ebf43`. Next: Ty reauthenticates Firebase, confirms owners/backup policy, and approves a restore drill; other agents reconcile mixed live files. |
+| 2026-07-20 12:10 | P0-12 authenticated inventory | Codex | blocked on decisions | `HANDOVER.md`, `SHIP-READINESS.md`; read-only Firebase/Google Cloud state | Reauthentication verified. Sole project owner and billing admin identified; no backup admin. Firestore has no PITR, delete protection, schedule, or backups. Hosting rollback IDs and healthy nightly scheduler/function evidence recorded. No external settings changed. |
 
 ## Decision log
 

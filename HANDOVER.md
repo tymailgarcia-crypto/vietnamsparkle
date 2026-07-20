@@ -1,7 +1,7 @@
 # Vietnam Sparkle operations and handover runbook
 
-**Status:** operational draft; access, backup, restore, and release-candidate checks remain open
-**Last verified:** 2026-07-20 11:45 UTC
+**Status:** operational draft; access redundancy, database protection, restore, and release-candidate checks remain open
+**Last verified:** 2026-07-20 12:10 UTC
 **Project:** `vietnamsparkle-36dfe`
 **Production Hosting:** <https://vietnamsparkle-36dfe.web.app/>
 
@@ -18,15 +18,23 @@ Verified from the repository and local tools:
 - Firebase CLI `15.22.4`, pnpm `11.10.0`, Git `2.49.0.windows.1`, and Java 21 are installed. Java is at `C:\Program Files\Eclipse Adoptium\jre-21.0.11.10-hotspot\bin\java.exe`.
 - The public Firebase web configuration and browser Maps/App Check site keys are deliberately shipped to browsers. They are identifiers, not Admin SDK credentials. API restrictions and Firebase rules are the security boundary.
 - No private-key/service-account signatures were found in the tracked tree or Git history using the 2026-07-20 credential scan. `.gitignore` excludes common Admin SDK, PEM, P12, and environment-secret filenames.
-- The current Firebase CLI account label is `tymailgarcia@gmail.com`, but its credential is expired. Project listing and all authenticated checks require reauthentication.
+- Firebase CLI reauthentication succeeded for `tymailgarcia@gmail.com`; the account can access the ACTIVE project `vietnamsparkle-36dfe` (project number `1092060902387`).
+- Project IAM has one `roles/owner` member: `user:tymailgarcia@gmail.com`. There is no backup project owner or administrator recorded in IAM.
+- Cloud Billing is enabled and linked to `billingAccounts/01D262-5F45BB-369158`. Its IAM policy has one `roles/billing.admin` member: `user:tymailgarcia@gmail.com`; no backup billing administrator was found.
+- The `(default)` Firestore database is Firestore Native, Standard edition, in `asia-east2`. Point-in-time recovery and delete protection are both disabled; version retention is one hour (`3600s`).
+- Firestore has no backup schedule and no backups in `asia-east2`. Production data therefore has no verified database recovery point beyond Firestore's one-hour version retention.
+- Nine Cloud Functions are ACTIVE on Node.js 22. `reconcileOnPaymentWrite` is in `asia-east2`; the other eight are in `us-central1`.
+- Hosting live version `ceb7745d6aa10c3d` was created 2026-07-20 10:11:58 UTC (44 files). The immediately preceding fully verified version is `9d83a2219e228e81`, created 2026-07-20 09:57:19 UTC (44 files).
 - The current site uses the Firebase `web.app` domain. No custom domain is recorded in the repository.
 
-Must be confirmed in Firebase/Google Cloud after reauthentication:
+Authenticated verification status:
 
-- [ ] Firebase project owner(s) and at least one backup administrator.
-- [ ] Cloud Billing account owner and a recovery email not dependent on one person/device.
-- [ ] Firestore location, edition, point-in-time recovery, and delete-protection state.
-- [ ] Scheduled Firestore backup policy and the newest successful backup.
+- [x] Firebase project owner binding confirmed.
+- [ ] Add and verify at least one backup project administrator.
+- [x] Cloud Billing link and billing-administrator binding confirmed.
+- [ ] Add a backup billing administrator and confirm a recovery email not dependent on one person/device.
+- [x] Firestore location, edition, point-in-time recovery, and delete-protection state recorded.
+- [x] Scheduled-backup and existing-backup state recorded: neither exists.
 - [ ] Maps key HTTP-referrer restrictions for the production Hosting domain.
 - [ ] Firebase App Check registration and verified-traffic metrics. Do not enforce App Check before valid production traffic appears.
 - [ ] Billing budget alerts, quota alerts, and their recipients.
@@ -115,7 +123,7 @@ Set-Location '..\vietnam-sparkle-rollback\firebase'
 firebase deploy --only hosting --project vietnamsparkle-36dfe
 ```
 
-As of this runbook's date there is no release tag and no recorded Hosting version ID, so the rollback target is still a P0 blocker. The deploy log identifies the fully verified 2026-07-20 10:0x release and the preceding 09:4x release by time, but the console version IDs must be recorded after reauthentication.
+The current live Hosting version is `ceb7745d6aa10c3d` (2026-07-20 10:11:58 UTC). The immediately preceding fully verified rollback target is `9d83a2219e228e81` (2026-07-20 09:57:19 UTC). In an incident attributable to the current Hosting release, use the Console rollback route above and select `9d83a2219e228e81`; record the resulting release ID and verification. These version IDs provide an emergency operational target but do not replace the still-missing pushed release commit and Git tag.
 
 ### Rules, indexes, Storage rules, and Functions rollback
 
@@ -136,6 +144,8 @@ firebase firestore:backups:list --location asia-east2 --project vietnamsparkle-3
 ```
 
 Record the database's `pointInTimeRecoveryEnablement`, `deleteProtectionState`, backup schedule, retention, newest successful backup, and resource name.
+
+Verified 2026-07-20: `(default)` is in `asia-east2`; PITR is disabled, delete protection is disabled, version retention is one hour, the backup-schedule list is empty, and no backups exist in `asia-east2`. Do not treat this verification as an acceptable backup policy: protection must be approved and enabled before the ship gate can close.
 
 Possible enablement commands are shown for the approver; do not run them without confirming cost and retention:
 
@@ -180,6 +190,8 @@ Expected deployed Functions:
 - `attachRefundEvidence`
 - `resolveLegacyCancellation`
 
+All nine were ACTIVE on Node.js 22 when checked on 2026-07-20. The Cloud Scheduler job `firebase-schedule-nightlyReconcileOrderMath-us-central1` was ENABLED on `0 3 * * *` in `Asia/Ho_Chi_Minh`; its latest attempt was 2026-07-20 03:00 local and returned HTTP 200. Direct Cloud Run logs showed successful application completions on July 16, 17, 18, 19, and 20 local, all with `failed: 0` and `drifted: 0`; the latest scanned 9 and skipped 1. For Gen 2 scheduled functions, query the Cloud Run service `nightlyreconcileordermath` if `firebase functions:log` omits recent structured entries.
+
 After reauthentication, verify with:
 
 ```powershell
@@ -201,8 +213,8 @@ Complete before launch. Do not put passwords, recovery codes, or private credent
 | Responsibility | Primary | Backup | Contact route | Confirmed |
 |---|---|---|---|---|
 | Business/launch approver | Ty | _pending_ | _pending_ | [ ] |
-| Firebase project administration | `tymailgarcia@gmail.com` (role unverified) | _pending_ | _pending_ | [ ] |
-| Billing owner | _pending_ | _pending_ | _pending_ | [ ] |
+| Firebase project administration | `tymailgarcia@gmail.com` (`roles/owner`, verified) | _pending_ | _pending_ | Primary only |
+| Billing administration | `tymailgarcia@gmail.com` (`roles/billing.admin`, verified) | _pending_ | _pending_ | Primary only |
 | Technical incident response | _pending_ | _pending_ | _pending_ | [ ] |
 | Customer communication | _pending_ | _pending_ | _pending_ | [ ] |
 
@@ -216,9 +228,9 @@ Escalation order:
 
 ## 10. Handover completion record
 
-- [ ] CLI reauthentication completed.
+- [x] CLI reauthentication completed.
 - [ ] Project/billing owners and backup administrator confirmed.
-- [ ] PITR/delete protection/backup schedule recorded.
+- [x] PITR/delete protection/backup schedule recorded; all protections are currently absent.
 - [ ] Restore drill completed and evidence linked.
 - [ ] Maps restriction verified.
 - [ ] App Check registration/metrics decision recorded.
