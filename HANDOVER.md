@@ -1,7 +1,7 @@
 # Vietnam Sparkle operations and handover runbook
 
-**Status:** operational draft; single-operator access risk accepted and release-candidate checks remain open; paid database recovery is deliberately deferred
-**Last verified:** 2026-07-20 12:44 UTC
+**Status:** operational draft; technical/Firebase control is verified, the no-backup-administrator risk is accepted, and future business-operator binding plus release-candidate checks remain open; paid database recovery is deliberately deferred
+**Last verified:** 2026-07-20 13:05 UTC
 **Project:** `vietnamsparkle-36dfe`
 **Production Hosting:** <https://vietnamsparkle-36dfe.web.app/>
 
@@ -21,7 +21,8 @@ Verified from the repository and local tools:
 - Firebase CLI reauthentication succeeded for `tymailgarcia@gmail.com`; the account can access the ACTIVE project `vietnamsparkle-36dfe` (project number `1092060902387`).
 - Project IAM has one `roles/owner` member: `user:tymailgarcia@gmail.com`. There is no backup project owner or administrator recorded in IAM.
 - Cloud Billing is enabled and linked to `billingAccounts/01D262-5F45BB-369158`. Its IAM policy has one `roles/billing.admin` member: `user:tymailgarcia@gmail.com`; no backup billing administrator was found. A linked billing account means no-cost quotas are allowances, not a hard spending cap.
-- Ty confirmed he is the sole operator and does not have or want a separate backup administrator/recovery account at launch. Loss of access to `tymailgarcia@gmail.com` could therefore block project administration, billing response, deployment, and customer operations; this is an explicitly accepted launch risk, not access redundancy.
+- Ty remains the sole Firebase project owner, Cloud Billing administrator, deployment operator, and technical incident owner. He does not have or want a separate backup administrator/recovery account at launch. Loss of access to `tymailgarcia@gmail.com` could therefore block project administration, billing response, deployment, and technical recovery; this is an explicitly accepted launch risk, not access redundancy.
+- Ty's buddy will be the future business/customer operator and will launch the app for his customers. The buddy's identity, contact route, and exact in-app permissions are deliberately pending. This operational role is not a transfer of Firebase ownership or technical control, and no Firebase or Google Cloud access binding has been added or implied.
 - The `(default)` Firestore database is Firestore Native, Standard edition, in `asia-east2`. Delete protection was enabled and verified on 2026-07-20; point-in-time recovery remains disabled and version retention is one hour (`3600s`).
 - Firestore has no backup schedule and no backups in `asia-east2`. Under Ty's no-monthly-cost launch decision, paid PITR, scheduled backups, and managed restore are deliberately deferred.
 - Nine Cloud Functions are ACTIVE on Node.js 22. `reconcileOnPaymentWrite` is in `asia-east2`; the other eight are in `us-central1`.
@@ -40,6 +41,7 @@ Authenticated verification status:
 - [ ] Maps key HTTP-referrer restrictions for the production Hosting domain.
 - [ ] Firebase App Check registration and verified-traffic metrics. Do not enforce App Check before valid production traffic appears.
 - [ ] Billing budget alerts, quota alerts, and their recipients.
+- [ ] Future business/customer operator identity, contact route, and exact in-app permissions. These details are deferred until they are needed; do not infer Firebase access.
 - [ ] Custom-domain owner/registrar/DNS instructions if a custom domain is added later.
 
 ## 2. Access and project selection
@@ -56,7 +58,7 @@ firebase use
 
 Expected active project: `vietnamsparkle-36dfe`.
 
-Do not create or commit a Firebase CI token. Prefer interactive user login for this one-owner deployment workflow. A future CI workflow should use a narrowly scoped workload identity or managed service account stored outside Git.
+Do not create or commit a Firebase CI token. Prefer interactive user login for this Ty-controlled deployment workflow. A future CI workflow should use a narrowly scoped workload identity or managed service account stored outside Git.
 
 ### Owner and driver custom claims
 
@@ -226,20 +228,23 @@ firebase functions:log --project vietnamsparkle-36dfe
 
 Complete before launch. Do not put passwords, recovery codes, or private credentials in this table.
 
-Decision recorded 2026-07-20 12:44 UTC: Ty is the sole operator and contact for every launch responsibility. He confirmed there is no backup administrator or separate recovery contact. No access binding was changed.
+Operational clarification recorded 2026-07-20 12:55 UTC: Ty retains Firebase, billing, deployment, and technical control. Ty's buddy will be the future business/customer operator and will launch the app for his customers. The buddy's identity, contact route, and exact in-app permissions are pending. This is not a Firebase ownership transfer, and no access binding was changed.
+
+The responsibility boundary is settled even though the future operator's details are not: the buddy owns business go-live, day-to-day customer operations, and customer communication after handover; Ty owns technical release approval, deployment, rollback, Firebase administration, billing, and technical incident response.
 
 | Responsibility | Primary | Backup | Contact route | Confirmed |
 |---|---|---|---|---|
-| Business/launch approver | Ty | None | `tymailgarcia@gmail.com` | Sole operator confirmed |
-| Firebase project administration | `tymailgarcia@gmail.com` (`roles/owner`, verified) | None | `tymailgarcia@gmail.com` | Sole operator confirmed |
-| Billing administration | `tymailgarcia@gmail.com` (`roles/billing.admin`, verified) | None | `tymailgarcia@gmail.com` | Sole operator confirmed |
-| Technical incident response | Ty | None | `tymailgarcia@gmail.com` | Sole operator confirmed |
-| Customer communication | Ty | None | `tymailgarcia@gmail.com` | Sole operator confirmed |
+| Business launch and daily customer operations | Future business/customer operator (Ty's buddy; identity pending) | None recorded | Pending | Role confirmed; details deferred |
+| Firebase project administration | `tymailgarcia@gmail.com` (`roles/owner`, verified) | None | `tymailgarcia@gmail.com` | Verified; no backup administrator |
+| Billing administration | `tymailgarcia@gmail.com` (`roles/billing.admin`, verified) | None | `tymailgarcia@gmail.com` | Verified; no backup administrator |
+| Technical release, deployment, and rollback | Ty | None | `tymailgarcia@gmail.com` | Confirmed |
+| Technical incident response | Ty | None | `tymailgarcia@gmail.com` | Confirmed |
+| Customer communication | Future business/customer operator (Ty's buddy; identity pending) | None recorded | Pending | Role confirmed; details deferred |
 
 Escalation order:
 
-1. Stop new deployments and record the incident/time in `.agent-status.md`.
-2. Decide whether to disable the affected operation, roll back code, or pause public ordering.
+1. For a customer/operational incident, the future business operator pauses the affected workflow and contacts Ty; for a technical incident, Ty stops new deployments. Record the incident/time in `.agent-status.md`.
+2. Ty decides whether to disable the affected operation or roll back code; the business operator decides whether to pause public ordering and owns customer communication.
 3. Preserve logs, order IDs, payment IDs, and reconciliation evidence without copying customer data into Git.
 4. For money/deposit drift, run reconciliation and inspect the append-only payment/deposit history before making corrections.
 5. Corrections must be new auditable entries; never edit/delete an existing payment to hide an error.
@@ -247,12 +252,13 @@ Escalation order:
 ## 10. Handover completion record
 
 - [x] CLI reauthentication completed.
-- [x] Project/billing owner confirmed; absence of a backup administrator explicitly accepted by Ty.
+- [x] Project/billing/deployment/technical owner confirmed; absence of a backup administrator explicitly accepted by Ty.
 - [x] Delete protection enabled; PITR and backup schedule remain disabled under the documented no-monthly-cost policy.
 - [x] Paid managed restore drill explicitly deferred by Ty; no backup exists to restore.
 - [ ] Maps restriction verified.
 - [ ] App Check registration/metrics decision recorded.
 - [ ] Release and previous-good tags/Hosting versions recorded.
 - [ ] Monitoring and budget alert recipients tested.
-- [x] Launch contacts completed for the current sole-operator model.
+- [x] Handover responsibility boundary documented: the buddy will operate the business/customer side; Ty retains Firebase, billing, deployment, rollback, and technical control.
+- [ ] Future business/customer operator identity, contact route, and exact in-app permissions recorded before customer launch. No Firebase access is implied or required by this placeholder.
 - [ ] Customer and owner authenticated QA signed off in `SHIP-READINESS.md`.

@@ -35,7 +35,7 @@ The app is ready to ship only when every item here is checked:
 - [ ] Authenticated end-to-end QA has passed on Ty's actual phone.
 - [ ] The deployed Hosting tree, rules, and Functions are reproducible from a pushed Git commit and release tag.
 - [x] Firestore delete protection is enabled, and the no-monthly-cost decision to forgo paid PITR/backups/restore is documented as an accepted launch risk.
-- [ ] Firebase access, ownership, deployment, rollback, and support instructions are documented.
+- [~] Firebase access, ownership, deployment, rollback, and support instructions are documented; the future business/customer operator's identity, contact route, and exact in-app permissions remain deliberately pending before launch.
 - [ ] No agent has live uncommitted application work at release time.
 
 ## P0 — required before shipping
@@ -62,6 +62,7 @@ Evidence/commit/deploy:
 - 2026-07-20: Codex committed the six production-essential files alone as `77acc23`; all six matched production by SHA-256, four modules passed staged syntax checks, and focused checks passed 8/8 + 24/24 + 8/8. The other agent's pre-existing staged `adminApp.js` hunk remained staged and was not included. Ownership/blocker inventory: `RELEASE-RECONCILIATION.md`.
 - 2026-07-20: Authenticated Hosting inventory recorded live version `ceb7745d6aa10c3d` and the immediately preceding fully verified rollback target `9d83a2219e228e81`. `HANDOVER.md` documents the Console rollback route and tagged-worktree redeploy route. A pushed release commit, Git tag, and full tagged-tree hash proof are still required.
 - 2026-07-20 12:31 UTC: repository evidence refreshed at HEAD `734eceb`, 9 commits ahead of `origin/main` (`04062e5`) with no tags. The four commits after `77acc23` are documentation/protection-policy records only. The working tree still contains 34 modified tracked files, 20 untracked status entries, and Claude's sole staged `adminApp.js` hunk, so a push/tag/hash proof remains unsafe until live file owners reconcile their work. No application file, index hunk, push, tag, or deployment was touched during this check.
+- 2026-07-20 12:55 UTC: read-only repository evidence refreshed at HEAD `5f10e03`, 11 commits ahead of `origin/main` (`04062e5`) with no tags. The six commits after `77acc23` touch only `HANDOVER.md`, `RELEASE-RECONCILIATION.md`, and `SHIP-READINESS.md`. The working tree still contains the same 34 modified tracked files and 20 untracked status entries. Claude's only staged path remains `firebase/web/assets/adminApp.js`, blob `a42a37e545da0d90490ab9c1b4d690671accc0a4`, with 14 additions and 1 deletion. The unstaged application diff remains 7,189 additions and 874 deletions. P0-01 read-only reconciliation was the next safe unblocked readiness action; its release commit/tag/hash acceptance remains blocked on application owners reconciling the live tree.
 
 ### P0-02 — Make public order submission idempotent
 
@@ -289,22 +290,23 @@ Evidence:
 
 ### P0-12 — Establish backup, restore, access, and handover safety
 
-**Status:** [!] handover decisions documented; single-operator access remains an accepted launch risk
-**Owner:** Codex — documentation complete
-**Files/area:** Firebase/Google Cloud settings and `HANDOVER.md` (new)
+**Status:** [!] technical/recovery controls documented; future business-operator binding is deferred and the no-backup-administrator risk is accepted
+**Owner:** Codex — current documentation complete; launch-time operator binding pending
+**Files/area:** Firebase/Google Cloud settings and `HANDOVER.md`
 
-The repository's sheet export is dated 2026-07-05 and is not a production database backup. Production Firestore now has free delete protection enabled. By Ty's explicit no-monthly-cost decision, paid PITR, scheduled backups, backup storage, managed restore, and a restore drill are deliberately deferred. This prevents accidental deletion of the whole database but accepts that older document deletion/corruption may be unrecoverable. Ty is the sole Firebase project owner and sole Cloud Billing administrator and explicitly chose not to add a backup administrator or independent recovery contact for the current one-person operation.
+The repository's sheet export is dated 2026-07-05 and is not a production database backup. Production Firestore now has free delete protection enabled. By Ty's explicit no-monthly-cost decision, paid PITR, scheduled backups, backup storage, managed restore, and a restore drill are deliberately deferred. This prevents accidental deletion of the whole database but accepts that older document deletion/corruption may be unrecoverable. Ty remains the sole Firebase project owner, Cloud Billing administrator, deployment operator, and technical incident owner, and explicitly chose not to add a backup administrator or independent recovery contact. Ty's buddy will be the future business/customer operator and will launch the app for his customers; the buddy's identity, contact route, and exact in-app permissions are deliberately pending. This is not a transfer of Firebase ownership, and no Firebase/Google Cloud access has been added or implied.
 
 Acceptance:
 
-- [!] Project/billing owner confirmed; Ty explicitly chose no backup administrator or independent recovery contact for the current one-person operation.
+- [!] Project/billing/deployment/technical owner confirmed; Ty explicitly chose no backup administrator or independent recovery contact. This accepted technical-access risk is separate from the buddy's future business/customer role.
 - [x] Verify and record Firestore PITR/delete-protection/backup state.
 - [x] Enable and independently verify free delete protection while leaving PITR disabled.
 - [x] Record paid backup/restore and restore-drill work as deliberately deferred under the no-monthly-cost launch policy.
 - [x] Document Firebase CLI login, project selection, deploy scopes, rollback, custom-claim setup, Maps key, App Check key, and domain configuration.
 - [x] Document monitoring locations for Functions, Eventarc, Firestore, Storage, reconciliation, and billing/quota alerts.
 - [x] Confirm no service-account credential or private secret is tracked.
-- [x] Add a launch-day contact/escalation list.
+- [x] Document the launch responsibility boundary and escalation structure: buddy on business/customer operations; Ty on Firebase, billing, deployment, rollback, and technical incidents.
+- [!] Bind the future business/customer operator's identity, contact route, and exact in-app permissions before customer launch. These details are intentionally deferred now; do not invent them or infer Firebase access.
 
 Evidence/commit:
 
@@ -312,7 +314,8 @@ Evidence/commit:
 - 2026-07-20 after reauthentication: project and billing IAM confirmed `tymailgarcia@gmail.com` as the sole project owner and sole billing administrator. The initial Firestore read found `(default)` Standard/Native in `asia-east2` with PITR disabled, delete protection disabled, one-hour version retention, no backup schedule, and no backups. No settings were changed during that inventory checkpoint; the later no-cost decision below supersedes its open protection decision.
 - 2026-07-20 no-cost decision: official Firebase documentation confirms PITR data, backup data, and restore operations have no free usage, while delete protection is a database safety setting. Codex enabled only delete protection and independently re-read the database: `DELETE_PROTECTION_ENABLED`, `POINT_IN_TIME_RECOVERY_DISABLED`, Standard/Native, `freeTier: true`, one-hour retention. No backup schedule or backup was created. At this checkpoint, P0-12 still awaited the access/contact decision recorded below.
 - 2026-07-20 12:31 UTC: Ty was asked to name the backup Firebase project/billing administrator email, an independent recovery email/contact route, and the technical-incident and customer-communication contacts. No IAM or billing binding was changed pending that decision.
-- 2026-07-20 12:44 UTC: Ty confirmed he is the only operator and has no backup account. `HANDOVER.md` now lists Ty for launch approval, project administration, billing, technical incidents, and customer communication, using the verified primary email. No backup administrator or independent recovery route exists; loss of the primary Google account could block all operations. Ty accepted this risk, and no IAM/billing setting was changed.
+- 2026-07-20 12:44 UTC, clarified at 12:55 UTC: Ty's sole-operator decision applies to Firebase ownership, billing, deployment, technical response, and the absence of a backup technical administrator. It does not mean Ty will permanently run the business/customer side. `HANDOVER.md` now records Ty's buddy as the future business/customer operator, with identity, contact route, and exact app permissions pending. No Firebase ownership transfer or IAM/billing change occurred.
+- 2026-07-20 after the 12:55 UTC refresh: P0-12's remaining Maps API-key restriction and App Check registration/metrics inventory was identified as a safe read-only follow-up. Local tooling cannot query it (`gcloud` is absent and Firebase CLI 15.22.4 exposes no applicable command), and the in-app Google Cloud console required sign-in. The check remains pending; no restriction, registration, access, or billing setting changed.
 
 ## P1 — finish before broad customer use
 
@@ -364,7 +367,8 @@ Add one row when work starts and update the same row when it stops. Detailed fil
 | 2026-07-20 12:10 | P0-12 authenticated inventory | Codex | blocked on decisions | `HANDOVER.md`, `SHIP-READINESS.md`; read-only Firebase/Google Cloud state | Reauthentication verified. Sole project owner and billing admin identified; no backup admin. Firestore has no PITR, delete protection, schedule, or backups. Hosting rollback IDs and healthy nightly scheduler/function evidence recorded. No external settings changed. |
 | 2026-07-20 12:21 | P0-12 no-cost protection | Codex | database decision complete; access still blocked | `HANDOVER.md`, `SHIP-READINESS.md`; Firestore `(default)` setting | Ty chose no monthly recovery cost. Enabled and verified free delete protection only; PITR remains disabled and no schedule/backup/restore resource was created. Accepted recovery limit documented. |
 | 2026-07-20 12:31 | P0-01/P0-12 safe continuation | Codex | blocked on shared-file reconciliation and Ty's contact decision | `HANDOVER.md`, `RELEASE-RECONCILIATION.md`, `SHIP-READINESS.md`; read-only Git evidence | Refreshed HEAD/ahead/dirty/staged/tag evidence without touching application work; requested the backup-admin, recovery, incident, and customer-contact details required to close P0-12. |
-| 2026-07-20 12:44 | P0-12 sole-operator decision | Codex | documentation complete; risk accepted | `HANDOVER.md`, `SHIP-READINESS.md` | Recorded Ty as the sole launch/technical/billing/customer contact and documented that no backup administrator or separate recovery contact exists. No external access changes made. |
+| 2026-07-20 12:44 | P0-12 sole-technical-operator decision | Codex | documentation corrected at 12:55; risk accepted | `HANDOVER.md`, `SHIP-READINESS.md` | Confirmed Ty is the sole Firebase/billing/deployment/technical operator and has no backup administrator or separate recovery contact. The later clarification assigns future business/customer operations to Ty's buddy. No external access changes made. |
+| 2026-07-20 12:55 | P0-01/P0-12 responsibility correction | Codex | documentation complete; release tree and future operator binding remain pending | `HANDOVER.md`, `RELEASE-RECONCILIATION.md`, `SHIP-READINESS.md`; read-only Git/config evidence | Corrected the operational model: the buddy will run business/customer operations while Ty retains Firebase/billing/deployment/technical control. Refreshed HEAD/ahead/dirty/staged-blob evidence without touching application work. A read-only Maps/App Check console inventory was safe but could not proceed past console sign-in; no external state changed. |
 
 ## Decision log
 
@@ -374,7 +378,7 @@ Record business decisions that change acceptance criteria.
 |---|---|---|---|
 | 2026-07-20 | Pre-ship work prioritizes ease of use and prevention of human/financial error; analytics and expansion features wait. | Ty | P0/P1 ordering in this document. |
 | 2026-07-20 | Launch without monthly recovery cost: enable free database delete protection, but skip paid PITR, scheduled backups, backup storage, managed restore, and restore drill. | Ty | Whole-database deletion is guarded; document-level corruption/deletion older than the one-hour version window may be unrecoverable. Revisit when this accepted loss window is no longer tolerable. |
-| 2026-07-20 | Operate with Ty as the sole project owner, billing administrator, launch approver, technical responder, and customer contact; do not add a backup/recovery account. | Ty | Loss of access to the primary Google account could block administration, billing response, deployment, and customer operations. This is an accepted launch risk, not access redundancy. |
+| 2026-07-20 | Ty retains sole Firebase ownership, billing administration, deployment, rollback, and technical control; no backup/recovery account is added. Ty's buddy will be the future business/customer operator and launch the app for his customers. The buddy's identity, contact route, and exact in-app permissions are deferred; this is not a Firebase ownership transfer. | Ty | Loss of Ty's primary Google account could block technical administration, billing response, deployment, and recovery. Business/customer operations are assigned by role to the future operator, but that person and app access still must be bound before launch. No Firebase access is implied. |
 
 ## Release sign-off
 

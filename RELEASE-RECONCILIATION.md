@@ -2,20 +2,20 @@
 
 **Status:** in progress; production is not reproducible from Git yet
 **Prepared by:** Codex
-**Last checked:** 2026-07-20 12:31 UTC
+**Last checked:** 2026-07-20 12:55 UTC
 
 This inventory supports `SHIP-READINESS.md` P0-01. It records what can be committed safely without sweeping another agent's work.
 
 ## Repository checkpoint
 
 - Branch: `main`
-- HEAD: `734eceb` (`Adopt no-cost Firestore protection policy`)
+- HEAD: `5f10e03` (`Record sole-operator access decision`)
 - Remote checkpoint: `origin/main` at `04062e5`
-- Local branch: 9 commits ahead of `origin/main`
+- Local branch: 11 commits ahead of `origin/main`
 - Tags: none
 - Tracked working-tree changes: 34 files
 - Untracked top-level/status entries: 20
-- Pre-existing staged paths: one — `firebase/web/assets/adminApp.js`
+- Pre-existing staged paths: one — `firebase/web/assets/adminApp.js`; blob `a42a37e545da0d90490ab9c1b4d690671accc0a4`, 14 additions/1 deletion
 - Current unstaged application diff: 7,189 insertions and 874 deletions across 34 files
 
 Do not push or tag this as a release candidate yet. The commit graph contains valuable deployed work, but the remaining live Hosting tree still depends on uncommitted mixed files.
@@ -55,7 +55,7 @@ These areas have live Claude claims and/or known multi-author hunks:
 - `assets/shared.js`, `assets/styles.css`, `assets/invoice.js`, `assets/storageUploads.js`
 - `firebase/functions/index.js`, `firebase/firestore.rules`, `firebase/firebase.json`
 
-`assets/adminApp.js` is especially sensitive: its index contains a 15-line staged delta that predates this reconciliation, while the working tree contains additional unstaged edits (`MM`). Its owner must identify and commit/remove that staged hunk before anyone changes the index broadly.
+`assets/adminApp.js` is especially sensitive: its index contains a 15-line staged delta (14 additions/1 deletion), blob `a42a37e545da0d90490ab9c1b4d690671accc0a4`, that predates this reconciliation, while the working tree contains additional unstaged edits (`MM`). Its owner must identify and commit/remove that staged hunk before anyone changes the index broadly.
 
 ### Claude-claimed deployed work awaiting owner commit
 
@@ -66,7 +66,6 @@ The live board records deployed-but-uncommitted work in address lookup, sign-in/
 The following untracked files appear to be Codex-origin evidence, but most inspect mixed implementation files. Commit each with the implementation slice it verifies, not as a miscellaneous test dump:
 
 - `DESIGN-AUDIT.md`
-- `SHIP-READINESS.md`
 - `firebase/rules-tests/customer-order-cancel.rules.test.mjs`
 - `firebase/src/accountAddressEditor.test.mjs`
 - `firebase/src/adminDashboardModel.test.mjs`
@@ -100,10 +99,12 @@ Leave these for Claude's matching implementation commits.
 | `c649e1e` | Initial Firebase handover blocker evidence |
 | `3d1b101` | Authenticated Firebase project, access, Hosting, and scheduler inventory |
 | `734eceb` | Approved no-cost Firestore protection policy and delete-protection evidence |
+| `266ec90` | Refreshed release and access blockers |
+| `5f10e03` | Recorded the sole-technical-operator access decision; corrected by the later business-operator clarification |
 
 These commits are locally preserved but not a complete production checkpoint. Push only after the remaining live file owners reconcile their hunks, the full clean checkout passes the ship tests, and the Hosting tree matches production.
 
-The 2026-07-20 12:31 UTC refresh confirmed that the four commits after `77acc23` touch only `HANDOVER.md`, `RELEASE-RECONCILIATION.md`, and `SHIP-READINESS.md`. They improve release and access documentation but do not resolve the mixed live Hosting tree. The working tree still has 34 tracked modified files, 20 untracked status entries, and exactly one staged path: Claude's pre-existing `firebase/web/assets/adminApp.js` hunk. No tag exists.
+The 2026-07-20 12:55 UTC refresh confirmed that the six commits after `77acc23` touch only `HANDOVER.md`, `RELEASE-RECONCILIATION.md`, and `SHIP-READINESS.md`. They improve release, access, and recovery documentation but do not resolve the mixed live Hosting tree. The working tree still has 34 tracked modified files, 20 untracked status entries, and exactly one staged path: Claude's pre-existing `firebase/web/assets/adminApp.js` hunk at blob `a42a37e545da0d90490ab9c1b4d690671accc0a4`. The current unstaged application diff remains 7,189 additions and 874 deletions. No tag exists. This read-only refresh was the next genuinely safe unblocked P0-01 action; push/tag/hash proof remains blocked on application-file reconciliation.
 
 ## Required next sequence
 
