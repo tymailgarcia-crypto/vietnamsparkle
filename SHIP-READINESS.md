@@ -286,8 +286,8 @@ Evidence:
 
 ### P0-12 — Establish backup, restore, access, and handover safety
 
-**Status:** [~]
-**Owner:** Codex — started 2026-07-20 11:17 UTC
+**Status:** [!]
+**Owner:** Codex — repository runbook complete; blocked on Firebase reauthentication and Ty's backup/restore decisions
 **Files/area:** Firebase/Google Cloud settings and `HANDOVER.md` (new)
 
 There is no current Firestore backup/restore runbook. The repository's sheet export is dated 2026-07-05 and is not a production database backup. PITR, delete protection, and scheduled backup status were not verified; Firebase CLI credentials also required reauthentication during the audit.
@@ -352,7 +352,7 @@ Add one row when work starts and update the same row when it stops. Detailed fil
 | UTC | Task | Agent | Status | Files claimed | Evidence / next step |
 |---|---|---|---|---|---|
 | 2026-07-20 11:08 | Board creation | Codex | complete | `SHIP-READINESS.md` | Created from parallel customer/admin/technical audit; no app files changed. |
-| 2026-07-20 11:17 | P0-12 + P0-01 safe slice | Codex | in progress | `HANDOVER.md`, `RELEASE-RECONCILIATION.md`, `SHIP-READINESS.md`; six standalone web files | Six production-identical essentials committed as `77acc23`; handover/runbook created. Next: Ty reauthenticates Firebase, confirms owners/backup policy, and approves a restore drill; other agents reconcile mixed live files. |
+| 2026-07-20 11:17 | P0-12 + P0-01 safe slice | Codex | blocked after repository work | `HANDOVER.md`, `RELEASE-RECONCILIATION.md`, `SHIP-READINESS.md`; six standalone web files | Six production-identical essentials committed as `77acc23`; handover/runbook committed as `62ebf43`. Next: Ty reauthenticates Firebase, confirms owners/backup policy, and approves a restore drill; other agents reconcile mixed live files. |
 
 ## Decision log
 
