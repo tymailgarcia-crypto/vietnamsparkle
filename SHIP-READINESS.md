@@ -1,0 +1,380 @@
+# Vietnam Sparkle — Pre-ship stabilization board
+
+**Status:** NO-GO for public launch or handover
+**Started:** 2026-07-20
+**Owners:** Codex + Claude Code
+**Purpose:** finish only the work needed to make ordering, daily operations, money, deposits, and release recovery safe. Product expansion belongs after this board is green.
+
+This document is the shared source of truth for pre-ship work. `ROADMAP.md` remains the broader history and ideas list. `.agent-status.md` remains the live file-claim board.
+
+## How Codex and Claude use this file
+
+1. Before editing anything, run `git status` and read `.agent-status.md`.
+2. Claim the exact files and task ID in `.agent-status.md` before touching code.
+3. Put your name beside only one in-progress task below. Do not start work in files held by the other agent.
+4. A task is not complete because code exists. Its acceptance checks, focused tests, syntax checks, and required browser QA must all pass.
+5. Record the commit and deployment evidence in this file when a task ships.
+6. Never use `git add -A` or `git commit -a`. Stage only your own hunks.
+7. Never run a Hosting deployment while another agent has live work anywhere under `firebase/web/`. Hosting publishes the whole directory.
+8. If a finding proves false, do not silently delete it. Mark it closed with the evidence and date.
+
+### Status notation
+
+- `[ ]` not started
+- `[~]` in progress — include agent name and UTC start time
+- `[x]` complete and verified
+- `[!]` blocked — state the blocker and the decision needed
+
+## Ship gate
+
+The app is ready to ship only when every item here is checked:
+
+- [ ] All P0 tasks below are complete or deliberately disabled behind a safe operational boundary.
+- [ ] Customer can submit once, recover from failure, and see every open order plus the correct net balance.
+- [ ] Approval, cancellation, delivery, payment, refund, and container-return flows cannot leave partial financial state.
+- [ ] Authenticated end-to-end QA has passed on Ty's actual phone.
+- [ ] The deployed Hosting tree, rules, and Functions are reproducible from a pushed Git commit and release tag.
+- [ ] Firestore backup/PITR and a restore procedure have been verified.
+- [ ] Firebase access, ownership, deployment, rollback, and support instructions are documented.
+- [ ] No agent has live uncommitted application work at release time.
+
+## P0 — required before shipping
+
+### P0-01 — Make production reproducible
+
+**Status:** [ ]
+**Owner:** unassigned
+**Files/area:** Git history, production snapshot, release documentation
+
+Production's 42 hosted files matched the local tree during the 2026-07-20 audit, but GitHub could not reproduce that tree: `main` was four commits ahead of `origin/main`, 34 tracked files were modified, six production-essential web files were untracked, and no release tag existed.
+
+Acceptance:
+
+- [ ] Reconcile every live file with its owning agent; do not sweep mixed work into one commit.
+- [x] Add the six live essential files to intentional commits: `adminDashboardModel.js`, `customerOrderApp.js`, `editOrderAddress.js`, `financeApp.js`, `customer-order.html`, and `finance.html`.
+- [ ] Push the verified source checkpoint.
+- [ ] Tag the exact release candidate.
+- [ ] Prove the hosted tree matches the tagged candidate by content hash.
+- [ ] Write the rollback command and identify the previous known-good Hosting release.
+
+Evidence/commit/deploy:
+
+- 2026-07-20: Codex committed the six production-essential files alone as `77acc23`; all six matched production by SHA-256, four modules passed staged syntax checks, and focused checks passed 8/8 + 24/24 + 8/8. The other agent's pre-existing staged `adminApp.js` hunk remained staged and was not included. Ownership/blocker inventory: `RELEASE-RECONCILIATION.md`.
+
+### P0-02 — Make public order submission idempotent
+
+**Status:** [ ]
+**Owner:** unassigned
+**Likely files:** `firebase/web/assets/publicApp.js`, `firebase/functions/index.js`, focused tests
+
+The UI prevents an immediate double-click, but every callable attempt generates a new order ID. If Firestore commits and the response is lost, Retry creates a duplicate order.
+
+Acceptance:
+
+- [ ] Generate one stable submission key before the first attempt and reuse it across retry/reload.
+- [ ] The server creates the order transactionally under a deterministic mapping or returns the already-created order for the same key.
+- [ ] Same user + same submission key can never create a second order.
+- [ ] A new deliberate order still receives a new key.
+- [ ] Tests cover double-click, timeout after commit, retry after reload, and two parallel requests.
+
+Evidence/commit/deploy:
+
+- _Pending._
+
+### P0-03 — Enforce valid delivery date and service area on the server
+
+**Status:** [ ]
+**Owner:** unassigned
+**Likely files:** `firebase/web/index.html`, `firebase/web/assets/publicApp.js`, `firebase/functions/index.js`, tests
+
+The form defaults to today but does not prevent past dates, and the callable validates date format only. Saved coordinates can bypass the client-side Da Nang boundary.
+
+Acceptance:
+
+- [ ] The date input has a current minimum and refreshes correctly across midnight.
+- [ ] The callable rejects past dates using `Asia/Ho_Chi_Minh`, not server UTC.
+- [ ] The business decides and documents whether same-day orders have a cutoff.
+- [ ] The callable enforces the same service-area boundary as the map UI.
+- [ ] Out-of-area legacy saved pins are rejected with a useful repair message.
+- [ ] Tests cover timezone boundary, stale tab, malformed date, and boundary coordinates.
+
+Evidence/commit/deploy:
+
+- _Pending._
+
+### P0-04 — Stop phone edits and typos from corrupting customer identity
+
+**Status:** [ ]
+**Owner:** unassigned
+**Likely files:** `firebase/functions/index.js`, `firebase/web/assets/accountApp.js`, `publicApp.js`, `adminApp.js`, rules/tests as required
+
+A signed-in order still derives `customerId` from the typed phone. Phone edits can split one customer into multiple records, while a typo matching another record can cause approval to overwrite that customer's profile fields.
+
+Acceptance:
+
+- [ ] Signed-in orders use the authenticated customer's stable linked ID.
+- [ ] Phone is a guarded contact attribute, not the primary identity key for an authenticated customer.
+- [ ] Approval blocks and explains any phone collision with another customer/auth UID.
+- [ ] No approval path overwrites a different customer's name, address, email, or phone.
+- [ ] Tests preserve the existing account-takeover protections and cover one-digit typo, existing-number collision, and legitimate phone change.
+
+Evidence/commit/deploy:
+
+- _Pending._
+
+### P0-05 — Make customer open orders, balances, credits, and returns truthful
+
+**Status:** [ ]
+**Owner:** unassigned
+**Likely files:** `firebase/web/assets/accountApp.js`, `publicApp.js`, `customerOrderApp.js`, `customer-order.html`, tests
+
+The account calculates open orders and balance from only the newest ten orders. The order-form overview checks only the newest 25. Older active debt can disappear, and negative carry-forward credit is omitted. The customer order page also reads the unused `/returns` collection, so real returns can display as missing.
+
+Acceptance:
+
+- [ ] Open-order queries are independent of paginated history and cannot hide an older active order.
+- [ ] Balance summary includes both debt and customer credit and labels the net result clearly.
+- [ ] Customer order detail derives physical return history from the actual `depositEvents` model.
+- [ ] No customer-facing code reads `/returns` unless a real writer is introduced and documented.
+- [ ] Tests cover more than 25 orders, old open debt, mixed debt + credit, pure credit, and a credited/refunded return.
+
+Evidence/commit/deploy:
+
+- _Pending._
+
+### P0-06 — Make approval plus deposit charging atomic and retry-safe
+
+**Status:** [ ]
+**Owner:** unassigned
+**Likely files:** `firebase/web/assets/adminApp.js`, `orderApp.js`, `firebase/functions/index.js`, rules/tests
+
+Both approval paths update the order and then create deposit charges separately. The charge duplicate check uses stale client data and fresh IDs, so failure can leave an approved order without a charge and an ambiguous retry can double-charge.
+
+Acceptance:
+
+- [ ] One server transaction handles the status precondition, customer linkage, order approval, and deposit charges.
+- [ ] Deposit charge IDs are deterministic per order and container type.
+- [ ] Repeating the same approval returns success without changing the ledger twice.
+- [ ] Approve is guarded against double-tap and stale status.
+- [ ] Tests cover partial failure, parallel approval, retry, no-deposit products, and mixed container types.
+
+Evidence/commit/deploy:
+
+- _Pending._
+
+### P0-07 — Route every approved cancellation and refund through one atomic case workflow
+
+**Status:** [ ]
+**Owner:** unassigned
+**Likely files:** `firebase/web/assets/adminApp.js`, `orderApp.js`, `firebase/functions/index.js`, cancellation tests, refund-proof tests/UI
+
+Visible Cancel actions still directly update order status and then reverse deposits separately. They bypass the new cancellation/refund ledger, including for paid orders. Refund evidence can be marked missing, but there is no web action to attach it and no central queue to stop unfinished refunds being forgotten.
+
+Acceptance:
+
+- [ ] Old direct approved-order cancellation paths are removed or disabled.
+- [ ] One callable atomically creates/resolves the cancellation case, changes the order, and creates required ledger reversals.
+- [ ] Paid and partially paid orders compute refund liability from immutable payments.
+- [ ] The owner can attach refund evidence from the UI.
+- [ ] A central owner queue shows `refundRemaining > 0` and missing evidence.
+- [ ] Duplicate requests/refund IDs are idempotent.
+- [ ] Focused Storage tests cover `/refund-proofs` authorization, file type, size, and immutability.
+
+Evidence/commit/deploy:
+
+- _Pending._
+
+### P0-08 — Revalidate container holdings at commit time
+
+**Status:** [ ]
+**Owner:** unassigned
+**Likely files:** delivery transaction code in `adminApp.js`/`orderApp.js` or server Functions; `depositsApp.js`; deposit tests
+
+Return collectors clamp against dialog state loaded earlier, but delivery transactions do not re-read/reaggregate current holdings. Two stale dialogs can return the same container. The standalone forfeit flow also trusts stale hidden values. Pickup requests are cleared after delivery even when no empties were collected.
+
+Acceptance:
+
+- [ ] Delivery commit revalidates current holdings atomically before writing return events.
+- [ ] Two parallel deliveries cannot drive any customer/container balance below zero.
+- [ ] Delivery requires the fresh order status to be `out_for_delivery`.
+- [ ] Failure to load holdings blocks close or requires an explicit, audited exception.
+- [ ] Forfeit re-reads current balance transactionally and requires a deliberate reason/account.
+- [ ] Pickup request clears only when fulfilled or explicitly dismissed/rescheduled.
+- [ ] “Owner will decide later” cannot look like a recorded physical return when no ledger event is written.
+
+Evidence/commit/deploy:
+
+- _Pending._
+
+### P0-09 — Guard payment entry and keep Receivables honest
+
+**Status:** [ ]
+**Owner:** unassigned
+**Likely files:** `firebase/web/assets/adminApp.js`, `orderApp.js`, `receivablesApp.js`, related HTML and tests
+
+Payment dialogs reject negative amounts but accept zero and arbitrarily large values. A stale dialog or extra zero can create a material overpayment. Receivables currently includes `new`, `assigned`, and `out_for_delivery` orders in a view labelled Delivered and can prompt customers before delivery.
+
+Acceptance:
+
+- [ ] Collected payment must be a positive whole-VND amount when a balance remains.
+- [ ] Zero is routed to an explicit deferred/uncollected path with follow-up state.
+- [ ] Fresh order status and balance are re-read inside the transaction.
+- [ ] Overpayment requires an explicit confirmation that states the resulting customer credit.
+- [ ] Cancelled orders reject payment.
+- [ ] Receivables separates delivered overdue debt from optional prepayment, or shows delivered orders only.
+- [ ] Tests cover stale dialog, zero, extra zero, exact payment, intentional credit, cancelled order, and undelivered order.
+
+Evidence/commit/deploy:
+
+- _Pending._
+
+### P0-10 — Add a true final review and preserve the cart through sign-in
+
+**Status:** [ ]
+**Owner:** unassigned
+**Likely files:** `firebase/web/index.html`, `publicApp.js`, `account.html`, `accountApp.js`, `styles.css`, tests
+
+One tap submits immediately. The visible totals do not give a final review of address, phone, delivery time, notes, and pickup intent. Google popup sign-in keeps the in-memory cart, but email sign-in navigates away and loses it despite the promise “Your cart is kept.”
+
+Acceptance:
+
+- [ ] Final confirmation shows items, quantities, subtotal, deposit, total, phone, address, date/window, notes, and pickup request.
+- [ ] It reads the existing computed state; it does not duplicate deposit calculations.
+- [ ] Customer can return to edit any section without losing data.
+- [ ] Full draft survives email-link sign-in and returns to the order form, or sign-in is required before entry and the promise is removed.
+- [ ] “Due now” is renamed to match the actual collection moment.
+- [ ] Pickup-credit wording clearly says the driver counts empties and the estimate is non-binding.
+
+Mobile acceptance at 375 px:
+
+- [ ] Action labels fit without clipping or text overlap.
+- [ ] Empty sticky totals consume materially less than the audited 224/812 px viewport height.
+- [ ] Product add/remove and review controls provide approximately 44 × 44 px touch targets.
+- [ ] Add/remove buttons include the product name in their accessible label and quantity changes are announced.
+- [ ] No horizontal overflow with a five-item cart.
+
+Evidence/commit/deploy:
+
+- _Pending._
+
+### P0-11 — Complete authenticated end-to-end release QA
+
+**Status:** [ ]
+**Owner:** unassigned
+**Files/area:** production-equivalent release candidate, Ty's phone, emulator fixtures
+
+Static and source-level tests are green, but the highest-risk flows have not been exercised end-to-end with owner/customer authentication.
+
+Required matrix:
+
+- [ ] New customer: Google sign-in, email-link sign-in, order, confirmation, account visibility.
+- [ ] Repeat order and retired-product reorder warning.
+- [ ] Deliberate double-tap and network timeout after server commit.
+- [ ] Approval retry and stale approval tab.
+- [ ] Delivery: exact cash, deferred cash, deposit credit, cash refund, over-credit, no-return pickup request, note proof, photo proof, upload failure.
+- [ ] Two stale delivery tabs attempting the same container return.
+- [ ] Paid, partially paid, and unpaid cancellation; partial and final refund; proof attachment.
+- [ ] Receivables payment from a stale dialog and intentional overpayment.
+- [ ] Invoice received through WhatsApp and email after dashboard and order-page close flows.
+- [ ] Reconciliation event appears after an intentional console payment and the nightly job remains healthy.
+- [ ] Offline/network errors preserve entered data and offer a clear retry.
+- [ ] Chrome/Android phone QA at 360–390 px and one desktop pass.
+
+Evidence:
+
+- _Record fixture IDs, device/browser, result, screenshots where useful, and cleanup performed._
+
+### P0-12 — Establish backup, restore, access, and handover safety
+
+**Status:** [~]
+**Owner:** Codex — started 2026-07-20 11:17 UTC
+**Files/area:** Firebase/Google Cloud settings and `HANDOVER.md` (new)
+
+There is no current Firestore backup/restore runbook. The repository's sheet export is dated 2026-07-05 and is not a production database backup. PITR, delete protection, and scheduled backup status were not verified; Firebase CLI credentials also required reauthentication during the audit.
+
+Acceptance:
+
+- [ ] Confirm project owner(s), billing owner, recovery email, and at least one backup administrator.
+- [ ] Verify Firestore PITR/delete protection or scheduled export policy.
+- [ ] Perform and document a restore test into a safe non-production target.
+- [x] Document Firebase CLI login, project selection, deploy scopes, rollback, custom-claim setup, Maps key, App Check key, and domain configuration.
+- [x] Document monitoring locations for Functions, Eventarc, Firestore, Storage, reconciliation, and billing/quota alerts.
+- [x] Confirm no service-account credential or private secret is tracked.
+- [ ] Add a launch-day contact/escalation list.
+
+Evidence/commit:
+
+- 2026-07-20: `HANDOVER.md` created with scoped release/rollback, claims, backup/restore-drill, monitoring, Maps/App Check/domain, and escalation procedures. Tracked-tree and Git-history credential scans found no private-key/service-account signature. Firebase CLI credentials were expired and the in-app console required sign-in, so owners, billing, PITR/delete protection, backup schedule, restore drill, alerts, and contacts remain explicitly open.
+
+## P1 — finish before broad customer use
+
+These do not replace the P0 gate. Promote one to P0 if it blocks the real launch audience or operating process.
+
+- [ ] **Off-app owner alerts:** new order, overdue approval, failed/stale reconciliation, pending refund, and missing proof must reach the owner when the dashboard is closed.
+- [ ] **Invoice close-out step:** after either delivery dialog saves, keep the completed order available and present one clear Send invoice action using the uploaded PDF URL.
+- [ ] **Payment/refund evidence:** require a bank/QR reference or proof according to payment method and require payout evidence for refunds.
+- [ ] **Photo source choice:** provide explicit Take photo and Choose from library actions for every proof/image attachment.
+- [ ] **Approved-order customer help:** show the policy and one-tap contact options when self-cancellation is no longer allowed.
+- [ ] **Reorder integrity:** warn which retired/unavailable products were omitted and which prices/deposits changed.
+- [ ] **Error recovery:** translate common Auth/Firestore/Storage/network errors into plain language, preserve work, and provide Retry.
+- [ ] **Audit completeness:** persist `deliveredAt`, closing actor, receivables contact attempts, and next follow-up date.
+- [ ] **Deposit ageing:** reset age after a balance is fully settled and later charged again.
+- [ ] **Accessibility/autofill:** add appropriate autocomplete attributes, live status regions, product-specific control names, focus return, and keyboard/dialog checks.
+- [ ] **Privacy and account exit:** publish a privacy notice and provide an anonymization/deletion-request route that explains retained financial records.
+- [ ] **Legal/accounting sign-off:** confirm business type, tax/e-invoice obligations, retention, privacy handling, and invoice provider against current Vietnamese requirements.
+- [ ] **Security headers:** add safe baseline headers (`nosniff`, frame restrictions, referrer and permissions policy); stage CSP separately after testing inline/external dependencies.
+- [ ] **App Check:** repair/verify Enterprise registration, observe valid metrics, then decide enforcement. Never enforce before verified traffic passes.
+- [ ] **Driver-role boundary:** keep driver rollout disabled until rules restrict drivers to assigned operational data rather than all customers/order items.
+
+## Explicitly safe to defer until after launch
+
+- Analytics/reporting expansion beyond reconciliation and launch-critical queues.
+- Standalone purchases, supplier directory, and deeper inventory automation.
+- Loyalty, referrals, subscriptions, weather hints, and demand forecasting.
+- Full customer-site visual redesign and nonessential dashboard polish.
+- Sticky-toast positioning experiment, except where it blocks a critical control.
+- Scale optimization for full-collection pages until real volume justifies it. This does **not** include P0-05's correctness fix for hidden open orders.
+- Multi-language, unless the actual launch customers cannot safely understand the English ordering and deposit terms.
+
+## Verification baseline from the 2026-07-20 audit
+
+- Production Hosting: 42/42 hosted files matched the inspected local tree.
+- JavaScript syntax: 47 first-party modules passed `node --check`.
+- Focused/source tests: 122 assertions passed across address, dashboard, cancellation policy/math, invoice duplicate-share, map planning, deposit ledger, and return-proof wiring.
+- Current gaps: no CI, no single `test` command, no fresh complete authenticated browser pass, and no focused `/refund-proofs` Storage test.
+- Mobile observation at 375 × 812: empty sticky totals occupied 224 px (28% of viewport), quantity buttons were 32 px wide, and “Sign in to order” overflowed its 105 px button.
+- Operations: in-app alerts exist, but no verified off-app notification, current backup/restore test, or complete handover runbook exists.
+
+## Work log
+
+Add one row when work starts and update the same row when it stops. Detailed file ownership still belongs in `.agent-status.md`.
+
+| UTC | Task | Agent | Status | Files claimed | Evidence / next step |
+|---|---|---|---|---|---|
+| 2026-07-20 11:08 | Board creation | Codex | complete | `SHIP-READINESS.md` | Created from parallel customer/admin/technical audit; no app files changed. |
+| 2026-07-20 11:17 | P0-12 + P0-01 safe slice | Codex | in progress | `HANDOVER.md`, `RELEASE-RECONCILIATION.md`, `SHIP-READINESS.md`; six standalone web files | Six production-identical essentials committed as `77acc23`; handover/runbook created. Next: Ty reauthenticates Firebase, confirms owners/backup policy, and approves a restore drill; other agents reconcile mixed live files. |
+
+## Decision log
+
+Record business decisions that change acceptance criteria.
+
+| UTC | Decision | Made by | Consequence |
+|---|---|---|---|
+| 2026-07-20 | Pre-ship work prioritizes ease of use and prevention of human/financial error; analytics and expansion features wait. | Ty | P0/P1 ordering in this document. |
+
+## Release sign-off
+
+Complete only after the Ship gate is green.
+
+- Release commit: _pending_
+- Release tag: _pending_
+- Hosting release/version: _pending_
+- Rules release/version: _pending_
+- Functions revision(s): _pending_
+- Storage rules release/version: _pending_
+- Production hash comparison: _pending_
+- Backup/restore evidence: _pending_
+- Customer QA sign-off: _pending_
+- Admin QA sign-off: _pending_
+- Known accepted risks: _pending_
+- Final approver/date: _pending_
