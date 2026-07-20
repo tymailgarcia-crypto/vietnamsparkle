@@ -693,3 +693,72 @@ function resolveSubmitButton(target) {
   }
   return null;
 }
+
+// --- Idempotent order submission (P0-02) -----------------------------------
+//
+// Every submitPublicOrder attempt used to mint a fresh order id server-side,
+// so a commit whose response was lost (timeout, dropped connection, closed
+// tab) turned the customer's Retry into a second real order. The client now
+// sends a submission key; the server maps {uid, key} → order transactionally
+// and returns the already-created order for a repeat key instead of writing
+// a new one.
+//
+// The key must survive retry AND reload (localStorage), but a *deliberately
+// new* order must not reuse it — otherwise the new order would be swallowed
+// by the mapping and the customer would silently get nothing. The client
+// cannot ask the customer which case this is, so the rotation rule is:
+// reuse the stored key only while the order's material fields fingerprint
+// the same and the key is younger than SUBMISSION_KEY_MAX_AGE_MS; anything
+// else gets a fresh key. A retry of the same order (same cart, same address,
+// same date) fingerprints identically even when the cart was rebuilt after
+// a reload; editing anything that changes what would be delivered rotates
+// the key, which is Stripe's idempotency-key semantic: different request,
+// different key.
+
+export const SUBMISSION_KEY_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+export const SUBMISSION_KEY_PATTERN = /^[A-Za-z0-9_-]{8,64}$/;
+
+// Stable string of the fields that make two submissions "the same order".
+// Item order is normalized so a cart rebuilt in a different sequence after a
+// reload still matches. Coordinates are rounded to ~1m so a re-confirmed pin
+// on the same spot does not rotate the key.
+export function submissionFingerprint(payload) {
+  const items = (Array.isArray(payload?.items) ? payload.items : [])
+    .map((it) => `${String(it?.productId || "")}x${Math.floor(Number(it?.quantity || 0))}`)
+    .sort()
+    .join(",");
+  const c = payload?.customer || {};
+  const loc = c.deliveryLocation
+    ? `${Number(c.deliveryLocation.lat).toFixed(5)},${Number(c.deliveryLocation.lng).toFixed(5)}`
+    : "";
+  return [
+    items,
+    String(c.phone || "").trim(),
+    String(c.address || "").trim(),
+    String(c.deliveryDate || "").trim(),
+    String(c.deliveryWindow || "").trim(),
+    String(c.notes || "").trim(),
+    loc
+  ].join("|");
+}
+
+export function randomSubmissionKey() {
+  if (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+  return "sk" + Date.now().toString(36) + Math.random().toString(36).slice(2, 12) + Math.random().toString(36).slice(2, 12);
+}
+
+// stored is {key, fingerprint, at} (or null/garbage — localStorage survives
+// old app versions, so validate everything). Returns {key, reused}.
+export function resolveSubmissionKey(stored, fingerprint, nowMs = Date.now()) {
+  const reusable = stored
+    && typeof stored.key === "string"
+    && SUBMISSION_KEY_PATTERN.test(stored.key)
+    && stored.fingerprint === fingerprint
+    && Number.isFinite(Number(stored.at))
+    && nowMs - Number(stored.at) >= 0
+    && nowMs - Number(stored.at) < SUBMISSION_KEY_MAX_AGE_MS;
+  if (reusable) return { key: stored.key, reused: true };
+  return { key: randomSubmissionKey(), reused: false };
+}

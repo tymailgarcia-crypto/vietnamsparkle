@@ -6,6 +6,9 @@
 //     product prices. Closes the "1 VND per jug" attack where a raw
 //     Firestore write bypassed the price check (rules only enforced
 //     arithmetic consistency, not that unitPrice matched products/{id}.unitPrice).
+//     Idempotent per {authUid, submissionKey} via orderSubmissions/{uid}__{key}
+//     (P0-02) — a retry of a committed-but-unacknowledged order returns the
+//     original order instead of creating a duplicate.
 //
 //   nightlyReconcileOrderMath — scheduled job (03:00 Asia/Ho_Chi_Minh) that
 //     recomputes amountPaid / balanceDue / paymentStatus on every non-cancelled
@@ -94,6 +97,51 @@ function buildOrderId(prefix) {
   const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
   const random = Math.floor(Math.random() * 9000 + 1000);
   return `${prefix}-${stamp}-${random}`;
+}
+
+// --- Idempotent order creation (P0-02) -------------------------------------
+//
+// Client keys mirror SUBMISSION_KEY_PATTERN in web/assets/shared.js.
+const SUBMISSION_KEY_PATTERN = /^[A-Za-z0-9_-]{8,64}$/;
+
+// Creates the order + its items exactly once per {authUid, submissionKey}.
+// The mapping doc orderSubmissions/{uid}__{key} is written in the SAME
+// transaction as the order, so a retry whose first attempt committed finds
+// the mapping and gets the original order back — it can never create a
+// second one, including two parallel requests (the transaction serializes
+// them). No firestore.rules change: orderSubmissions has no match block, so
+// clients are denied by default and only this Admin-SDK path writes it.
+//
+// A missing/invalid key falls back to the old non-idempotent batch write so
+// cached pre-P0-02 clients keep ordering; they simply keep the old risk.
+async function createOrderUnderSubmissionKey({ authUid, submissionKey, orderId, orderDoc, itemDocs }) {
+  if (!submissionKey) {
+    const batch = db().batch();
+    batch.set(db().doc(`orders/${orderId}`), orderDoc);
+    itemDocs.forEach((item) => batch.set(db().doc(`orderItems/${item.id}`), item.data));
+    await batch.commit();
+    return { orderId, duplicate: false };
+  }
+  const dedupRef = db().doc(`orderSubmissions/${authUid}__${submissionKey}`);
+  return db().runTransaction(async (tx) => {
+    const existing = await tx.get(dedupRef);
+    if (existing.exists) {
+      const existingOrderId = String((existing.data() || {}).orderId || "");
+      logger.info("submitPublicOrder: duplicate submission key, returning existing order", {
+        authUid, submissionKey, orderId: existingOrderId
+      });
+      return { orderId: existingOrderId, duplicate: true };
+    }
+    tx.set(db().doc(`orders/${orderId}`), orderDoc);
+    itemDocs.forEach((item) => tx.set(db().doc(`orderItems/${item.id}`), item.data));
+    tx.set(dedupRef, {
+      orderId,
+      authUid,
+      createdAt: orderDoc.createdAt,
+      createdAtServer: FieldValue.serverTimestamp()
+    });
+    return { orderId, duplicate: false };
+  });
 }
 
 // --- The callable ---
@@ -250,12 +298,15 @@ exports.submitPublicOrder = onCall(async (request) => {
     throw new HttpsError("invalid-argument", "Could not derive a customer id from the phone number.");
   }
 
+  // P0-02: idempotency key minted by the client and reused across retry /
+  // reload of the same order. Optional — see createOrderUnderSubmissionKey.
+  const rawSubmissionKey = String(data.submissionKey || "").trim();
+  const submissionKey = SUBMISSION_KEY_PATTERN.test(rawSubmissionKey) ? rawSubmissionKey : null;
+
   const orderId = buildOrderId("WEB");
   const nowIso = new Date().toISOString();
 
-  const batch = db().batch();
-
-  batch.set(db().doc(`orders/${orderId}`), {
+  const orderDoc = {
     createdAt: nowIso,
     sourceChannel: "website",
     customerId,
@@ -278,10 +329,11 @@ exports.submitPublicOrder = onCall(async (request) => {
     paymentStatus: "unpaid",
     notes,
     createdAtServer: FieldValue.serverTimestamp()
-  });
+  };
 
-  items.forEach((line) => {
-    batch.set(db().doc(`orderItems/${buildOrderId("ITEM")}`), {
+  const itemDocs = items.map((line) => ({
+    id: buildOrderId("ITEM"),
+    data: {
       orderId,
       authUid: authUid || null,
       productId: line.productId,
@@ -289,12 +341,10 @@ exports.submitPublicOrder = onCall(async (request) => {
       quantity: line.quantity,
       unitPrice: line.unitPrice,
       lineTotal: line.lineTotal
-    });
-  });
+    }
+  }));
 
-  await batch.commit();
-
-  return { orderId };
+  return createOrderUnderSubmissionKey({ authUid, submissionKey, orderId, orderDoc, itemDocs });
 });
 
 // --- Nightly reconciliation ----------------------------------------------
@@ -1442,5 +1492,10 @@ if (process.env.NODE_ENV === "test" || process.env.FUNCTIONS_EMULATOR === "true"
     recordOrderRefundImpl,
     attachRefundEvidenceImpl,
     resolveLegacyCancellationImpl
+  });
+  // P0-02: transactional dedup core behind submitPublicOrder.
+  exports._orderSubmissionTestApi = () => ({
+    createOrderUnderSubmissionKey,
+    SUBMISSION_KEY_PATTERN
   });
 }

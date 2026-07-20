@@ -66,23 +66,32 @@ Evidence/commit/deploy:
 
 ### P0-02 — Make public order submission idempotent
 
-**Status:** [ ]
-**Owner:** unassigned
+**Status:** [x] shipped 2026-07-20 (owner-auth click-through QA still pending)
+**Owner:** Claude
 **Likely files:** `firebase/web/assets/publicApp.js`, `firebase/functions/index.js`, focused tests
 
 The UI prevents an immediate double-click, but every callable attempt generates a new order ID. If Firestore commits and the response is lost, Retry creates a duplicate order.
 
 Acceptance:
 
-- [ ] Generate one stable submission key before the first attempt and reuse it across retry/reload.
-- [ ] The server creates the order transactionally under a deterministic mapping or returns the already-created order for the same key.
-- [ ] Same user + same submission key can never create a second order.
-- [ ] A new deliberate order still receives a new key.
-- [ ] Tests cover double-click, timeout after commit, retry after reload, and two parallel requests.
+- [x] Generate one stable submission key before the first attempt and reuse it across retry/reload. — minted in `publicApp.js::submitOrder`, persisted to `localStorage` under `vs-order-submission-key` **before** the callable runs, cleared only after a success the customer saw.
+- [x] The server creates the order transactionally under a deterministic mapping or returns the already-created order for the same key. — `createOrderUnderSubmissionKey` writes `orderSubmissions/{authUid}__{key}` in the same transaction as the order + items.
+- [x] Same user + same submission key can never create a second order.
+- [x] A new deliberate order still receives a new key. — `resolveSubmissionKey` rotates when the order fingerprint changes or the key is ≥24h old.
+- [x] Tests cover double-click, timeout after commit, retry after reload, and two parallel requests.
+
+Design notes:
+
+- The key is scoped by `authUid`, so one shared browser cannot dedup two different customers' orders.
+- **No `firestore.rules` change.** `orderSubmissions` has no `match` block, so every client is denied by default; only the Admin SDK inside the callable writes it.
+- A missing/invalid key falls back to the old non-idempotent batch write, so a cached pre-P0-02 client keeps ordering (with the old duplicate risk) instead of breaking.
+- When the server matches a retry to an existing order it returns `duplicate: true`, and the confirmation panel says the order was *already* received rather than implying a second delivery.
 
 Evidence/commit/deploy:
 
-- _Pending._
+- 2026-07-20: client key logic `web/assets/orderSubmissionKey.test.mjs` **9/9** (rebuilt-cart ordering, sub-meter pin jitter, changed cart, stale key, storage garbage/clock skew); server core `functions/orderSubmission.emulator.test.js` **7/7** on the Firestore emulator (sequential retry, two parallel requests → exactly one order, per-user key scoping, new-key second order, legacy no-key fallback, key-pattern validation). Emulator stderr clean. Regression: `depositLedger.test.mjs` 25/25 and `cancellation.emulator.test.js` 23/23 still green.
+- 2026-07-20: deployed `--only functions` (all 9 functions updated) then `--only hosting` (**exactly 2/42 files uploaded**: `assets/publicApp.js`, `assets/shared.js`); both re-fetched byte-identical to disk, live markers present, `orderSubmissionKey.test.mjs` 404s as intended.
+- **Not yet done:** authenticated customer click-through QA (no customer session available); the live callable was deliberately not exercised because that would create real production orders.
 
 ### P0-03 — Enforce valid delivery date and service area on the server
 

@@ -29,9 +29,11 @@ import {
   phoneEntryErrorMessage,
   productCategoryKey,
   productImageUrl,
+  resolveSubmissionKey,
   setupPhoneCountryPicker,
   splitPhoneWithCountry,
   setDeliveryWindow,
+  submissionFingerprint,
   summarizeHeldContainers,
   todayKey,
   withSubmitLock
@@ -39,6 +41,28 @@ import {
 import { mapsApiKey, mapsDefaultCenter } from "./firebaseWebConfig.js";
 
 const submitPublicOrderFn = httpsCallable(functions, "submitPublicOrder");
+
+// P0-02: the key that makes a Retry return the already-created order instead
+// of duplicating it. Lives in localStorage so it survives a reload between the
+// lost response and the retry; cleared only after a success the customer saw.
+const SUBMISSION_KEY_STORAGE = "vs-order-submission-key";
+
+function readStoredSubmissionKey() {
+  try {
+    return JSON.parse(localStorage.getItem(SUBMISSION_KEY_STORAGE) || "null");
+  } catch (_) {
+    return null;
+  }
+}
+
+function writeStoredSubmissionKey(entry) {
+  try {
+    if (entry) localStorage.setItem(SUBMISSION_KEY_STORAGE, JSON.stringify(entry));
+    else localStorage.removeItem(SUBMISSION_KEY_STORAGE);
+  } catch (_) {
+    // Private-mode storage failures just lose idempotency, not ordering.
+  }
+}
 
 const REORDER_PAGE_SIZE = 10;
 
@@ -1415,12 +1439,23 @@ async function submitOrder(event) {
   };
 
   let successOrderId = null;
+  let successWasDuplicate = false;
   await withSubmitLock(event, async () => {
     try {
       const payload = buildCallablePayload(form);
+      // Same order (same fingerprint, <24h) reuses the stored key so a retry
+      // after a lost response cannot create a second order; a changed order
+      // rotates it. Persist BEFORE the call: a reload while the request is
+      // in flight must not lose the key.
+      const fingerprint = submissionFingerprint(payload);
+      const resolved = resolveSubmissionKey(readStoredSubmissionKey(), fingerprint);
+      writeStoredSubmissionKey({ key: resolved.key, fingerprint, at: Date.now() });
+      payload.submissionKey = resolved.key;
       const result = await submitPublicOrderFn(payload);
       const orderId = result?.data?.orderId;
       if (!orderId) throw new Error("Order was not confirmed. Please try again.");
+      successWasDuplicate = result?.data?.duplicate === true;
+      writeStoredSubmissionKey(null);
       form.reset();
       state.deliveryLocation = null;
       document.getElementById("address-map-wrap")?.setAttribute("hidden", "");
@@ -1456,10 +1491,17 @@ async function submitOrder(event) {
     const pickupLine = state.customer?.emptiesPickupRequested === true
       ? `<div>Have your empties ready — the driver will collect them and take the deposit off this order.</div>`
       : "";
+    // duplicate: the server matched this submission to an order it already
+    // created (a retry whose first response was lost). Say so — the customer
+    // may have hit Retry expecting a fix, not a second delivery.
+    const receivedLine = successWasDuplicate
+      ? `<strong>Order ${escapeHtml(successOrderId)} was already received.</strong>
+        <div>This looked like a repeat of an order we already have, so we didn't create a second one. Check "View your orders" below — if you really wanted another delivery, change the order (or wait a day) and submit again.</div>`
+      : `<strong>Order ${escapeHtml(successOrderId)} received.</strong>
+        <div>Thanks! We'll confirm shortly and message you before delivery.</div>`;
     feedback.innerHTML = `
       <div class="order-confirmation">
-        <strong>Order ${escapeHtml(successOrderId)} received.</strong>
-        <div>Thanks! We'll confirm shortly and message you before delivery.</div>
+        ${receivedLine}
         ${pickupLine}
         <div class="button-row top-gap"><a class="button-link secondary" href="./account.html">View your orders</a></div>
       </div>
