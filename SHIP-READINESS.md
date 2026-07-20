@@ -34,7 +34,7 @@ The app is ready to ship only when every item here is checked:
 - [ ] Approval, cancellation, delivery, payment, refund, and container-return flows cannot leave partial financial state.
 - [ ] Authenticated end-to-end QA has passed on Ty's actual phone.
 - [ ] The deployed Hosting tree, rules, and Functions are reproducible from a pushed Git commit and release tag.
-- [ ] Firestore backup/PITR and a restore procedure have been verified.
+- [x] Firestore delete protection is enabled, and the no-monthly-cost decision to forgo paid PITR/backups/restore is documented as an accepted launch risk.
 - [ ] Firebase access, ownership, deployment, rollback, and support instructions are documented.
 - [ ] No agent has live uncommitted application work at release time.
 
@@ -289,16 +289,17 @@ Evidence:
 ### P0-12 — Establish backup, restore, access, and handover safety
 
 **Status:** [!]
-**Owner:** Codex — authenticated inventory complete; blocked on access redundancy and Ty's backup/restore decisions
+**Owner:** Codex — no-cost database protection decision complete; blocked on access redundancy and launch contacts
 **Files/area:** Firebase/Google Cloud settings and `HANDOVER.md` (new)
 
-The repository's sheet export is dated 2026-07-05 and is not a production database backup. Authenticated checks found that production Firestore has no PITR, no delete protection, no backup schedule, and no backups. Ty is the sole Firebase project owner and sole Cloud Billing administrator; a recovery contact and backup administrator remain unconfirmed.
+The repository's sheet export is dated 2026-07-05 and is not a production database backup. Production Firestore now has free delete protection enabled. By Ty's explicit no-monthly-cost decision, paid PITR, scheduled backups, backup storage, managed restore, and a restore drill are deliberately deferred. This prevents accidental deletion of the whole database but accepts that older document deletion/corruption may be unrecoverable. Ty remains the sole Firebase project owner and sole Cloud Billing administrator; a recovery contact and backup administrator remain unconfirmed.
 
 Acceptance:
 
 - [ ] Confirm project owner(s), billing owner, recovery email, and at least one backup administrator.
 - [x] Verify and record Firestore PITR/delete-protection/backup state.
-- [ ] Perform and document a restore test into a safe non-production target.
+- [x] Enable and independently verify free delete protection while leaving PITR disabled.
+- [x] Record paid backup/restore and restore-drill work as deliberately deferred under the no-monthly-cost launch policy.
 - [x] Document Firebase CLI login, project selection, deploy scopes, rollback, custom-claim setup, Maps key, App Check key, and domain configuration.
 - [x] Document monitoring locations for Functions, Eventarc, Firestore, Storage, reconciliation, and billing/quota alerts.
 - [x] Confirm no service-account credential or private secret is tracked.
@@ -307,7 +308,8 @@ Acceptance:
 Evidence/commit:
 
 - 2026-07-20: `HANDOVER.md` created with scoped release/rollback, claims, backup/restore-drill, monitoring, Maps/App Check/domain, and escalation procedures. Tracked-tree and Git-history credential scans found no private-key/service-account signature.
-- 2026-07-20 after reauthentication: project and billing IAM confirm `tymailgarcia@gmail.com` is the sole project owner and sole billing administrator. Firestore `(default)` is Standard/Native in `asia-east2` with PITR disabled, delete protection disabled, one-hour version retention, no backup schedule, and no backups. No settings were changed. P0-12 remains blocked on adding backup access/recovery contacts, approving protection and retention, producing a backup, and completing a non-production restore drill.
+- 2026-07-20 after reauthentication: project and billing IAM confirmed `tymailgarcia@gmail.com` as the sole project owner and sole billing administrator. The initial Firestore read found `(default)` Standard/Native in `asia-east2` with PITR disabled, delete protection disabled, one-hour version retention, no backup schedule, and no backups. No settings were changed during that inventory checkpoint; the later no-cost decision below supersedes its open protection decision.
+- 2026-07-20 no-cost decision: official Firebase documentation confirms PITR data, backup data, and restore operations have no free usage, while delete protection is a database safety setting. Codex enabled only delete protection and independently re-read the database: `DELETE_PROTECTION_ENABLED`, `POINT_IN_TIME_RECOVERY_DISABLED`, Standard/Native, `freeTier: true`, one-hour retention. No backup schedule or backup was created. P0-12 now remains blocked only on access redundancy, recovery contact, and launch contacts.
 
 ## P1 — finish before broad customer use
 
@@ -357,6 +359,7 @@ Add one row when work starts and update the same row when it stops. Detailed fil
 | 2026-07-20 11:08 | Board creation | Codex | complete | `SHIP-READINESS.md` | Created from parallel customer/admin/technical audit; no app files changed. |
 | 2026-07-20 11:17 | P0-12 + P0-01 safe slice | Codex | blocked after repository work | `HANDOVER.md`, `RELEASE-RECONCILIATION.md`, `SHIP-READINESS.md`; six standalone web files | Six production-identical essentials committed as `77acc23`; handover/runbook committed as `62ebf43`. Next: Ty reauthenticates Firebase, confirms owners/backup policy, and approves a restore drill; other agents reconcile mixed live files. |
 | 2026-07-20 12:10 | P0-12 authenticated inventory | Codex | blocked on decisions | `HANDOVER.md`, `SHIP-READINESS.md`; read-only Firebase/Google Cloud state | Reauthentication verified. Sole project owner and billing admin identified; no backup admin. Firestore has no PITR, delete protection, schedule, or backups. Hosting rollback IDs and healthy nightly scheduler/function evidence recorded. No external settings changed. |
+| 2026-07-20 12:21 | P0-12 no-cost protection | Codex | database decision complete; access still blocked | `HANDOVER.md`, `SHIP-READINESS.md`; Firestore `(default)` setting | Ty chose no monthly recovery cost. Enabled and verified free delete protection only; PITR remains disabled and no schedule/backup/restore resource was created. Accepted recovery limit documented. |
 
 ## Decision log
 
@@ -365,6 +368,7 @@ Record business decisions that change acceptance criteria.
 | UTC | Decision | Made by | Consequence |
 |---|---|---|---|
 | 2026-07-20 | Pre-ship work prioritizes ease of use and prevention of human/financial error; analytics and expansion features wait. | Ty | P0/P1 ordering in this document. |
+| 2026-07-20 | Launch without monthly recovery cost: enable free database delete protection, but skip paid PITR, scheduled backups, backup storage, managed restore, and restore drill. | Ty | Whole-database deletion is guarded; document-level corruption/deletion older than the one-hour version window may be unrecoverable. Revisit when this accepted loss window is no longer tolerable. |
 
 ## Release sign-off
 
@@ -377,7 +381,7 @@ Complete only after the Ship gate is green.
 - Functions revision(s): _pending_
 - Storage rules release/version: _pending_
 - Production hash comparison: _pending_
-- Backup/restore evidence: _pending_
+- Database recovery decision/evidence: delete protection enabled; paid PITR/backups/restore deliberately deferred by Ty on 2026-07-20.
 - Customer QA sign-off: _pending_
 - Admin QA sign-off: _pending_
 - Known accepted risks: _pending_

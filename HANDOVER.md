@@ -1,7 +1,7 @@
 # Vietnam Sparkle operations and handover runbook
 
-**Status:** operational draft; access redundancy, database protection, restore, and release-candidate checks remain open
-**Last verified:** 2026-07-20 12:10 UTC
+**Status:** operational draft; access redundancy and release-candidate checks remain open; paid database recovery is deliberately deferred
+**Last verified:** 2026-07-20 12:21 UTC
 **Project:** `vietnamsparkle-36dfe`
 **Production Hosting:** <https://vietnamsparkle-36dfe.web.app/>
 
@@ -20,9 +20,9 @@ Verified from the repository and local tools:
 - No private-key/service-account signatures were found in the tracked tree or Git history using the 2026-07-20 credential scan. `.gitignore` excludes common Admin SDK, PEM, P12, and environment-secret filenames.
 - Firebase CLI reauthentication succeeded for `tymailgarcia@gmail.com`; the account can access the ACTIVE project `vietnamsparkle-36dfe` (project number `1092060902387`).
 - Project IAM has one `roles/owner` member: `user:tymailgarcia@gmail.com`. There is no backup project owner or administrator recorded in IAM.
-- Cloud Billing is enabled and linked to `billingAccounts/01D262-5F45BB-369158`. Its IAM policy has one `roles/billing.admin` member: `user:tymailgarcia@gmail.com`; no backup billing administrator was found.
-- The `(default)` Firestore database is Firestore Native, Standard edition, in `asia-east2`. Point-in-time recovery and delete protection are both disabled; version retention is one hour (`3600s`).
-- Firestore has no backup schedule and no backups in `asia-east2`. Production data therefore has no verified database recovery point beyond Firestore's one-hour version retention.
+- Cloud Billing is enabled and linked to `billingAccounts/01D262-5F45BB-369158`. Its IAM policy has one `roles/billing.admin` member: `user:tymailgarcia@gmail.com`; no backup billing administrator was found. A linked billing account means no-cost quotas are allowances, not a hard spending cap.
+- The `(default)` Firestore database is Firestore Native, Standard edition, in `asia-east2`. Delete protection was enabled and verified on 2026-07-20; point-in-time recovery remains disabled and version retention is one hour (`3600s`).
+- Firestore has no backup schedule and no backups in `asia-east2`. Under Ty's no-monthly-cost launch decision, paid PITR, scheduled backups, and managed restore are deliberately deferred.
 - Nine Cloud Functions are ACTIVE on Node.js 22. `reconcileOnPaymentWrite` is in `asia-east2`; the other eight are in `us-central1`.
 - Hosting live version `ceb7745d6aa10c3d` was created 2026-07-20 10:11:58 UTC (44 files). The immediately preceding fully verified version is `9d83a2219e228e81`, created 2026-07-20 09:57:19 UTC (44 files).
 - The current site uses the Firebase `web.app` domain. No custom domain is recorded in the repository.
@@ -35,6 +35,7 @@ Authenticated verification status:
 - [ ] Add a backup billing administrator and confirm a recovery email not dependent on one person/device.
 - [x] Firestore location, edition, point-in-time recovery, and delete-protection state recorded.
 - [x] Scheduled-backup and existing-backup state recorded: neither exists.
+- [x] Free database delete protection enabled; paid PITR/backups left disabled by decision.
 - [ ] Maps key HTTP-referrer restrictions for the production Hosting domain.
 - [ ] Firebase App Check registration and verified-traffic metrics. Do not enforce App Check before valid production traffic appears.
 - [ ] Billing budget alerts, quota alerts, and their recipients.
@@ -131,7 +132,21 @@ Deploy only the affected scope from the previous known-good tag. A Functions rol
 
 Do not roll Firestore data backward as part of a code rollback. Data restore is a separate incident action described below.
 
-## 6. Firestore backup and restore
+## 6. Firestore data protection and accepted recovery limit
+
+### No-monthly-cost launch policy
+
+Decision by Ty on 2026-07-20:
+
+- Keep paid PITR, scheduled backups, backup storage, and managed restore disabled.
+- Enable the no-cost database delete-protection setting. It is enabled on `(default)`.
+- Accept for launch that delete protection prevents deletion of the entire database but does **not** recover documents deleted or corrupted by the application or an operator.
+- With PITR disabled, Firestore retains a one-hour historical version window. This is not a backup and does not provide a verified full-database restore path.
+- Revisit paid recovery before the accepted loss window becomes operationally or financially unacceptable.
+
+Firestore's documented free quota for one database is 1 GiB stored data, 50,000 reads/day, 20,000 writes/day, 20,000 deletes/day, and 10 GiB outbound/month. Because this project has billing linked, exceeding a free allowance or using another paid Firebase/Google Cloud feature can still generate charges. Budget alerts notify; they do not cap usage. Monitor the Firestore Usage and Cloud Billing pages in section 7.
+
+Official references: [Firestore usage and free quota](https://firebase.google.com/docs/firestore/quotas), [PITR pricing](https://firebase.google.com/docs/firestore/enterprise/pitr#pricing), [scheduled-backup requirements and costs](https://firebase.google.com/docs/firestore/backups), and [database delete protection](https://cloud.google.com/firestore/docs/manage-databases).
 
 ### Read-only verification
 
@@ -145,18 +160,18 @@ firebase firestore:backups:list --location asia-east2 --project vietnamsparkle-3
 
 Record the database's `pointInTimeRecoveryEnablement`, `deleteProtectionState`, backup schedule, retention, newest successful backup, and resource name.
 
-Verified 2026-07-20: `(default)` is in `asia-east2`; PITR is disabled, delete protection is disabled, version retention is one hour, the backup-schedule list is empty, and no backups exist in `asia-east2`. Do not treat this verification as an acceptable backup policy: protection must be approved and enabled before the ship gate can close.
+Verified 2026-07-20 after the approved update: `(default)` is in `asia-east2`; delete protection is enabled, PITR is disabled, version retention is one hour, the backup-schedule list is empty, and no backups exist in `asia-east2`.
 
-Possible enablement commands are shown for the approver; do not run them without confirming cost and retention:
+Paid recovery commands are retained for a future policy change; do not run them without explicit cost and retention approval:
 
 ```powershell
-firebase firestore:databases:update '(default)' --point-in-time-recovery ENABLED --delete-protection ENABLED --project vietnamsparkle-36dfe
+firebase firestore:databases:update '(default)' --point-in-time-recovery ENABLED --project vietnamsparkle-36dfe
 firebase firestore:backups:schedules:create -d '(default)' --recurrence DAILY --retention 30d --project vietnamsparkle-36dfe
 ```
 
 ### Restore drill
 
-Never restore over production for a test. Use a uniquely named non-production database in the same project or, preferably, a dedicated restore-drill project. Confirm billing and the destination name before creation.
+There is currently no backup to restore, and a paid managed restore drill is deliberately deferred by the no-monthly-cost policy. If that policy changes, never restore over production for a test. Use a uniquely named non-production database in the same project or, preferably, a dedicated restore-drill project. Confirm billing and the destination name before creation.
 
 ```powershell
 firebase firestore:databases:create restore-drill-YYYYMMDD --location asia-east2 --delete-protection ENABLED --project vietnamsparkle-36dfe
@@ -230,8 +245,8 @@ Escalation order:
 
 - [x] CLI reauthentication completed.
 - [ ] Project/billing owners and backup administrator confirmed.
-- [x] PITR/delete protection/backup schedule recorded; all protections are currently absent.
-- [ ] Restore drill completed and evidence linked.
+- [x] Delete protection enabled; PITR and backup schedule remain disabled under the documented no-monthly-cost policy.
+- [x] Paid managed restore drill explicitly deferred by Ty; no backup exists to restore.
 - [ ] Maps restriction verified.
 - [ ] App Check registration/metrics decision recorded.
 - [ ] Release and previous-good tags/Hosting versions recorded.
