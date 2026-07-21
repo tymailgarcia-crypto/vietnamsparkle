@@ -32,7 +32,17 @@ ordercancellations 13); `customer-order-cancel` extended 6→9. Only the
 pre-existing documented-benign driver/customer bare-field stderr (L-shifted by
 the added helper). Not owner-click-through QA'd — no session, the standing gap.
 
-Next in SHIP-READINESS: **P0-08** (revalidate container holdings at delivery-commit time) is
+**P0-08 increment 1 shipped `dd5f396`** (acceptance item 3): both delivery
+transactions now require the fresh, in-transaction order status to be exactly
+`out_for_delivery` (was: only rejected already-`delivered`), so a stale tab can
+no longer deliver a `new`/`assigned`/rolled-back order. The concurrency CORE of
+P0-08 (items 1/2/4/5 — atomic holdings revalidation, parallel-safe negative
+prevention, transactional forfeit re-read, fulfilled-only pickup clearing) is
+NOT done: the Firestore client SDK can't query inside `runTransaction`, so it
+needs delivery-commit moved to an Admin-SDK server callable. See SHIP-READINESS
+P0-08 architecture note. That is the next increment.
+
+Still in SHIP-READINESS: **P0-08** (revalidate container holdings at delivery-commit time) is
 next in SHIP-READINESS.md. Trust SHIP-READINESS.md for per-P0 status/evidence and
 ROADMAP.md "Shipped 2026-07-21" for the how/why.
 
