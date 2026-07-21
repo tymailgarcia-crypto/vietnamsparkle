@@ -934,3 +934,77 @@ export function resolveSubmissionKey(stored, fingerprint, nowMs = Date.now()) {
   if (reusable) return { key: stored.key, reused: true };
   return { key: randomSubmissionKey(), reused: false };
 }
+
+// --- P0-10: the order draft that survives the email sign-in round trip -------
+//
+// Google sign-in is a popup, so the order form (and its in-memory cart) never
+// unloads. Email sign-in NAVIGATES to account.html and then to the emailed
+// link, so before P0-10 everything typed was silently lost despite the modal
+// promising "Your cart is kept." The order page now writes this draft to
+// localStorage before that navigation and restores it on return; account.html
+// bounces a fresh-draft visitor back to the order form after the link
+// completes. Same storage discipline as the submission key above: validate
+// everything on the way back in, expire after a day, and never trust shapes
+// from older app versions.
+
+export const ORDER_DRAFT_STORAGE_KEY = "vs-order-draft";
+export const ORDER_DRAFT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const ORDER_DRAFT_FIELDS = ["name", "phoneNational", "phoneCountry", "address", "deliveryDate", "deliveryWindow", "notes"];
+
+// Normalizes to a storable draft, or null when there is nothing worth saving
+// (no items and no typed fields — do not resurrect an empty form).
+export function buildOrderDraft({ quantities = {}, fields = {}, deliveryLocation = null, savedAtMs = Date.now() } = {}) {
+  const cleanQuantities = {};
+  Object.entries(quantities || {}).forEach(([id, qty]) => {
+    const n = Math.floor(Number(qty));
+    if (id && Number.isFinite(n) && n > 0) cleanQuantities[id] = n;
+  });
+  const cleanFields = {};
+  ORDER_DRAFT_FIELDS.forEach((key) => {
+    const value = String((fields || {})[key] || "").trim();
+    if (value) cleanFields[key] = value;
+  });
+  if (!Object.keys(cleanQuantities).length && !Object.keys(cleanFields).length) return null;
+  const loc = deliveryLocation || null;
+  const validLoc = loc && Number.isFinite(Number(loc.lat)) && Number.isFinite(Number(loc.lng));
+  return {
+    v: 1,
+    quantities: cleanQuantities,
+    fields: cleanFields,
+    deliveryLocation: validLoc
+      ? {
+          lat: Number(loc.lat),
+          lng: Number(loc.lng),
+          formattedAddress: String(loc.formattedAddress || ""),
+          source: loc.source || null
+        }
+      : null,
+    savedAt: Number(savedAtMs)
+  };
+}
+
+// Parses what localStorage returned. null for garbage, foreign versions,
+// stale (>24h) or future-stamped drafts. Round-trips through buildOrderDraft
+// so a hand-edited value cannot smuggle unexpected shapes back into the form.
+export function parseStoredOrderDraft(raw, nowMs = Date.now(), maxAgeMs = ORDER_DRAFT_MAX_AGE_MS) {
+  if (!raw) return null;
+  let parsed = raw;
+  if (typeof raw === "string") {
+    try {
+      parsed = JSON.parse(raw);
+    } catch (_) {
+      return null;
+    }
+  }
+  if (!parsed || typeof parsed !== "object" || parsed.v !== 1) return null;
+  const savedAt = Number(parsed.savedAt);
+  if (!Number.isFinite(savedAt) || savedAt <= 0) return null;
+  if (nowMs - savedAt > maxAgeMs) return null;
+  if (savedAt - nowMs > 60 * 1000) return null;
+  return buildOrderDraft({
+    quantities: parsed.quantities,
+    fields: parsed.fields,
+    deliveryLocation: parsed.deliveryLocation,
+    savedAtMs: savedAt
+  });
+}

@@ -3296,3 +3296,85 @@ button.success-locked:disabled {
 .phone-country-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .phone-country-code { color: var(--muted); font-weight: 600; }
 .phone-country-empty { display: block; padding: 14px 10px; color: var(--muted); text-align: center; }
+
+/* --- P0-10: final order review dialog + a11y (Claude, 2026-07-21) --------- */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+.order-review-dialog {
+  max-width: min(480px, 92vw);
+  width: 100%;
+}
+.order-review-dialog-title { margin: 0 0 10px; }
+.order-review-dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: min(62vh, 560px);
+  overflow-y: auto;
+}
+.order-review-section {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+.order-review-section p {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+}
+.order-review-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.order-review-section-head h4 { margin: 0; font-size: 14px; }
+.order-review-edit { min-height: 32px; padding: 4px 12px; position: relative; }
+.order-review-edit::after { content: ""; position: absolute; inset: -6px; }
+.order-review-pin { margin-top: 2px; font-size: 13px; }
+.order-review-dialog-note { margin: 10px 0 0; }
+.order-review-dialog-actions {
+  margin-top: 12px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+.order-review-dialog-actions button { min-height: 44px; }
+/* ~44px tap targets on the compact mobile qty/remove controls WITHOUT changing
+   their visual size (the 32px look is the deliberate compact layout). */
+.catalog-column .qty-row button { position: relative; }
+.catalog-column .qty-row button::after { content: ""; position: absolute; inset: -6px; }
+.order-review-remove { position: relative; }
+.order-review-remove::after { content: ""; position: absolute; inset: -8px; }
+/* P0-10 mobile acceptance: an EMPTY sticky-totals panel was consuming the full
+   audited 224/812px before a single item was added — most of it the zero-value
+   summary and the item-review handles, which say nothing with an empty cart.
+   Collapse them until there is something to total. Populated state (Codex's
+   layout) is untouched — this only fires while :not(.has-order-items). */
+.mobile-sticky-totals:not(.has-order-items) .order-review-controls,
+.mobile-sticky-totals:not(.has-order-items) .order-total-summary,
+.mobile-sticky-totals:not(.has-order-items) .deposit-note { display: none; }
+.mobile-sticky-totals:not(.has-order-items) h3 { margin-bottom: 6px; }
+.mobile-sticky-totals:not(.has-order-items) .order-review-empty { margin: 0; }
+/* The 3-column totals summary is sized for the full-width sticky panel; inside
+   the narrower review dialog its 20px nowrap values collide. Stack it there as
+   label-left / value-right rows so nothing overlaps at 375px. */
+.order-review-dialog .order-total-summary { grid-template-columns: 1fr; }
+.order-review-dialog .order-total-cell {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  border-right: 0;
+  border-bottom: 1px solid var(--line);
+  padding: 8px 12px;
+}
+.order-review-dialog .order-total-cell:last-child { border-bottom: 0; }
+.order-review-dialog .order-total-cell strong { font-size: 16px; }

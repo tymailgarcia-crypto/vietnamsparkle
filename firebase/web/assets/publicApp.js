@@ -21,6 +21,7 @@ import {
   where
 } from "./firebaseClient.js";
 import {
+  buildOrderDraft,
   computeOrderTotals,
   DA_NANG_DELIVERY_BOUNDS,
   deliveryDateProblem,
@@ -29,6 +30,8 @@ import {
   isBrokenDepositBalance,
   isInsideDeliveryArea,
   normalizePhoneWithCountry,
+  ORDER_DRAFT_STORAGE_KEY,
+  parseStoredOrderDraft,
   phoneEntryErrorMessage,
   productCategoryKey,
   productImageUrl,
@@ -65,6 +68,94 @@ function writeStoredSubmissionKey(entry) {
   } catch (_) {
     // Private-mode storage failures just lose idempotency, not ordering.
   }
+}
+
+// --- P0-10: draft that survives the email sign-in navigation -----------------
+// Google sign-in is a popup (page never unloads); email sign-in navigates to
+// account.html and the emailed link. Saving here is what makes the sign-in
+// modal's "Your cart is kept" true on BOTH paths. Pure shape/validation logic
+// lives in shared.js (buildOrderDraft/parseStoredOrderDraft) so it is testable.
+
+function readStoredOrderDraft() {
+  try {
+    return parseStoredOrderDraft(localStorage.getItem(ORDER_DRAFT_STORAGE_KEY));
+  } catch (_) {
+    return null;
+  }
+}
+
+function writeStoredOrderDraft(draft) {
+  try {
+    if (draft) localStorage.setItem(ORDER_DRAFT_STORAGE_KEY, JSON.stringify(draft));
+    else localStorage.removeItem(ORDER_DRAFT_STORAGE_KEY);
+  } catch (_) {
+    // Private-mode storage failures just lose the draft, not ordering.
+  }
+}
+
+// Snapshot the live form + cart. Called from the links that navigate away to
+// sign in; a null result (nothing typed, nothing in the cart) clears any
+// stale stored draft instead.
+function captureOrderDraft() {
+  const form = document.getElementById("public-order-form");
+  if (!form) return null;
+  return buildOrderDraft({
+    quantities: state.quantities,
+    fields: {
+      name: form.customerName?.value,
+      phoneNational: form.phone?.value,
+      phoneCountry: document.getElementById("form-phone-country")?.value,
+      address: form.address?.value,
+      deliveryDate: form.deliveryDate?.value,
+      deliveryWindow: form.deliveryWindow?.value,
+      notes: form.notes?.value
+    },
+    deliveryLocation: state.deliveryLocation
+  });
+}
+
+function saveOrderDraftForSignIn() {
+  writeStoredOrderDraft(captureOrderDraft());
+}
+
+// One-shot restore on return. Runs only after BOTH auth and the catalog have
+// resolved: the quantities need the product list, and prefillFromCustomer must
+// already have run so the draft's values (what the customer typed minutes ago)
+// win over the profile prefill, not the other way round. The address + pin are
+// restored only while the manual address editor is in charge — for a returning
+// customer with saved addresses, the saved-address flow is deliberately
+// authoritative (its comment: do not preserve a stale typed address).
+function restoreOrderDraftIfAny() {
+  const draft = readStoredOrderDraft();
+  if (!draft) return false;
+  writeStoredOrderDraft(null);
+  const form = document.getElementById("public-order-form");
+  if (!form) return false;
+  const f = draft.fields || {};
+  if (f.name && form.customerName) form.customerName.value = f.name;
+  if (f.phoneNational && form.phone) form.phone.value = f.phoneNational;
+  if (f.phoneCountry) {
+    setupPhoneCountryPicker(document.getElementById("form-phone-country-picker"))?.setValue(f.phoneCountry);
+  }
+  if (f.deliveryDate && form.deliveryDate) form.deliveryDate.value = f.deliveryDate;
+  if (f.deliveryWindow) setDeliveryWindow(document.getElementById("delivery-window"), f.deliveryWindow);
+  if (f.notes && form.notes) form.notes.value = f.notes;
+  const manualAddressMode = document.getElementById("saved-address-control")?.hidden !== false;
+  if (manualAddressMode && f.address && form.address) {
+    form.address.value = f.address;
+    if (draft.deliveryLocation) {
+      state.deliveryLocation = { ...draft.deliveryLocation };
+      setAddressVerifyStatus("✓ Delivery location confirmed on Google Maps.", true);
+    }
+  }
+  if (Object.keys(draft.quantities || {}).length) {
+    state.quantities = { ...draft.quantities };
+    renderCatalog();
+    renderTotals();
+  }
+  refreshDeliveryDateFloor();
+  setPublicFeedback("Welcome back — your order is exactly where you left it. Check it and submit when ready.");
+  return true;
 }
 
 const REORDER_PAGE_SIZE = 10;
@@ -165,8 +256,9 @@ async function renderPublicOpenOrders(user) {
 // customer is actually thinking about it.
 //
 // Everything below is deliberately non-binding. The figure shown is an estimate
-// in prose; it is NOT added to computeOrderTotals, depositTotal or "Due now",
-// because a credit that has not been earned must never reach the order.
+// in prose; it is NOT added to computeOrderTotals, depositTotal or the "Pay on
+// delivery" figure, because a credit that has not been earned must never reach
+// the order.
 // No rules change: the customers update rule blacklists owner-managed keys, so
 // a signed-in customer may already set these two keys on their own doc — the
 // same write account.html has been making.
@@ -231,7 +323,7 @@ async function renderEmptiesPickup(user) {
   // "About", and only when there is something to estimate. This is the one line
   // that could be mistaken for a discount, so it stays conditional prose.
   const estimate = totalDeposit >= 1
-    ? ` That's ${formatCurrency(totalDeposit)} in deposit — return them all on this delivery and about that much comes off your bill.`
+    ? ` That's about ${formatCurrency(totalDeposit)} in deposit. The driver counts what actually comes back at the door, and the credit follows that count — this figure is an estimate, not a promise.`
     : "";
   summary.innerHTML = `<strong>${escapeHtml(held)}</strong><span class="muted">${escapeHtml(estimate)}</span>`;
   toggle.checked = requested;
@@ -1000,7 +1092,7 @@ function renderTotals() {
     <div class="order-total-summary">
       <div class="order-total-cell"><span class="muted">Subtotal</span><strong>${formatCurrency(totals.subtotal)}</strong></div>
       <div class="order-total-cell"><span class="muted order-deposit-label">Deposit <button type="button" class="info-dot" id="deposit-info" aria-label="What is a deposit?" aria-expanded="false">?</button></span><strong>${formatCurrency(totals.depositTotal)}</strong></div>
-      <div class="order-total-cell order-total-due"><span class="muted">Due now</span><strong>${formatCurrency(due)}</strong></div>
+      <div class="order-total-cell order-total-due"><span class="muted">Pay on delivery</span><strong>${formatCurrency(due)}</strong></div>
     </div>
     <p id="deposit-note" class="muted deposit-note hidden">Refundable deposit for returnable crates and jugs. You get it back when they are returned.</p>
   `;
@@ -1032,6 +1124,14 @@ function adjustQuantity(productId, delta) {
   if (node) {
     node.textContent = String(next);
   }
+  // P0-10: announce the result to screen readers ("Uni 20L Jug: 2 in cart")
+  // without stealing focus — the +/- buttons only say what they do, not what
+  // the cart now holds.
+  const announcer = document.getElementById("cart-live-status");
+  if (announcer && next !== current) {
+    const product = state.products.find((p) => p.id === productId);
+    announcer.textContent = `${product?.productName || "Item"}: ${next} in cart`;
+  }
   renderTotals();
 }
 
@@ -1058,9 +1158,9 @@ function renderCatalog() {
         <strong class="product-price">${formatCurrency(product.unitPrice)}</strong>
       </div>
       <div class="qty-row">
-        <button class="ghost" type="button" data-qty-minus="${escapeHtml(product.id)}">-</button>
-        <span class="qty-value" data-qty-value="${escapeHtml(product.id)}">0</span>
-        <button class="primary" type="button" data-qty-plus="${escapeHtml(product.id)}">+</button>
+        <button class="ghost" type="button" data-qty-minus="${escapeHtml(product.id)}" aria-label="Remove one ${escapeHtml(product.productName)}">-</button>
+        <span class="qty-value" data-qty-value="${escapeHtml(product.id)}">${Number(state.quantities[product.id] || 0)}</span>
+        <button class="primary" type="button" data-qty-plus="${escapeHtml(product.id)}" aria-label="Add one ${escapeHtml(product.productName)}">+</button>
       </div>
     `;
     target.appendChild(wrap);
@@ -1393,7 +1493,6 @@ async function loadMorePastOrders() {
 async function submitOrder(event) {
   event.preventDefault();
   const form = event.currentTarget;
-  const feedback = document.getElementById("public-feedback");
   // Ordering requires sign-in. The server rejects guest orders too; this is the
   // friendly stop (reached via Enter-to-submit — the button click opens the
   // modal directly). Pop the sign-in modal instead of bouncing the customer.
@@ -1414,8 +1513,6 @@ async function submitOrder(event) {
       : document.getElementById("address-verify-button"))?.focus();
     return;
   }
-  const submitButton = event.submitter
-    || document.querySelector('button[form="public-order-form"][type="submit"]');
 
   // Phones are stored E.164-only so wa.me links work (Ty, 2026-07-16).
   // Vietnamese local formats normalize to +84 automatically; other countries
@@ -1429,6 +1526,145 @@ async function submitOrder(event) {
     return;
   }
   if (form.phone) form.phone.value = phoneE164;
+  if (!selectedLines().length) {
+    setPublicFeedback("Select at least one item.", { error: true, scroll: true });
+    return;
+  }
+
+  // P0-10: submitting the form opens the final review — nothing is sent until
+  // "Place order" is pressed inside the dialog.
+  openOrderReviewDialog();
+}
+
+// --- P0-10: the true final review -------------------------------------------
+// One tap used to submit immediately; the sticky totals never showed the
+// address, phone, date or notes about to be sent. The review reads the SAME
+// computed state the totals panel uses — selectedLines() + computeOrderTotals()
+// — so there is no second deposit calculation to drift.
+
+function renderOrderReviewBody() {
+  const form = document.getElementById("public-order-form");
+  const lines = selectedLines();
+  const totals = computeOrderTotals(lines);
+  const editButton = (target, label) =>
+    `<button type="button" class="ghost order-review-edit" data-review-edit="${target}" aria-label="Edit ${label}">Edit</button>`;
+
+  const itemRows = lines.map((line) => `
+    <li>
+      <span class="order-review-name">${escapeHtml(line.productName)}</span>
+      <span class="order-review-qty">× ${Number(line.quantity)}</span>
+      <span class="order-review-amt">${formatCurrency(Number(line.unitPrice || 0) * Number(line.quantity))}</span>
+    </li>`).join("");
+
+  const windowSelect = document.getElementById("delivery-window");
+  const windowLabel = windowSelect?.selectedOptions?.[0]?.textContent?.trim() || form.deliveryWindow?.value?.trim() || "Any time";
+  const pin = state.deliveryLocation;
+  const pinLine = pin?.formattedAddress && pin.formattedAddress !== form.address?.value?.trim()
+    ? `<div class="muted order-review-pin">Pin: ${escapeHtml(pin.formattedAddress)}</div>`
+    : "";
+  const notes = String(form.notes?.value || "").trim();
+  const pickupCard = document.getElementById("empties-pickup");
+  const pickupVisible = pickupCard && !pickupCard.classList.contains("hidden");
+  const pickupChecked = pickupVisible && document.getElementById("empties-pickup-toggle")?.checked === true;
+  const pickupLine = pickupVisible
+    ? `<section class="order-review-section">
+        <div class="order-review-section-head"><h4>Empties pickup</h4>${editButton("pickup", "the empties pickup request")}</div>
+        <p>${pickupChecked
+          ? "Requested — have them ready. The driver counts what actually comes back at the door; the deposit credit follows that count."
+          : "Not requested for this delivery."}</p>
+      </section>`
+    : "";
+
+  return `
+    <section class="order-review-section">
+      <div class="order-review-section-head"><h4>Items</h4>${editButton("items", "the items")}</div>
+      <ul class="order-review">${itemRows}</ul>
+      <div class="order-total-summary">
+        <div class="order-total-cell"><span class="muted">Subtotal</span><strong>${formatCurrency(totals.subtotal)}</strong></div>
+        <div class="order-total-cell"><span class="muted">Deposit</span><strong>${formatCurrency(totals.depositTotal)}</strong></div>
+        <div class="order-total-cell order-total-due"><span class="muted">Pay on delivery</span><strong>${formatCurrency(totals.subtotal + totals.depositTotal)}</strong></div>
+      </div>
+    </section>
+    <section class="order-review-section">
+      <div class="order-review-section-head"><h4>Contact</h4>${editButton("contact", "your contact details")}</div>
+      <p><strong>${escapeHtml(String(form.customerName?.value || "").trim())}</strong> · ${escapeHtml(String(form.phone?.value || "").trim())}</p>
+    </section>
+    <section class="order-review-section">
+      <div class="order-review-section-head"><h4>Delivery address</h4>${editButton("address", "the delivery address")}</div>
+      <p>${escapeHtml(String(form.address?.value || "").trim())}</p>
+      ${pinLine}
+    </section>
+    <section class="order-review-section">
+      <div class="order-review-section-head"><h4>When</h4>${editButton("delivery", "the delivery date and window")}</div>
+      <p>${escapeHtml(String(form.deliveryDate?.value || "").trim())} · ${escapeHtml(windowLabel)}</p>
+    </section>
+    <section class="order-review-section">
+      <div class="order-review-section-head"><h4>Notes for the driver</h4>${editButton("notes", "the notes")}</div>
+      <p>${notes ? escapeHtml(notes) : '<span class="muted">None</span>'}</p>
+    </section>
+    ${pickupLine}
+  `;
+}
+
+function openOrderReviewDialog() {
+  const dialog = document.getElementById("order-review-dialog");
+  const body = document.getElementById("order-review-dialog-body");
+  if (!dialog || !body) return;
+  body.innerHTML = renderOrderReviewBody();
+  const confirmBtn = document.getElementById("order-review-dialog-confirm");
+  if (confirmBtn) confirmBtn.disabled = false;
+  if (typeof dialog.showModal === "function") dialog.showModal();
+  else dialog.setAttribute("open", "");
+}
+
+function closeOrderReviewDialog() {
+  const dialog = document.getElementById("order-review-dialog");
+  if (!dialog) return;
+  if (typeof dialog.close === "function") dialog.close();
+  else dialog.removeAttribute("open");
+  // The phone gate rewrote the field to E.164 before the review opened; going
+  // back to edit should show the national number + country picker again.
+  syncPublicPhoneCountry();
+}
+
+// "Edit" inside the review: close and land the customer on the section they
+// asked for, form state untouched (it was never cleared).
+function handleOrderReviewEdit(target) {
+  closeOrderReviewDialog();
+  if (target === "items") {
+    document.getElementById("catalog-glass")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    return;
+  }
+  const focusTarget = {
+    contact: "form-customer-name",
+    address: "form-address",
+    delivery: "delivery-date",
+    pickup: "empties-pickup-toggle"
+  }[target];
+  if (focusTarget) {
+    const node = document.getElementById(focusTarget);
+    node?.scrollIntoView({ behavior: "smooth", block: "center" });
+    node?.focus?.({ preventScroll: true });
+    return;
+  }
+  if (target === "notes") {
+    const notes = document.getElementById("public-order-form")?.notes;
+    notes?.scrollIntoView({ behavior: "smooth", block: "center" });
+    notes?.focus?.({ preventScroll: true });
+  }
+}
+
+async function handleOrderReviewConfirm(event) {
+  closeOrderReviewDialog();
+  await performOrderSubmit(event);
+}
+
+// The actual submission — everything below ran inline in submitOrder before
+// P0-10; only the entry point changed (the review dialog's "Place order").
+async function performOrderSubmit(lockEvent) {
+  const form = document.getElementById("public-order-form");
+  const feedback = document.getElementById("public-feedback");
+  const submitButton = document.querySelector('button[form="public-order-form"][type="submit"]');
   setPublicFeedback("Submitting order...");
 
   // Capture identity fields before we reset the form — needed for the
@@ -1444,7 +1680,7 @@ async function submitOrder(event) {
 
   let successOrderId = null;
   let successWasDuplicate = false;
-  await withSubmitLock(event, async () => {
+  await withSubmitLock(lockEvent, async () => {
     try {
       const payload = buildCallablePayload(form);
       // Same order (same fingerprint, <24h) reuses the stored key so a retry
@@ -1460,6 +1696,9 @@ async function submitOrder(event) {
       if (!orderId) throw new Error("Order was not confirmed. Please try again.");
       successWasDuplicate = result?.data?.duplicate === true;
       writeStoredSubmissionKey(null);
+      // A submitted order retires any sign-in draft too — nothing should
+      // resurrect a cart that was just delivered to the server.
+      writeStoredOrderDraft(null);
       form.reset();
       state.deliveryLocation = null;
       document.getElementById("address-map-wrap")?.setAttribute("hidden", "");
@@ -1493,7 +1732,7 @@ async function submitOrder(event) {
     // minutes ago and should see it was carried onto the order they just placed,
     // otherwise the only confirmation is a checkbox that scrolled away.
     const pickupLine = state.customer?.emptiesPickupRequested === true
-      ? `<div>Have your empties ready — the driver will collect them and take the deposit off this order.</div>`
+      ? `<div>Have your empties ready — the driver counts what comes back at the door, and the deposit for that count comes off your bill.</div>`
       : "";
     // duplicate: the server matched this submission to an order it already
     // created (a retry whose first response was lost). Say so — the customer
@@ -2023,8 +2262,22 @@ publicAddressInput?.addEventListener("blur", () => {
 // product catalog is on screen — that's the minimum "page is real" bar.
 let authResolved = false;
 let productsResolved = false;
+// P0-10: the sign-in draft restores at the same moment, and only then — the
+// quantities need the catalog, and prefillFromCustomer must already have run
+// so the draft's values (what the customer typed minutes ago) win over the
+// profile prefill rather than being clobbered by it.
+let orderDraftRestored = false;
 const maybeReveal = () => {
-  if (authResolved && productsResolved) hideAppLoading();
+  if (!authResolved || !productsResolved) return;
+  if (!orderDraftRestored) {
+    orderDraftRestored = true;
+    try {
+      restoreOrderDraftIfAny();
+    } catch (error) {
+      console.warn("Could not restore the order draft:", error);
+    }
+  }
+  hideAppLoading();
 };
 onAuthStateChanged(auth, async (user) => {
   try {
@@ -2062,6 +2315,21 @@ document.getElementById("public-submit-button")?.addEventListener("click", (even
 });
 document.getElementById("signin-dialog-google")?.addEventListener("click", handleDialogGoogleSignIn);
 document.getElementById("signin-dialog-close")?.addEventListener("click", closeSignInDialog);
+
+// P0-10: both links that navigate away to sign in save the draft first — this
+// is what makes the modal's "Your cart is kept" true on the email path too
+// (Google is a popup and never unloads the page). account.html bounces back
+// here after the emailed link completes, and the draft restores on load.
+document.getElementById("signin-dialog-email")?.addEventListener("click", saveOrderDraftForSignIn);
+document.getElementById("account-link")?.addEventListener("click", saveOrderDraftForSignIn);
+
+// P0-10: final review dialog.
+document.getElementById("order-review-dialog-confirm")?.addEventListener("click", handleOrderReviewConfirm);
+document.getElementById("order-review-dialog-back")?.addEventListener("click", closeOrderReviewDialog);
+document.getElementById("order-review-dialog-body")?.addEventListener("click", (event) => {
+  const editBtn = event.target.closest("[data-review-edit]");
+  if (editBtn) handleOrderReviewEdit(editBtn.dataset.reviewEdit);
+});
 document.getElementById("form-phone")?.addEventListener("blur", syncPublicPhoneCountry);
 
 const reorderOpenBtn = document.getElementById("reorder-open-button");

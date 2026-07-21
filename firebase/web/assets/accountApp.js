@@ -23,7 +23,7 @@ import {
   where,
   writeBatch
 } from "./firebaseClient.js";
-import { buildCustomerId, formatCurrency, mergeThresholds, normalizePhoneWithCountry, openOrdersFrom, phoneEntryErrorMessage, productImageUrl, setupPhoneCountryPicker, splitPhoneWithCountry, summarizeAccountBalance, summarizeHeldContainers, THRESHOLD_DEFAULTS, withSubmitLock } from "./shared.js";
+import { buildCustomerId, formatCurrency, mergeThresholds, normalizePhoneWithCountry, openOrdersFrom, ORDER_DRAFT_STORAGE_KEY, parseStoredOrderDraft, phoneEntryErrorMessage, productImageUrl, setupPhoneCountryPicker, splitPhoneWithCountry, summarizeAccountBalance, summarizeHeldContainers, THRESHOLD_DEFAULTS, withSubmitLock } from "./shared.js";
 import { mapsApiKey } from "./firebaseWebConfig.js";
 
 let accountMapsPromise = null;
@@ -1616,6 +1616,19 @@ async function tryCompleteEmailLinkSignIn() {
     // Firebase's oobCode is single-use; clean the URL so a bookmarked
     // "signed in" state doesn't linger with a spent code in the querystring.
     window.history.replaceState({}, document.title, window.location.pathname);
+    // P0-10: if the customer left a half-built order to sign in by email, take
+    // them straight back to it — the order page restores the draft on load.
+    // Fresh drafts only (parseStoredOrderDraft expires them after a day); a
+    // customer who signs in weeks later just gets their account page.
+    try {
+      if (parseStoredOrderDraft(window.localStorage.getItem(ORDER_DRAFT_STORAGE_KEY))) {
+        setStatus(el("signin-status"), "Signed in — taking you back to your order…");
+        window.location.replace("./index.html");
+        return true;
+      }
+    } catch (_) {
+      // Storage failure just means no bounce-back; the account page is fine.
+    }
   } catch (error) {
     setStatus(el("signin-status"), `Could not complete sign-in: ${error.message || error}`, true);
     window.history.replaceState({}, document.title, window.location.pathname);

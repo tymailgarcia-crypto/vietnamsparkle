@@ -268,32 +268,34 @@ Evidence/commit/deploy:
 
 ### P0-10 — Add a true final review and preserve the cart through sign-in
 
-**Status:** [ ]
-**Owner:** unassigned
+**Status:** [x] DONE — final-review dialog before submit; the order draft survives the email sign-in navigation; wording + mobile acceptance all met.
+**Owner:** Claude
 **Likely files:** `firebase/web/index.html`, `publicApp.js`, `account.html`, `accountApp.js`, `styles.css`, tests
 
 One tap submits immediately. The visible totals do not give a final review of address, phone, delivery time, notes, and pickup intent. Google popup sign-in keeps the in-memory cart, but email sign-in navigates away and loses it despite the promise “Your cart is kept.”
 
 Acceptance:
 
-- [ ] Final confirmation shows items, quantities, subtotal, deposit, total, phone, address, date/window, notes, and pickup request.
-- [ ] It reads the existing computed state; it does not duplicate deposit calculations.
-- [ ] Customer can return to edit any section without losing data.
-- [ ] Full draft survives email-link sign-in and returns to the order form, or sign-in is required before entry and the promise is removed.
-- [ ] “Due now” is renamed to match the actual collection moment.
-- [ ] Pickup-credit wording clearly says the driver counts empties and the estimate is non-binding.
+- [x] Final confirmation shows items, quantities, subtotal, deposit, total, phone, address, date/window, notes, and pickup request. (New `#order-review-dialog`: submitting the form opens it instead of sending; each section has an Edit control.)
+- [x] It reads the existing computed state; it does not duplicate deposit calculations. (`renderOrderReviewBody` calls the same `selectedLines()` + `computeOrderTotals()` the sticky totals use — no second deposit math.)
+- [x] Customer can return to edit any section without losing data. (Per-section "Edit" closes the dialog and scrolls/focuses that field; "Go back & edit" too. The form is never cleared — verified cart + fields intact after edit.)
+- [x] Full draft survives email-link sign-in and returns to the order form. (`buildOrderDraft`/`parseStoredOrderDraft` in shared.js persist cart + fields + pin to `localStorage` before the email-sign-in navigation; account.html's `tryCompleteEmailLinkSignIn` bounces a fresh-draft visitor back to `index.html`, which restores on load after auth+catalog resolve. Google stays a popup and never needed this.)
+- [x] “Due now” is renamed to match the actual collection moment. (→ "Pay on delivery", in the sticky totals and the review.)
+- [x] Pickup-credit wording clearly says the driver counts empties and the estimate is non-binding. (Order-form estimate, review dialog, and confirmation line all now say the driver counts what comes back and the figure is an estimate, not a promise.)
 
-Mobile acceptance at 375 px:
+Mobile acceptance at 375 px (all browser-verified in the emulator pane):
 
-- [ ] Action labels fit without clipping or text overlap.
-- [ ] Empty sticky totals consume materially less than the audited 224/812 px viewport height.
-- [ ] Product add/remove and review controls provide approximately 44 × 44 px touch targets.
-- [ ] Add/remove buttons include the product name in their accessible label and quantity changes are announced.
-- [ ] No horizontal overflow with a five-item cart.
+- [x] Action labels fit without clipping or text overlap. (Found + fixed: the 3-column totals summary overlapped inside the narrower review dialog — now stacked label-left/value-right there; the sticky panel is untouched.)
+- [x] Empty sticky totals consume materially less than the audited 224/812 px viewport height. (Empty-state now hides the zero-value summary + review handles → **154px**, down from 224.)
+- [x] Product add/remove and review controls provide approximately 44 × 44 px touch targets. (Compact qty buttons keep their 32px look but get a 44px effective hit area via a transparent `::after`; measured 44×56.)
+- [x] Add/remove buttons include the product name in their accessible label and quantity changes are announced. (`aria-label="Add/Remove one <product>"`; a visually-hidden `#cart-live-status` role=status announces "<product>: N in cart".)
+- [x] No horizontal overflow with a five-item cart. (Verified `scrollWidth <= 375` on the form and the review dialog with all five seeded products; the review body scrolls internally.)
 
 Evidence/commit/deploy:
 
-- _Pending._
+- 2026-07-21/22: no functions/rules change — hosting only. New pure suite `web/assets/orderDraft.test.mjs` **10/10** (empty-form → no draft, quantity/field cleaning, invalid-pin drop, JSON round-trip, garbage/foreign-version → null, 24h expiry, future-skew rejection, re-normalization so corrupt storage can't inject shapes). Regressions green: orderSubmissionKey 9, depositLedger 27, accountTruth 12, paymentEntry parity 6, deliveryValidation parity 11. All touched modules `node --check` clean; index.html 77 unique ids.
+- 2026-07-21/22: **customer click-through QA DONE (emulator, fake Google + email paths).** Built a 375px cart, submit opened the review (correct items/deposit/total from the shared compute path), per-section Edit returned with the cart intact, Place order placed the order and locked the button. Draft round trip: signed-out cart + fields → email-link save → reload → **fully restored** (counters 2/1, total 409k, all fields, "Welcome back", draft consumed). En route, fixed a latent display bug — `renderCatalog` hardcoded the per-product counter to 0, so a restored/reordered cart showed 0 on the steppers while the total was right; now reflects `state.quantities` (also fixes reorder). Screenshots captured of the restored form and the review dialog.
+- 2026-07-22: deployed `--only hosting` (exactly **5/42** files: `index.html`, `publicApp.js`, `accountApp.js`, `shared.js`, `styles.css`; post-release full-tree audit **42/42 byte-identical**). Added a `?v=p0-10-20260722` cache-bust to the `publicApp.js` module import (the codebase already versions `orderApp.js` this way) so customers get the new JS immediately. Tree was clean apart from my files; no other agent WIP carried.
 
 ### P0-11 — Complete authenticated end-to-end release QA
 

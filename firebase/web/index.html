@@ -245,6 +245,10 @@
           <button class="primary" form="public-order-form" type="submit" id="public-submit-button">Submit order</button>
         </div>
         <div id="public-feedback" class="muted top-gap"></div>
+        <!-- P0-10: announces cart quantity changes to screen readers. The +/-
+             buttons carry the product name in their labels; this reports the
+             result ("Uni 20L Jug: 2 in cart") without stealing focus. -->
+        <span id="cart-live-status" class="sr-only" role="status" aria-live="polite"></span>
       </section>
     </main>
 
@@ -288,7 +292,22 @@
       </button>
       <p class="muted signin-dialog-status" id="signin-dialog-status" role="status" aria-live="polite"></p>
       <div class="signin-dialog-divider"><span>or</span></div>
-      <a class="button-link secondary signin-dialog-email" href="./account.html">Sign in with email instead</a>
+      <a class="button-link secondary signin-dialog-email" id="signin-dialog-email" href="./account.html">Sign in with email instead</a>
+    </dialog>
+
+    <!-- P0-10: the true final review. Submitting the form opens this instead of
+         sending the order; the body is rendered by publicApp.js from the SAME
+         computed state the totals panel uses (selectedLines/computeOrderTotals
+         — no second deposit calculation). "Place order" here is the only thing
+         that calls the server. -->
+    <dialog id="order-review-dialog" class="edit-dialog order-review-dialog" aria-labelledby="order-review-dialog-title">
+      <h3 id="order-review-dialog-title" class="order-review-dialog-title">Check your order</h3>
+      <div id="order-review-dialog-body" class="order-review-dialog-body"></div>
+      <p class="muted order-review-dialog-note">Nothing is paid now — the driver collects payment at delivery.</p>
+      <div class="button-row order-review-dialog-actions">
+        <button type="button" class="ghost" id="order-review-dialog-back">Go back &amp; edit</button>
+        <button type="button" class="primary" id="order-review-dialog-confirm">Place order</button>
+      </div>
     </dialog>
 
     <!-- Public order page: opt into App Check (reCAPTCHA attestation) before the
@@ -300,6 +319,6 @@
          Remove this override only after fresh production traffic is verified
          in App Check metrics; backend enforcement is intentionally still off. -->
     <script>window.__ENABLE_APP_CHECK__ = false;</script>
-    <script type="module" src="./assets/publicApp.js"></script>
+    <script type="module" src="./assets/publicApp.js?v=p0-10-20260722"></script>
   </body>
 </html>

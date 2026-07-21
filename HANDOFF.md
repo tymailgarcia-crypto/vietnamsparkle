@@ -6,9 +6,9 @@ The tree-reconciliation the July-20 briefing below asked for is **DONE**: commit
 `088d653` synced HEAD to production (all 42 hosted files byte-verified, full
 rules gate green) and was pushed. Then a run of SHIP-READINESS P0 blockers
 shipped. **All of the following are deployed, live, and verified — but committed
-locally only. `main` is 13 commits ahead of `origin/main` (after the P0-09
-commit); nothing is pushed and there is no release tag.** Push/tag only when Ty
-asks.
+locally only. `main` is 15 commits ahead of `origin/main` (after the P0-09 and
+P0-10 commits); nothing is pushed and there is no release tag.** Push/tag only
+when Ty asks.
 
 Commits since the sync (newest first), each deployed + gated:
 - `6e05d82` P0-07 inc. B part 2 — **P0-07 COMPLETE (7/7).** Refunds-due/proof-missing owner queue on `reports.html`/`reportsApp.js` (read-only over `orderCancellations`: `refundStatus` pending/partial OR `evidenceStatus` missing) + scoped `firestore.rules` tightening (new `isCancelTransition()`; owner orders-update branch now denies any direct client cancel — owner cancels go through `submitOrderCancellation`; customer unpaid `pending_approval→cancelled` self-cancel untouched). Full rules gate green before+after; `customer-order-cancel` 6→9. Deployed `--only firestore:rules` + `--only hosting` (2 files).
@@ -85,9 +85,30 @@ QA'd the same day — emulator AND production (Ty's session) — see the QA
 manifest below. First P0 with the click-through gap closed; P0-11's
 customer-side + mobile matrix stays open.**
 
-Next in SHIP-READINESS.md: **P0-10** (true final review + cart survives
-sign-in). Trust SHIP-READINESS.md for per-P0 status/evidence and ROADMAP.md
-"Shipped 2026-07-21" for the how/why.
+**P0-10 is COMPLETE (all acceptance items + the 375px mobile list).** Submitting
+the public order form now opens a **final review dialog** (items/qty/subtotal/
+deposit/total/phone/address/date/notes/pickup, each with an Edit that returns
+without losing data) instead of sending immediately; only "Place order" calls
+the server. The review reads the same `selectedLines()`+`computeOrderTotals()`
+as the totals panel (no duplicate deposit math). The **order draft now survives
+the email sign-in navigation** — cart + fields + pin are saved to `localStorage`
+(`vs-order-draft`) before the nav, account.html bounces a fresh-draft visitor
+back to index.html, and it restores on load (pure logic in shared.js
+`buildOrderDraft`/`parseStoredOrderDraft`, 24h expiry + re-normalization,
+`orderDraft.test.mjs` 10/10). "Due now" → **"Pay on delivery"**; pickup wording
+now says the driver counts and the estimate is non-binding. Mobile: empty sticky
+totals 224→**154px**, ~44px tap targets on the compact steppers, product-named
+`aria-label`s + a live region, and the review-dialog totals summary was
+**overlapping** at 375px (fixed: stacked there only). Latent fix: `renderCatalog`
+hardcoded the stepper counter to 0, so a restored/reordered cart showed 0 while
+the total was right — now reflects `state.quantities`. Hosting only (5/42 files,
+42/42 byte-identical), no functions/rules change. Customer click-through QA'd in
+the emulator (fake Google + email draft round trip); NOT yet on production with a
+real customer sign-in — that's P0-11.
+
+Next in SHIP-READINESS.md: **P0-11** (authenticated end-to-end release QA
+matrix). Trust SHIP-READINESS.md for per-P0 status/evidence and ROADMAP.md
+"Shipped 2026-07-2x" for the how/why.
 
 **P0-09 owner click-through QA was DONE on 2026-07-21 (emulator + production
 with Ty's own session in the CC browser pane — Ty signed in himself and
