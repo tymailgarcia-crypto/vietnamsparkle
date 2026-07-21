@@ -1910,14 +1910,21 @@ async function saveDeliveryPayment(event) {
         const orderSnap = await tx.get(orderRef);
         if (!orderSnap.exists()) throw new Error("Order no longer exists.");
         const order = orderSnap.data();
-        // Guard the non-idempotent amountPaid increment: a delivered order must
-        // not be re-run through this dialog. The action is only offered while
-        // out_for_delivery, but a stale tab could still submit — and without this
-        // the fresh-id cash payment would be created a second time and double-
-        // count. Mirrors orderApp.js::saveDeliveryPayment. It also keeps the
-        // deterministic `${orderId}-deposit-credit` line create-only, which the
-        // append-only payments rule relies on.
-        if (order.status === "delivered") throw new Error("This order is already delivered.");
+        // Guard the non-idempotent amountPaid increment against a stale tab. The
+        // action is only offered while out_for_delivery, but a stale tab could
+        // submit against an order that has since been delivered (double-counts
+        // the fresh-id cash payment) OR one that was never sent out / rolled back
+        // to new/assigned (P0-08 item 3: delivery requires the FRESH status to be
+        // out_for_delivery, re-read here inside the transaction, not the dialog's
+        // stale copy). Requiring the exact status covers both. Mirrors
+        // orderApp.js::saveDeliveryPayment. It also keeps the deterministic
+        // `${orderId}-deposit-credit` line create-only, which the append-only
+        // payments rule relies on.
+        if (order.status !== "out_for_delivery") {
+          throw new Error(order.status === "delivered"
+            ? "This order is already delivered."
+            : "This order is no longer out for delivery — reload the dashboard before recording delivery.");
+        }
         const receivedBy = auth.currentUser ? auth.currentUser.email : "owner";
         const total = Number(order.subtotal || 0) + Number(order.depositTotal || 0);
 

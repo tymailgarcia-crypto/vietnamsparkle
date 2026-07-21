@@ -212,17 +212,25 @@ Evidence/commit/deploy:
 
 ### P0-08 — Revalidate container holdings at commit time
 
-**Status:** [ ]
-**Owner:** unassigned
+**Status:** [~] IN PROGRESS — increment 1 shipped (item 3); the atomic-revalidation core (items 1, 2, 4, 5) needs the delivery-commit moved to a server callable and is NOT yet done.
+**Owner:** Claude
 **Likely files:** delivery transaction code in `adminApp.js`/`orderApp.js` or server Functions; `depositsApp.js`; deposit tests
 
 Return collectors clamp against dialog state loaded earlier, but delivery transactions do not re-read/reaggregate current holdings. Two stale dialogs can return the same container. The standalone forfeit flow also trusts stale hidden values. Pickup requests are cleared after delivery even when no empties were collected.
+
+**Architecture note (2026-07-21):** the Firestore **client** SDK cannot run a
+query inside `runTransaction`, so the delivery transaction (both surfaces) can
+only `transaction.get` the order doc — it cannot re-aggregate the customer's
+holdings (a query over `/depositEvents`) atomically. Items 1/2/4/5 therefore
+require moving delivery-commit to an Admin-SDK server callable (same
+rearchitecture as P0-06 approval and P0-07 cancellation), which CAN query and
+clamp inside one transaction. That is the next increment.
 
 Acceptance:
 
 - [ ] Delivery commit revalidates current holdings atomically before writing return events.
 - [ ] Two parallel deliveries cannot drive any customer/container balance below zero.
-- [ ] Delivery requires the fresh order status to be `out_for_delivery`.
+- [x] Delivery requires the fresh order status to be `out_for_delivery`. **(increment 1)** Both delivery transactions (`orderApp.js`, `adminApp.js`) now reject unless the FRESH, in-transaction order status is exactly `out_for_delivery` — previously they only rejected an already-`delivered` order, so a stale tab could deliver a `new`/`assigned`/rolled-back order.
 - [ ] Failure to load holdings blocks close or requires an explicit, audited exception.
 - [ ] Forfeit re-reads current balance transactionally and requires a deliberate reason/account.
 - [ ] Pickup request clears only when fulfilled or explicitly dismissed/rescheduled.
@@ -230,7 +238,7 @@ Acceptance:
 
 Evidence/commit/deploy:
 
-- _Pending._
+- **Increment 1 (item 3):** fresh-status guard tightened in both delivery transactions; `node --check` clean, `depositLedger` 27 + `accountTruth` 12 green, deployed `--only hosting` (2 files). Committed. The concurrency core (items 1/2/4/5) remains — see the architecture note.
 
 ### P0-09 — Guard payment entry and keep Receivables honest
 

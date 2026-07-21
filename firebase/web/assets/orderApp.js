@@ -1387,10 +1387,18 @@ async function saveDeliveryPayment(event) {
         const orderSnap = await transaction.get(orderRef);
         if (!orderSnap.exists()) throw new Error("Order no longer exists.");
         const order = orderSnap.data();
-        // Guard the non-idempotent amountPaid increment: a delivered order must
-        // not be re-run through this dialog (the UI only offers it while
-        // out_for_delivery, but a stale tab could still submit).
-        if (order.status === "delivered") throw new Error("This order is already delivered.");
+        // Guard the non-idempotent amountPaid increment against a stale tab. The
+        // UI only offers this while out_for_delivery, but a stale tab could submit
+        // against an order that has since been delivered (double-counts the
+        // fresh-id cash payment) OR one never sent out / rolled back to
+        // new/assigned (P0-08 item 3: delivery requires the FRESH status to be
+        // out_for_delivery, re-read here inside the transaction, not the dialog's
+        // stale copy). Mirrors adminApp.js delivery guard.
+        if (order.status !== "out_for_delivery") {
+          throw new Error(order.status === "delivered"
+            ? "This order is already delivered."
+            : "This order is no longer out for delivery — reload the page before recording delivery.");
+        }
         const receivedBy = auth.currentUser?.email || "owner";
         const total = Number(order.subtotal || 0) + Number(order.depositTotal || 0);
 
