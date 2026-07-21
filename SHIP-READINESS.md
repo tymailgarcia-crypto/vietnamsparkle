@@ -141,23 +141,26 @@ Evidence/commit/deploy:
 
 ### P0-05 — Make customer open orders, balances, credits, and returns truthful
 
-**Status:** [ ]
-**Owner:** unassigned
+**Status:** [x] shipped + deployed 2026-07-21
+**Owner:** Claude
 **Likely files:** `firebase/web/assets/accountApp.js`, `publicApp.js`, `customerOrderApp.js`, `customer-order.html`, tests
 
 The account calculates open orders and balance from only the newest ten orders. The order-form overview checks only the newest 25. Older active debt can disappear, and negative carry-forward credit is omitted. The customer order page also reads the unused `/returns` collection, so real returns can display as missing.
 
 Acceptance:
 
-- [ ] Open-order queries are independent of paginated history and cannot hide an older active order.
-- [ ] Balance summary includes both debt and customer credit and labels the net result clearly.
-- [ ] Customer order detail derives physical return history from the actual `depositEvents` model.
-- [ ] No customer-facing code reads `/returns` unless a real writer is introduced and documented.
-- [ ] Tests cover more than 25 orders, old open debt, mixed debt + credit, pure credit, and a credited/refunded return.
+- [x] Open-order queries are independent of paginated history and cannot hide an older active order. (Account loads the customer's full order set via `loadAllOrdersForSummary` for the open-orders list + balance, separate from the paginated history/reorder lists; the order-form strip dropped its `limit(25)`. Both use the existing `(authUid, createdAt)` index — no new index.)
+- [x] Balance summary includes both debt and customer credit and labels the net result clearly. (`summarizeAccountBalance` returns `{debt, credit, net, ...}`; the panel shows outstanding, a credit line + net when both exist, or a calm "X in credit" when only credit.)
+- [x] Customer order detail derives physical return history from the actual `depositEvents` model. (`physicalReturnsFromDepositEvents`: `credited`/`refunded` = returned; `forfeited` = lost, excluded.)
+- [x] No customer-facing code reads `/returns` unless a real writer is introduced and documented. (The `ownedRows("returns", …)` read is removed from `customerOrderApp.js`. Note: `orderApp.js` — the OWNER order page — still has a `/returns` read; out of this customer-facing scope, flagged in ROADMAP.)
+- [x] Tests cover more than 25 orders, old open debt, mixed debt + credit, pure credit, and a credited/refunded return.
 
 Evidence/commit/deploy:
 
-- _Pending._
+- 2026-07-21: pure logic in `shared.js` (`summarizeAccountBalance`, `openOrdersFrom`, `physicalReturnsFromDepositEvents`), tested by `web/assets/accountTruth.test.mjs` **11/11** (the >25-orders hidden-debt case, old delivered debt, mixed debt+credit, pure credit, cancelled/pending exclusion, and credited/refunded-vs-forfeited returns). `depositLedger` 25/25 + `orderSubmissionKey` 9/9 still green (both import `shared.js`).
+- 2026-07-21: browser smoke test — served locally, `account.html` and `customer-order.html` both loaded with **no console errors**, the `shared.js` exports resolved in-page and computed a mixed debt/credit balance + a filtered return set correctly.
+- 2026-07-21: deployed `--only hosting` (**exactly 4/42 files uploaded**: `accountApp.js`, `publicApp.js`, `customerOrderApp.js`, `shared.js`; preflight confirmed only these differ). No functions/rules change. All 4 byte-identical live.
+- **Not yet done:** authenticated customer click-through (needs a customer session; the numbers are proven pure + in-browser, but the live rendered panel wasn't eyeballed signed-in). **Scale note:** loading a customer's full order set is fine at this volume; if any single customer ever has thousands of orders, switch to indexed range queries on `balanceDue` plus a status-scoped open-orders query (noted in `loadAllOrdersForSummary`).
 
 ### P0-06 — Make approval plus deposit charging atomic and retry-safe
 

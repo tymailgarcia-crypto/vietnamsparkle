@@ -10,7 +10,7 @@ import {
   updateDoc,
   where
 } from "./firebaseClient.js";
-import { escapeHtml, formatCurrency } from "./shared.js";
+import { escapeHtml, formatCurrency, physicalReturnsFromDepositEvents } from "./shared.js";
 
 const el = (id) => document.getElementById(id);
 const orderId = new URLSearchParams(location.search).get("id") || "";
@@ -82,7 +82,10 @@ async function ownedRows(collectionName, userUid) {
   return snapshot.docs.map((row) => ({ id: row.id, ...row.data() }));
 }
 
-function renderOrder(order, items, payments, deposits, returns) {
+function renderOrder(order, items, payments, deposits) {
+  // P0-05: physical returns come from the depositEvents model (credited /
+  // refunded = container came back; forfeited = lost, not a return).
+  const returns = physicalReturnsFromDepositEvents(deposits);
   const status = order.status || "unknown";
   const payStatus = order.paymentStatus || "unpaid";
   const total = Number(order.subtotal || 0) + Number(order.depositTotal || 0);
@@ -148,9 +151,9 @@ function renderOrder(order, items, payments, deposits, returns) {
     : empty("No container deposit activity for this order.");
 
   el("order-returns").innerHTML = returns.length
-    ? [...returns].sort((a, b) => eventMillis(b.returnDate || b.returnedAt) - eventMillis(a.returnDate || a.returnedAt)).map((returned) => eventCard(`${Number(returned.qty || 0)} ${humanize(returned.containerType)} returned`, [
-        ["Returned", returned.returnDate || dateValue(returned.returnedAt)],
-        ["Condition", humanize(returned.condition)]
+    ? [...returns].sort((a, b) => eventMillis(b.date) - eventMillis(a.date)).map((returned) => eventCard(`${Number(returned.qty || 0)} ${humanize(returned.containerType)} returned`, [
+        ["Returned", dateValue(returned.date)],
+        ["Deposit", `${formatCurrency(returned.amount)} ${returned.handling === "refund" ? "refunded" : "credited"}`]
       ])).join("")
     : empty("No container returns recorded for this order.");
 }
@@ -177,13 +180,14 @@ async function loadCustomerOrder(user) {
   const order = { id: orderSnapshot.id, ...orderSnapshot.data() };
   if (order.authUid !== user.uid) throw new Error("This order does not belong to your account.");
 
-  const [items, payments, deposits, returns] = await Promise.all([
+  // P0-05: no `/returns` read — nothing has ever written that collection.
+  // Physical returns are derived from this order's depositEvents in renderOrder.
+  const [items, payments, deposits] = await Promise.all([
     ownedRows("orderItems", user.uid),
     ownedRows("payments", user.uid),
-    ownedRows("depositEvents", user.uid),
-    ownedRows("returns", user.uid)
+    ownedRows("depositEvents", user.uid)
   ]);
-  renderOrder(order, items, payments, deposits, returns);
+  renderOrder(order, items, payments, deposits);
   el("cancel-unapproved-order")?.addEventListener("click", () => cancelUnapprovedOrder(order));
 }
 

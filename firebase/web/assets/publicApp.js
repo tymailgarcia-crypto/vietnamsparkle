@@ -106,11 +106,13 @@ async function renderPublicOpenOrders(user) {
     return;
   }
   try {
+    // P0-05: no limit — an open order older than the newest 25 must still show
+    // here. Scoped to the customer's own orders via the (authUid, createdAt)
+    // index; at this scale one customer's order count is small.
     const snapshot = await getDocs(query(
       collection(db, "orders"),
       where("authUid", "==", user.uid),
-      orderBy("createdAt", "desc"),
-      limit(25)
+      orderBy("createdAt", "desc")
     ));
     if (requestId !== publicOpenOrdersRequestId) return;
     const open = snapshot.docs

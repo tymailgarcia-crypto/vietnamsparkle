@@ -23,7 +23,7 @@ import {
   where,
   writeBatch
 } from "./firebaseClient.js";
-import { buildCustomerId, formatCurrency, mergeThresholds, normalizePhoneWithCountry, phoneEntryErrorMessage, productImageUrl, setupPhoneCountryPicker, splitPhoneWithCountry, summarizeHeldContainers, THRESHOLD_DEFAULTS, withSubmitLock } from "./shared.js";
+import { buildCustomerId, formatCurrency, mergeThresholds, normalizePhoneWithCountry, openOrdersFrom, phoneEntryErrorMessage, productImageUrl, setupPhoneCountryPicker, splitPhoneWithCountry, summarizeAccountBalance, summarizeHeldContainers, THRESHOLD_DEFAULTS, withSubmitLock } from "./shared.js";
 import { mapsApiKey } from "./firebaseWebConfig.js";
 
 let accountMapsPromise = null;
@@ -488,6 +488,25 @@ async function loadFirstOrdersPage(uid) {
   state.ordersCursor = snap.docs.length ? snap.docs[snap.docs.length - 1] : null;
   state.ordersExhausted = snap.docs.length < ORDERS_PAGE_SIZE;
   return state.orders;
+}
+
+// P0-05: the open-orders list and the balance summary must see the WHOLE order
+// set, not just the paginated first page — an old unpaid order beyond page 1
+// would otherwise vanish from the balance. Loads all of the customer's orders
+// (their own subset only, keyed by authUid on the existing (authUid, createdAt)
+// index — no new index). Separate from the paginated history/reorder lists,
+// which stay page-by-page. At this scale a single customer's order count is
+// small; if a customer ever has thousands of orders, switch this to two
+// indexed range queries on balanceDue plus a status-scoped open-orders query.
+async function loadAllOrdersForSummary(uid) {
+  const snap = await getDocs(
+    query(
+      collection(db, "orders"),
+      where("authUid", "==", uid),
+      orderBy("createdAt", "desc")
+    )
+  );
+  return snap.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() }));
 }
 
 async function loadMoreOrders() {
@@ -1172,7 +1191,7 @@ function renderOpenOrders(orders) {
   const list = el("open-orders-list");
   if (!section || !list) return;
 
-  const open = (orders || []).filter((o) => o.status !== "delivered" && o.status !== "cancelled");
+  const open = openOrdersFrom(orders);
   if (!open.length) {
     section.classList.add("hidden");
     list.innerHTML = "";
@@ -1208,30 +1227,43 @@ function renderOpenOrders(orders) {
 }
 
 function renderBalanceSummary(orders) {
-  const outstanding = (orders || []).filter((o) => Number(o.balanceDue || 0) > 0 && o.status !== "cancelled" && o.status !== "pending_approval");
-  const total = outstanding.reduce((sum, o) => sum + Number(o.balanceDue || 0), 0);
+  // P0-05: over the FULL order set, and counting BOTH debt and credit. Credit
+  // (a negative balanceDue after an overpayment or refund) used to be dropped.
+  const { debt, credit, net, outstandingCount, oldestOutstandingDate } = summarizeAccountBalance(orders);
   const summary = el("balance-summary");
   if (!summary) return;
 
-  // Draw attention only when money is actually owed; the paid-up state stays calm.
+  // Draw attention only when money is actually owed; the paid-up / in-credit
+  // states stay calm.
   const section = el("balance-section");
-  if (section) section.classList.toggle("has-outstanding", outstanding.length > 0);
+  if (section) section.classList.toggle("has-outstanding", debt > 0);
 
-  if (!outstanding.length) {
+  if (debt === 0 && credit === 0) {
     summary.innerHTML = `<div style="color:rgb(15,90,73);font-weight:600;font-size:15px">You are all paid up. Thanks!</div>`;
     renderHowToPay(false);
     return;
   }
 
-  const oldest = outstanding
-    .map((o) => o.deliveryDate)
-    .filter(Boolean)
-    .sort()[0];
-  const oldestNote = oldest ? ` · Oldest from ${oldest}` : "";
+  // Pure credit, nothing owed — reassure, don't alarm.
+  if (debt === 0) {
+    summary.innerHTML = `
+      <div class="amount" style="color:rgb(15,90,73)">${formatCurrency(credit)} in credit</div>
+      <div class="caption top-gap">We'll apply it to your next delivery.</div>
+    `;
+    renderHowToPay(false);
+    return;
+  }
 
+  const oldestNote = oldestOutstandingDate ? ` · Oldest from ${oldestOutstandingDate}` : "";
+  // When there is also credit, lead with what's owed but show the credit and
+  // the net so the number the customer sees matches their real position.
+  const creditLine = credit > 0
+    ? `<div class="caption top-gap">Includes ${formatCurrency(credit)} in credit — net ${formatCurrency(net)} due.</div>`
+    : "";
   summary.innerHTML = `
-    <div class="amount">${formatCurrency(total)} outstanding</div>
-    <div class="caption top-gap">${outstanding.length} unpaid order${outstanding.length === 1 ? "" : "s"}${oldestNote}</div>
+    <div class="amount">${formatCurrency(debt)} outstanding</div>
+    <div class="caption top-gap">${outstandingCount} unpaid order${outstandingCount === 1 ? "" : "s"}${oldestNote}</div>
+    ${creditLine}
   `;
   renderHowToPay(true);
 }
@@ -1363,9 +1395,12 @@ function hideClaimPanel() {
 
 async function loadAccountData() {
   paintLoadingPlaceholders();
-  const [orders, depositEvents, itemsByOrderId] = await Promise.all([
+  const [orders, allOrders, depositEvents, itemsByOrderId] = await Promise.all([
     loadFirstOrdersPage(state.user.uid).catch((e) => {
       throw new Error(`orders: ${e.message || e}`);
+    }),
+    loadAllOrdersForSummary(state.user.uid).catch((e) => {
+      throw new Error(`allOrders: ${e.message || e}`);
     }),
     loadDepositEventsForUid(state.user.uid).catch((e) => {
       throw new Error(`depositEvents: ${e.message || e}`);
@@ -1378,8 +1413,10 @@ async function loadAccountData() {
     })
   ]);
   state.itemsByOrderId = itemsByOrderId || {};
-  renderOpenOrders(orders);
-  renderBalanceSummary(orders);
+  // Open orders + balance from the FULL set (P0-05); history + reorder from the
+  // paginated page.
+  renderOpenOrders(allOrders);
+  renderBalanceSummary(allOrders);
   renderOrders(orders);
   renderReorderList(orders);
   const containerRows = summarizeHeldContainers(depositEvents);

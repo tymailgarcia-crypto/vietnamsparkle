@@ -645,6 +645,67 @@ export function computeOrderTotals(selectedProducts) {
   }, { subtotal: 0, depositTotal: 0 });
 }
 
+// --- Customer account truth (P0-05) ----------------------------------------
+//
+// The account balance and open-order list must be computed over the customer's
+// WHOLE order set, not just the newest page — an older unpaid order beyond the
+// pagination window would otherwise silently drop out of the balance, and a
+// negative balanceDue (the customer is in credit after an overpayment or
+// refund) was ignored entirely. Both of these are pure so they can be tested
+// without a browser: pass the full array of the customer's order docs.
+//
+// Statuses excluded from debt: `cancelled` (no longer owed) and
+// `pending_approval` (not a confirmed order yet). Credit is counted on any
+// non-cancelled order, because an overpayment is real money the business holds
+// regardless of the order's stage.
+export function summarizeAccountBalance(orders = []) {
+  let debt = 0;
+  let credit = 0;
+  let outstandingCount = 0;
+  let oldestOutstandingDate = null;
+  for (const order of orders) {
+    const status = order && order.status;
+    if (status === "cancelled") continue;
+    const balance = Number((order && order.balanceDue) || 0);
+    if (balance > 0 && status !== "pending_approval") {
+      debt += balance;
+      outstandingCount += 1;
+      const date = order.deliveryDate || null;
+      if (date && (!oldestOutstandingDate || date < oldestOutstandingDate)) {
+        oldestOutstandingDate = date;
+      }
+    } else if (balance < 0) {
+      credit += -balance;
+    }
+  }
+  // net > 0 → the customer owes; net < 0 → the business owes them; 0 → settled.
+  return { debt, credit, net: debt - credit, outstandingCount, oldestOutstandingDate };
+}
+
+// Open orders = anything still in flight (not delivered, not cancelled),
+// computed over the full order set so an old open order can't hide behind
+// newer history.
+export function openOrdersFrom(orders = []) {
+  return (orders || []).filter((o) => o && o.status !== "delivered" && o.status !== "cancelled");
+}
+
+// Physical container returns derived from the real depositEvents model. A
+// returned container is booked as a `credited` (deposit applied to the order)
+// or `refunded` (deposit paid back in cash) event; `forfeited` means the
+// container was NOT returned (lost/damaged), so it is deliberately excluded.
+// Replaces the dead `/returns` collection, which nothing has ever written.
+export function physicalReturnsFromDepositEvents(events = []) {
+  return (events || [])
+    .filter((e) => e && (e.eventType === "credited" || e.eventType === "refunded"))
+    .map((e) => ({
+      qty: Number(e.qty || 0),
+      containerType: e.containerType || "other",
+      amount: Number(e.amount || 0),
+      handling: e.eventType === "refunded" ? "refund" : "credit",
+      date: e.eventDate || e.createdAt || null
+    }));
+}
+
 // Three-branch payment status derived from the money on the order.
 // Rules enforce: paymentStatus == 'paid' → balanceDue <= 0; == 'unpaid' →
 // amountPaid == 0. So a partially-paid order (amountPaid > 0 AND balanceDue > 0)
