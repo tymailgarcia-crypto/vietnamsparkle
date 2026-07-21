@@ -32,19 +32,35 @@ ordercancellations 13); `customer-order-cancel` extended 6→9. Only the
 pre-existing documented-benign driver/customer bare-field stderr (L-shifted by
 the added helper). Not owner-click-through QA'd — no session, the standing gap.
 
-**P0-08 increment 1 shipped `dd5f396`** (acceptance item 3): both delivery
-transactions now require the fresh, in-transaction order status to be exactly
-`out_for_delivery` (was: only rejected already-`delivered`), so a stale tab can
-no longer deliver a `new`/`assigned`/rolled-back order. The concurrency CORE of
-P0-08 (items 1/2/4/5 — atomic holdings revalidation, parallel-safe negative
-prevention, transactional forfeit re-read, fulfilled-only pickup clearing) is
-NOT done: the Firestore client SDK can't query inside `runTransaction`, so it
-needs delivery-commit moved to an Admin-SDK server callable. See SHIP-READINESS
-P0-08 architecture note. That is the next increment.
+**P0-08 is COMPLETE (all acceptance items).** Increment 1 (`dd5f396`, item 3)
+tightened the fresh-status guard in both client delivery transactions.
+Increment 2 shipped the concurrency CORE (items 1/2/4/5 + forfeit + "keep"):
+delivery commit moved to a new Admin-SDK callable **`commitDelivery`** in
+`functions/index.js`. In ONE transaction it asserts fresh `out_for_delivery`,
+**re-aggregates the customer's `/depositEvents` holdings** (the client SDK can't
+query inside `runTransaction` — the whole reason for the callable), clamps every
+return + forfeit against those fresh numbers, and writes the payment + deposit
+events + order money with the same deterministic ids (new
+`${orderId}-forfeit-${type}` replaces a random id that let retries duplicate a
+write-off). Parallel safety: the transaction reads AND writes the customer doc,
+so two concurrent deliveries for one customer serialize — the second retries,
+re-aggregates, and re-clamps, so a balance can never go negative (pinned by
+`commitDelivery.emulator.test.js`, 8/8). Forfeit re-reads the balance and now
+requires a reason. Pickup flag clears ONLY when a physical return was recorded;
+"owner will decide later" writes no ledger event. Both client surfaces
+(`orderApp.js`, `adminApp.js`) had their `runTransaction` blocks removed and now
+call `commitDeliveryFn`; the money math mirrors the old client math line-for-line
+so nothing drifted. **`firestore.rules` deliberately unchanged** — the
+owner/driver delivery branch is now defence-in-depth (Admin SDK bypasses rules);
+tightening it risks other legitimate client owner writes, so the rules gate was
+not touched. Deployed `--only functions:commitDelivery` (created, us-central1) +
+`--only hosting` (2/42 files, clean tree). NOT owner-click-through QA'd — the
+standing gap. See SHIP-READINESS P0-08 + ROADMAP "Shipped 2026-07-21 (P0-08
+increment 2 …)".
 
-Still in SHIP-READINESS: **P0-08** (revalidate container holdings at delivery-commit time) is
-next in SHIP-READINESS.md. Trust SHIP-READINESS.md for per-P0 status/evidence and
-ROADMAP.md "Shipped 2026-07-21" for the how/why.
+Next in SHIP-READINESS.md: **P0-09** (guard payment entry / keep Receivables
+honest). Trust SHIP-READINESS.md for per-P0 status/evidence and ROADMAP.md
+"Shipped 2026-07-21" for the how/why.
 
 Housekeeping: `firebase/scratch-authusers.json` is an empty stray (emulator
 export) — delete or ignore, do not commit. The `.manual-deploy-*` dirs and the

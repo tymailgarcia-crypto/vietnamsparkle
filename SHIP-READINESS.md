@@ -212,7 +212,7 @@ Evidence/commit/deploy:
 
 ### P0-08 — Revalidate container holdings at commit time
 
-**Status:** [~] IN PROGRESS — increment 1 shipped (item 3); the atomic-revalidation core (items 1, 2, 4, 5) needs the delivery-commit moved to a server callable and is NOT yet done.
+**Status:** [x] DONE — increment 1 (item 3) + increment 2 (the atomic-revalidation core, items 1/2/4/5) both shipped. Delivery commit is now a server callable that re-aggregates holdings inside one transaction.
 **Owner:** Claude
 **Likely files:** delivery transaction code in `adminApp.js`/`orderApp.js` or server Functions; `depositsApp.js`; deposit tests
 
@@ -228,17 +228,18 @@ clamp inside one transaction. That is the next increment.
 
 Acceptance:
 
-- [ ] Delivery commit revalidates current holdings atomically before writing return events.
-- [ ] Two parallel deliveries cannot drive any customer/container balance below zero.
-- [x] Delivery requires the fresh order status to be `out_for_delivery`. **(increment 1)** Both delivery transactions (`orderApp.js`, `adminApp.js`) now reject unless the FRESH, in-transaction order status is exactly `out_for_delivery` — previously they only rejected an already-`delivered` order, so a stale tab could deliver a `new`/`assigned`/rolled-back order.
-- [ ] Failure to load holdings blocks close or requires an explicit, audited exception.
-- [ ] Forfeit re-reads current balance transactionally and requires a deliberate reason/account.
-- [ ] Pickup request clears only when fulfilled or explicitly dismissed/rescheduled.
-- [ ] “Owner will decide later” cannot look like a recorded physical return when no ledger event is written.
+- [x] Delivery commit revalidates current holdings atomically before writing return events. **(increment 2)** The new `commitDelivery` callable re-aggregates the customer's `/depositEvents` holdings INSIDE the transaction (Admin SDK can query; the client SDK cannot) and clamps every return + forfeit against those fresh numbers before writing.
+- [x] Two parallel deliveries cannot drive any customer/container balance below zero. **(increment 2)** The transaction reads AND writes the customer doc, so two concurrent deliveries for the same customer serialize on it — the second retries, re-aggregates, sees the first's return events, and re-clamps. Proven by `commitDelivery.emulator.test.js` (two orders each try to return all 5 held → net held ends at 0, never −5).
+- [x] Delivery requires the fresh order status to be `out_for_delivery`. **(increment 1, now server-authoritative in increment 2)** The callable re-reads status in-transaction and rejects anything but `out_for_delivery`; the two client guards remain as the UX half.
+- [x] Failure to load holdings blocks close or requires an explicit, audited exception. **(increment 2)** The holdings query is inside the transaction, so any failure rejects the whole commit — the order stays `out_for_delivery` and the dialog surfaces the error; nothing partial is written.
+- [x] Forfeit re-reads current balance transactionally and requires a deliberate reason/account. **(increment 2)** The callable ignores the dialog's hidden qty/per-unit: it re-clamps `lossQty` against fresh held qty (rejects if it exceeds held) and recomputes `depositPerUnit` from the ledger, and requires a non-empty `lossNote` (both clients now block an empty reason too). The write-off now uses a deterministic `${orderId}-forfeit-${type}` id (was a random `buildDepositEventId()` in both files, so a retry appended a duplicate).
+- [x] Pickup request clears only when fulfilled or explicitly dismissed/rescheduled. **(increment 2)** The callable clears `emptiesPickupRequested` ONLY when a physical return (credit/refund) was actually recorded this delivery; a pure "owner will decide later" leaves it set to nag next time. Explicit dismissal remains the customer's own toggle on `account.html`. Previously both surfaces cleared it unconditionally after any delivery.
+- [x] “Owner will decide later” cannot look like a recorded physical return when no ledger event is written. **(increment 2)** "keep" returns are dropped client-side and never reach the callable, so no `depositEvents` row is written for them and holdings are untouched.
 
 Evidence/commit/deploy:
 
-- **Increment 1 (item 3):** fresh-status guard tightened in both delivery transactions; `node --check` clean, `depositLedger` 27 + `accountTruth` 12 green, deployed `--only hosting` (2 files). Committed. The concurrency core (items 1/2/4/5) remains — see the architecture note.
+- **Increment 1 (item 3):** fresh-status guard tightened in both delivery transactions; `node --check` clean, `depositLedger` 27 + `accountTruth` 12 green, deployed `--only hosting` (2 files). Committed `dd5f396`.
+- **Increment 2 (items 1/2/4/5 + forfeit + keep):** delivery commit moved to the Admin-SDK `commitDelivery` callable (`functions/index.js`) — one transaction that asserts fresh `out_for_delivery`, re-aggregates holdings, clamps returns + forfeit, writes payment + deposit events + order money (same deterministic ids; new `${orderId}-forfeit-${type}`), and clears the pickup flag only when fulfilled. Money math mirrors `orderApp.js::saveDeliveryPayment` and the `adminApp.js` delivery tx exactly (both rewired to call it; the client `runTransaction` blocks removed). New `commitDelivery.emulator.test.js` **8/8** (happy path, status guard, over-return clamp, PARALLEL cannot-go-negative, forfeit-needs-reason, forfeit re-read/deterministic id, fulfilled-only pickup, missing order). `depositLedger` 27 + `accountTruth` 12 still green. **`firestore.rules` deliberately unchanged** — the owner/driver delivery-transition branch is now defence-in-depth (delivery writes go through the Admin SDK, which bypasses rules); tightening it risks the other legitimate owner client writes (manual deposit adjustments, record-payment) and the append-only payments invariant, so it was left as-is with the full rules gate untouched. Deployed `--only functions:commitDelivery` (created in us-central1) + `--only hosting` (2 files, clean tree — no collateral). **NOT owner-click-through QA'd — no session, the standing gap.**
 
 ### P0-09 — Guard payment entry and keep Receivables honest
 

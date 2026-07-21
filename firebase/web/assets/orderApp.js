@@ -10,7 +10,6 @@ import {
   httpsCallable,
   onAuthStateChanged,
   query,
-  runTransaction,
   serverTimestamp,
   setDoc,
   updateDoc,
@@ -51,6 +50,7 @@ const recordOrderRefundFn = httpsCallable(functions, "recordOrderRefund");
 const attachRefundEvidenceFn = httpsCallable(functions, "attachRefundEvidence");
 const resolveOrderCancellationFn = httpsCallable(functions, "resolveOrderCancellation");
 const submitOrderCancellationFn = httpsCallable(functions, "submitOrderCancellation");
+const commitDeliveryFn = httpsCallable(functions, "commitDelivery");
 let currentInvoiceContext = null;
 
 // P0-07: stable per-action token for the cancellation callable's idempotent caseId.
@@ -1353,11 +1353,19 @@ async function saveDeliveryPayment(event) {
       statusNode.style.color = "var(--danger, #b3261e)";
       return;
     }
+    // A write-off needs a deliberate reason (P0-08 item 5) — the server rejects
+    // an empty one too, this is just the friendlier local stop.
+    const lossNote = el("delivery-loss-note").value.trim();
+    if (!lossNote) {
+      statusNode.textContent = "Say what happened to the containers before writing them off.";
+      statusNode.style.color = "var(--danger, #b3261e)";
+      return;
+    }
     lossReport = {
       lossType,
       lossQty,
       depositPerUnit: heldForLoss.depositPerUnit || 0,
-      lossNote: el("delivery-loss-note").value.trim() || null
+      lossNote
     };
   }
 
@@ -1382,183 +1390,42 @@ async function saveDeliveryPayment(event) {
         statusNode.textContent = "Saving...";
       }
 
-      await runTransaction(db, async (transaction) => {
-        const orderRef = doc(db, "orders", orderId);
-        const orderSnap = await transaction.get(orderRef);
-        if (!orderSnap.exists()) throw new Error("Order no longer exists.");
-        const order = orderSnap.data();
-        // Guard the non-idempotent amountPaid increment against a stale tab. The
-        // UI only offers this while out_for_delivery, but a stale tab could submit
-        // against an order that has since been delivered (double-counts the
-        // fresh-id cash payment) OR one never sent out / rolled back to
-        // new/assigned (P0-08 item 3: delivery requires the FRESH status to be
-        // out_for_delivery, re-read here inside the transaction, not the dialog's
-        // stale copy). Mirrors adminApp.js delivery guard.
-        if (order.status !== "out_for_delivery") {
-          throw new Error(order.status === "delivered"
-            ? "This order is already delivered."
-            : "This order is no longer out for delivery — reload the page before recording delivery.");
-        }
-        const receivedBy = auth.currentUser?.email || "owner";
-        const total = Number(order.subtotal || 0) + Number(order.depositTotal || 0);
-
-        // Returned deposits handled as a credit reduce what's owed on THIS order.
-        // We model that as a non-cash payment so the balance formula and the
-        // nightly reconciliation (both sum payments) stay correct with no server
-        // change. A refund is cash handed back — a deposit event only, it never
-        // touches the order balance.
-        const creditTotal = containerReturns
-          .filter((r) => r.handling === "credit")
-          .reduce((s, r) => s + r.returnedQty * r.depositPerUnit, 0);
-        const cashPaid = paymentSnapshot.collected ? paymentSnapshot.amount : 0;
-        const grossAmountPaid = Number(order.amountPaid || 0) + cashPaid + creditTotal;
-        const grossBalance = total - grossAmountPaid;
-        const refundableExcess = Math.min(creditTotal, Math.max(0, -grossBalance));
-        const excessRefund = overCreditChoice === "refund" ? refundableExcess : 0;
-        const newAmountPaid = grossAmountPaid - excessRefund;
-        const newBalance = total - newAmountPaid;
-
-        if (paymentSnapshot.collected) {
-          transaction.set(doc(db, "payments", paymentId), {
-            orderId,
-            customerId: order.customerId || null,
-            authUid: order.authUid || null,
-            paymentDate: today,
-            method: paymentSnapshot.method,
-            amount: cashPaid,
-            reference: paymentSnapshot.reference,
-            receivedBy,
-            proofDocumentId,
-            proofUrl,
-            notes: "Collected at delivery",
-            deferred: false,
-            createdAt: now
-          });
-        } else {
-          transaction.set(doc(db, "payments", paymentId), {
-            orderId,
-            customerId: order.customerId || null,
-            authUid: order.authUid || null,
-            paymentDate: today,
-            method: "deferred",
-            amount: 0,
-            reference: null,
-            receivedBy,
-            proofDocumentId: null,
-            proofUrl: null,
-            notes: paymentSnapshot.notes,
-            deferred: true,
-            deferralReason: paymentSnapshot.reason,
-            followUpBy: paymentSnapshot.followUpBy,
-            createdAt: now
-          });
-        }
-
-        // Deposit credit as its own payment line — deterministic id so a re-save
-        // overwrites rather than double-credits. Carries whichever proof was
-        // given; the note is spelled into `notes` when there is no photo, so a
-        // credit closed on someone's word is visible in payment history and on
-        // the invoice breakdown without anyone having to go looking for it.
-        if (creditTotal > 0) {
-          transaction.set(doc(db, "payments", `${orderId}-deposit-credit`), {
-            orderId,
-            customerId: order.customerId || null,
-            authUid: order.authUid || null,
-            paymentDate: today,
-            method: "deposit_credit",
-            amount: creditTotal,
-            reference: null,
-            receivedBy,
-            proofDocumentId: returnProofDocumentId,
-            proofUrl: null,
-            proofType: returnProofType,
-            proofNote: returnProofNote,
-            notes: returnProofDocumentId
-              ? "Deposit credit from containers returned at delivery"
-              : `Deposit credit from containers returned at delivery — no photo, recorded on note: "${returnProofNote}"`,
-            deferred: false,
-            createdAt: now
-          });
-        }
-
-        // Refunds are immutable reversing payment lines. The positive deposit
-        // credit and this cash-out line net to the amount actually applied, so
-        // both reconciliation paths independently arrive at the same zero.
-        if (excessRefund > 0) {
-          transaction.set(doc(db, "payments", `${orderId}-deposit-excess-refund`), {
-            orderId,
-            customerId: order.customerId || null,
-            authUid: order.authUid || null,
-            paymentDate: today,
-            method: "deposit_refund",
-            amount: -excessRefund,
-            reference: null,
-            receivedBy,
-            proofDocumentId: returnProofDocumentId,
-            proofUrl: null,
-            proofType: returnProofType,
-            proofNote: returnProofNote,
-            notes: "Cash refund of excess returned-container deposit credit",
-            deferred: false,
-            createdAt: now
-          });
-        }
-
-        // Order money is now written on BOTH paths: a deferral that still
-        // returned containers reduces the balance instead of silently losing the
-        // credit when the customer later pays.
-        const orderUpdate = {
-          status: "delivered",
-          deliveryPaymentEventId: paymentId,
-          amountPaid: newAmountPaid,
-          balanceDue: newBalance,
-          paymentStatus: paymentStatusFor(newAmountPaid, newBalance),
-          depositOverCreditDisposition: refundableExcess > 0 ? overCreditChoice : null,
-          depositOverCreditAmount: refundableExcess,
-          updatedAt: now
-        };
-        if (!paymentSnapshot.collected) orderUpdate.followUpBy = paymentSnapshot.followUpBy;
-        transaction.update(orderRef, orderUpdate);
-
-        containerReturns.forEach((returned) => {
-          // Deterministic id per order+type keeps a re-save idempotent.
-          transaction.set(doc(db, "depositEvents", `${orderId}-ret-${returned.type}`), {
-            orderId,
-            customerId: order.customerId || null,
-            authUid: order.authUid || null,
-            containerType: returned.type,
-            qty: returned.returnedQty,
-            amount: returned.returnedQty * returned.depositPerUnit,
-            eventType: returned.handling === "refund" ? "refunded" : "credited",
-            eventDate: today,
-            linkedDocumentId: returnProofDocumentId,
-            proofType: returnProofType,
-            proofNote: returnProofNote,
-            notes: `Returned at delivery — ${returned.handling === "refund" ? "refunded cash" : "applied to this order"}`,
-            createdAt: now
-          });
-        });
-        if (lossReport) {
-          transaction.set(doc(db, "depositEvents", buildDepositEventId()), {
-            orderId,
-            customerId: order.customerId || null,
-            authUid: order.authUid || null,
-            containerType: lossReport.lossType,
-            qty: lossReport.lossQty,
-            amount: lossReport.lossQty * lossReport.depositPerUnit,
-            eventType: "forfeited",
-            eventDate: today,
-            linkedDocumentId: null,
-            notes: lossReport.lossNote || "Reported lost or destroyed at delivery",
-            createdAt: now
-          });
-        }
+      // P0-08: the whole commit is now ONE Admin-SDK transaction on the server
+      // (commitDelivery). It re-reads the order status, re-aggregates the
+      // customer's current holdings, clamps every return + forfeit against those
+      // FRESH numbers, and serializes concurrent deliveries on the customer doc
+      // so two stale tabs can't drive a balance below zero. It also clears the
+      // empties-pickup flag ONLY when a physical return was actually recorded.
+      // Proof photos are uploaded above (client-side) and referenced by id, the
+      // same pattern refund proofs use. The money math lives on the server now;
+      // this client no longer computes balances.
+      await commitDeliveryFn({
+        orderId,
+        paymentId,
+        payment: paymentSnapshot.collected
+          ? {
+              collected: true,
+              amount: paymentSnapshot.amount,
+              method: paymentSnapshot.method,
+              reference: paymentSnapshot.reference
+            }
+          : {
+              collected: false,
+              reason: paymentSnapshot.reason,
+              followUpBy: paymentSnapshot.followUpBy,
+              notes: paymentSnapshot.notes
+            },
+        returns: containerReturns.map((r) => ({ type: r.type, returnedQty: r.returnedQty, handling: r.handling })),
+        lossReport: lossReport
+          ? { lossType: lossReport.lossType, lossQty: lossReport.lossQty, lossNote: lossReport.lossNote }
+          : null,
+        overCreditChoice,
+        proofDocumentId,
+        proofUrl,
+        returnProofDocumentId,
+        returnProofType,
+        returnProofNote
       });
-
-      if (deliveryDialogState.customerId && state.customer.emptiesPickupRequested === true) {
-        updateDoc(doc(db, "customers", deliveryDialogState.customerId), { emptiesPickupRequested: false, emptiesPickupRequestedAt: null, updatedAt: now })
-          .catch((error) => console.warn("Could not clear empties-pickup flag:", error));
-      }
       el("delivery-payment-dialog").close();
       await loadOrderRecord();
       // Delivery is the moment the numbers are final — deposit credit/refund and

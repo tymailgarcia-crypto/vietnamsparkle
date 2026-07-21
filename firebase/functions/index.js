@@ -650,6 +650,356 @@ exports.approveOrder = onCall(async (request) => {
   return approveOrderImpl(orderId, ownerUid);
 });
 
+// --- Atomic delivery commit (P0-08) ----------------------------------------
+//
+// The Firestore CLIENT SDK cannot run a query inside runTransaction, so the two
+// delivery dialogs (orderApp.js / adminApp.js) used to clamp container returns
+// against holdings loaded when the dialog OPENED. Two stale dialogs could each
+// return the same containers and drive a (customer, container) balance below
+// zero, and the standalone forfeit trusted the dialog's hidden depositPerUnit.
+//
+// This callable moves the whole commit server-side. In ONE Admin-SDK
+// transaction it re-reads the order status, RE-AGGREGATES the customer's
+// current /depositEvents holdings, clamps every return + forfeit against those
+// FRESH holdings, then writes the payment + deposit events + order money update.
+//
+// Parallel safety: the transaction also reads AND writes the customer doc, so
+// two concurrent deliveries for the SAME customer serialize on it — the second
+// retries, re-aggregates, sees the first's return events, and re-clamps, so
+// neither can out-run the ledger. (Return ids are per-order and would not
+// conflict on their own; the customer-doc read/write is what forces the order.)
+//
+// Ids reuse the deterministic scheme the old client path used
+// (${orderId}-ret-${type}, ${orderId}-deposit-credit,
+// ${orderId}-deposit-excess-refund); the forfeit now gets a deterministic
+// ${orderId}-forfeit-${type} too — it used a random buildDepositEventId() in
+// BOTH client files, which made a retry append a duplicate write-off.
+//
+// Money math MIRRORS orderApp.js::saveDeliveryPayment and the adminApp.js
+// delivery transaction exactly. Those two must not drift from this.
+function forfeitEventId(orderId, containerType) {
+  return `${orderId}-forfeit-${containerType}`;
+}
+
+// Re-aggregate a customer's held containers from /depositEvents INSIDE a
+// transaction. MIRRORS loadHeldContainersForCustomer in both client files:
+// charged adds; refunded/credited/forfeited/charge_reversed subtract;
+// depositPerUnit is the charge-weighted average.
+async function aggregateHoldings(tx, customerId) {
+  const held = {};
+  if (!customerId) return held;
+  const snap = await tx.get(db().collection("depositEvents").where("customerId", "==", customerId));
+  const byType = {};
+  snap.forEach((docSnap) => {
+    const event = docSnap.data() || {};
+    const type = String(event.containerType || "other");
+    if (!byType[type]) byType[type] = { qty: 0, amount: 0, totalChargedAmount: 0, totalChargedQty: 0 };
+    const qty = Number(event.qty || 0);
+    const amount = Number(event.amount || 0);
+    if (event.eventType === "charged") {
+      byType[type].qty += qty;
+      byType[type].amount += amount;
+      byType[type].totalChargedAmount += amount;
+      byType[type].totalChargedQty += qty;
+    } else if (["refunded", "credited", "forfeited", "charge_reversed"].includes(event.eventType)) {
+      byType[type].qty -= qty;
+      byType[type].amount -= amount;
+    }
+  });
+  Object.entries(byType).forEach(([type, d]) => {
+    held[type] = {
+      qty: d.qty,
+      outstandingAmount: d.amount,
+      depositPerUnit: d.totalChargedQty > 0 ? d.totalChargedAmount / d.totalChargedQty : 0
+    };
+  });
+  return held;
+}
+
+async function commitDeliveryImpl(ownerUid, data) {
+  const input = data || {};
+  const orderId = String(input.orderId || "").trim();
+  if (!orderId) throw new HttpsError("invalid-argument", "orderId is required.");
+  const paymentId = String(input.paymentId || "").trim();
+  if (!paymentId) throw new HttpsError("invalid-argument", "paymentId is required.");
+
+  const payment = input.payment || {};
+  const collected = payment.collected === true;
+  const cashAmount = collected ? Math.round(Number(payment.amount || 0)) : 0;
+  if (collected && (!Number.isFinite(cashAmount) || cashAmount < 0)) {
+    throw new HttpsError("invalid-argument", "Collected amount cannot be negative.");
+  }
+  const overCreditChoice = input.overCreditChoice === "refund" ? "refund" : "carry";
+  const requestedReturns = Array.isArray(input.returns) ? input.returns : [];
+
+  // Forfeit re-read + deliberate reason (P0-08 item 5). The qty and
+  // depositPerUnit from the dialog are NOT trusted — the qty is re-clamped
+  // against fresh holdings below and the per-unit is recomputed server-side —
+  // but the reason must be present and non-empty here.
+  const loss = input.lossReport || null;
+  if (loss) {
+    if (!String(loss.lossType || "").trim()) throw new HttpsError("invalid-argument", "Loss type is required.");
+    if (!String(loss.lossNote || "").trim()) {
+      throw new HttpsError("invalid-argument", "A write-off needs a reason — say what happened to the containers.");
+    }
+  }
+
+  const returnProofDocumentId = input.returnProofDocumentId || null;
+  const returnProofType = input.returnProofType || null;
+  const returnProofNote = input.returnProofNote || null;
+  const proofDocumentId = input.proofDocumentId || null;
+  const proofUrl = input.proofUrl || null;
+
+  const now = new Date().toISOString();
+  const today = businessTodayKey();
+
+  return db().runTransaction(async (tx) => {
+    // ---- READS (all before any write) ----
+    const orderRef = db().doc(`orders/${orderId}`);
+    const orderSnap = await tx.get(orderRef);
+    if (!orderSnap.exists) throw new HttpsError("not-found", "Order no longer exists.");
+    const order = orderSnap.data() || {};
+    // Fresh, in-transaction status gate (P0-08 item 3, now server-authoritative):
+    // deliver only an order that is genuinely out_for_delivery right now.
+    if (order.status !== "out_for_delivery") {
+      throw new HttpsError("failed-precondition", order.status === "delivered"
+        ? "This order is already delivered."
+        : "This order is no longer out for delivery — reload before recording delivery.");
+    }
+
+    const customerId = order.customerId || null;
+    // Read the customer doc so the write at the end serializes concurrent
+    // deliveries for the same customer (see header). Also the anchor for the
+    // empties-pickup flag.
+    const customerRef = customerId ? db().doc(`customers/${customerId}`) : null;
+    const customerSnap = customerRef ? await tx.get(customerRef) : null;
+    const held = await aggregateHoldings(tx, customerId);
+
+    // ---- Clamp returns against FRESH holdings (P0-08 items 1/2) ----
+    // "keep" ("owner will decide later") returns are dropped by the client and
+    // never arrive here — no ledger event is written for them, so they cannot
+    // masquerade as a recorded physical return (item 4).
+    const returns = [];
+    requestedReturns.forEach((r) => {
+      const type = String((r || {}).type || "");
+      const handling = r && r.handling === "refund" ? "refund" : "credit";
+      const requestedQty = Math.round(Number((r || {}).returnedQty || 0));
+      if (!type || !Number.isFinite(requestedQty) || requestedQty <= 0) return;
+      const heldQty = Number(held[type] && held[type].qty || 0);
+      if (heldQty <= 0) return;
+      returns.push({
+        type,
+        returnedQty: Math.min(requestedQty, heldQty),
+        handling,
+        depositPerUnit: Number(held[type] && held[type].depositPerUnit || 0)
+      });
+    });
+
+    // ---- Clamp forfeit against FRESH holdings (P0-08 item 5) ----
+    let lossReport = null;
+    if (loss) {
+      const lossType = String(loss.lossType).trim();
+      const heldQty = Number(held[lossType] && held[lossType].qty || 0);
+      const lossQty = Math.round(Number(loss.lossQty || 0));
+      if (heldQty <= 0) {
+        throw new HttpsError("failed-precondition", "This customer has no containers of that type on file, so there is nothing to write off.");
+      }
+      if (!Number.isFinite(lossQty) || lossQty <= 0 || lossQty > heldQty) {
+        throw new HttpsError("failed-precondition", `Qty lost must be between 1 and ${heldQty}.`);
+      }
+      lossReport = {
+        lossType,
+        lossQty,
+        depositPerUnit: Number(held[lossType] && held[lossType].depositPerUnit || 0),
+        lossNote: String(loss.lossNote).trim()
+      };
+    }
+
+    // ---- Money math (mirror of both client delivery transactions) ----
+    const total = Number(order.subtotal || 0) + Number(order.depositTotal || 0);
+    const creditTotal = returns
+      .filter((r) => r.handling === "credit")
+      .reduce((s, r) => s + r.returnedQty * r.depositPerUnit, 0);
+    const cashPaid = collected ? cashAmount : 0;
+    const grossAmountPaid = Number(order.amountPaid || 0) + cashPaid + creditTotal;
+    const grossBalance = total - grossAmountPaid;
+    const refundableExcess = Math.min(creditTotal, Math.max(0, -grossBalance));
+    const excessRefund = overCreditChoice === "refund" ? refundableExcess : 0;
+    const newAmountPaid = grossAmountPaid - excessRefund;
+    const newBalance = total - newAmountPaid;
+    const receivedBy = ownerUid || "owner";
+
+    // ---- WRITES ----
+    if (collected) {
+      tx.set(db().doc(`payments/${paymentId}`), {
+        orderId,
+        customerId: customerId || null,
+        authUid: order.authUid || null,
+        paymentDate: today,
+        method: payment.method || "cash",
+        amount: cashPaid,
+        reference: payment.reference || null,
+        receivedBy,
+        proofDocumentId,
+        proofUrl,
+        notes: "Collected at delivery",
+        deferred: false,
+        createdAt: now
+      });
+    } else {
+      tx.set(db().doc(`payments/${paymentId}`), {
+        orderId,
+        customerId: customerId || null,
+        authUid: order.authUid || null,
+        paymentDate: today,
+        method: "deferred",
+        amount: 0,
+        reference: null,
+        receivedBy,
+        proofDocumentId: null,
+        proofUrl: null,
+        notes: payment.notes || null,
+        deferred: true,
+        deferralReason: payment.reason || "other",
+        followUpBy: payment.followUpBy || null,
+        createdAt: now
+      });
+    }
+
+    if (creditTotal > 0) {
+      tx.set(db().doc(`payments/${orderId}-deposit-credit`), {
+        orderId,
+        customerId: customerId || null,
+        authUid: order.authUid || null,
+        paymentDate: today,
+        method: "deposit_credit",
+        amount: creditTotal,
+        reference: null,
+        receivedBy,
+        proofDocumentId: returnProofDocumentId,
+        proofUrl: null,
+        proofType: returnProofType,
+        proofNote: returnProofNote,
+        notes: returnProofDocumentId
+          ? "Deposit credit from containers returned at delivery"
+          : `Deposit credit from containers returned at delivery — no photo, recorded on note: "${returnProofNote}"`,
+        deferred: false,
+        createdAt: now
+      });
+    }
+
+    if (excessRefund > 0) {
+      tx.set(db().doc(`payments/${orderId}-deposit-excess-refund`), {
+        orderId,
+        customerId: customerId || null,
+        authUid: order.authUid || null,
+        paymentDate: today,
+        method: "deposit_refund",
+        amount: -excessRefund,
+        reference: null,
+        receivedBy,
+        proofDocumentId: returnProofDocumentId,
+        proofUrl: null,
+        proofType: returnProofType,
+        proofNote: returnProofNote,
+        notes: "Cash refund of excess returned-container deposit credit",
+        deferred: false,
+        createdAt: now
+      });
+    }
+
+    const orderUpdate = {
+      status: "delivered",
+      deliveryPaymentEventId: paymentId,
+      amountPaid: newAmountPaid,
+      balanceDue: newBalance,
+      paymentStatus: paymentStatusFor(newAmountPaid, newBalance),
+      depositOverCreditDisposition: refundableExcess > 0 ? overCreditChoice : null,
+      depositOverCreditAmount: refundableExcess,
+      updatedAt: now
+    };
+    if (!collected) orderUpdate.followUpBy = payment.followUpBy || null;
+    tx.update(orderRef, orderUpdate);
+
+    returns.forEach((r) => {
+      tx.set(db().doc(`depositEvents/${orderId}-ret-${r.type}`), {
+        orderId,
+        customerId: customerId || null,
+        authUid: order.authUid || null,
+        containerType: r.type,
+        qty: r.returnedQty,
+        amount: r.returnedQty * r.depositPerUnit,
+        eventType: r.handling === "refund" ? "refunded" : "credited",
+        eventDate: today,
+        linkedDocumentId: returnProofDocumentId,
+        proofType: returnProofType,
+        proofNote: returnProofNote,
+        notes: `Returned at delivery — ${r.handling === "refund" ? "refunded cash" : "applied to this order"}`,
+        createdAt: now
+      });
+    });
+
+    if (lossReport) {
+      // Deterministic id (was random in both client files) so a retry of this
+      // callable overwrites the single write-off instead of appending another.
+      tx.set(db().doc(`depositEvents/${forfeitEventId(orderId, lossReport.lossType)}`), {
+        orderId,
+        customerId: customerId || null,
+        authUid: order.authUid || null,
+        containerType: lossReport.lossType,
+        qty: lossReport.lossQty,
+        amount: lossReport.lossQty * lossReport.depositPerUnit,
+        eventType: "forfeited",
+        eventDate: today,
+        linkedDocumentId: null,
+        notes: lossReport.lossNote,
+        createdAt: now
+      });
+    }
+
+    // ---- Pickup flag: clear ONLY when empties were actually collected ----
+    // Fulfilled = at least one physical return (credit or refund) was written
+    // this delivery. A pure "owner will decide later" writes no ledger event and
+    // is NOT fulfilled, so the request stays and nags next time (P0-08 item:
+    // pickup clears only when fulfilled or explicitly dismissed/rescheduled —
+    // explicit dismissal is the customer's own toggle on account.html). The
+    // customer-doc write always runs (updatedAt) because it is also the
+    // serialization anchor above.
+    const pickupFulfilled = returns.length > 0;
+    let pickupCleared = false;
+    if (customerRef) {
+      const patch = { updatedAt: now };
+      const wanted = customerSnap && customerSnap.exists
+        && (customerSnap.data() || {}).emptiesPickupRequested === true;
+      if (wanted && pickupFulfilled) {
+        patch.emptiesPickupRequested = false;
+        patch.emptiesPickupRequestedAt = null;
+        pickupCleared = true;
+      }
+      tx.set(customerRef, patch, { merge: true });
+    }
+
+    return {
+      orderId,
+      status: "delivered",
+      amountPaid: newAmountPaid,
+      balanceDue: newBalance,
+      creditTotal,
+      excessRefund,
+      pickupCleared,
+      returnsApplied: returns.map((r) => ({ type: r.type, qty: r.returnedQty, handling: r.handling })),
+      forfeited: lossReport ? { type: lossReport.lossType, qty: lossReport.lossQty } : null
+    };
+  });
+}
+
+// Owner-only: the delivery dialogs upload proof photos client-side (same pattern
+// as refund proofs), then hand the rest to this callable.
+exports.commitDelivery = onCall(async (request) => {
+  const ownerUid = requireOwner(request);
+  return commitDeliveryImpl(ownerUid, request.data || {});
+});
+
 // --- Nightly reconciliation ----------------------------------------------
 //
 // Mirrors paymentStatusFor() in web/assets/shared.js and orderMathValid() in
@@ -1898,5 +2248,12 @@ if (process.env.NODE_ENV === "test" || process.env.FUNCTIONS_EMULATOR === "true"
     canLinkAuthUidToCustomer,
     computeDepositBreakdown,
     depositChargeId
+  });
+  // P0-08: atomic delivery-commit core (holdings re-aggregation, clamp,
+  // parallel-safe negative prevention, forfeit re-read, fulfilled-only pickup).
+  exports._deliveryTestApi = () => ({
+    commitDeliveryImpl,
+    aggregateHoldings,
+    forfeitEventId
   });
 }
