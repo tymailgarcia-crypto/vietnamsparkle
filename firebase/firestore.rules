@@ -77,6 +77,20 @@ service cloud.firestore {
         && resource.data.status != 'delivered';
     }
 
+    // A write that moves an order into `cancelled` from any other status.
+    // Owner cancellations now run server-side through the submitOrderCancellation
+    // callable (Admin SDK, bypasses these rules), which books the deposit
+    // `charge_reversed` reversal and opens the /orderCancellations case in one
+    // transaction. A direct client-write cancel skips all of that and would
+    // leave the deposit ledger and refund case out of sync, so the owner
+    // browser path below is denied it. The customer's own unpaid
+    // pending_approval → cancelled self-cancel is a SEPARATE branch and is
+    // unaffected. See CANCELLATION-REFUND-PLAN.md.
+    function isCancelTransition() {
+      return request.resource.data.status == 'cancelled'
+        && resource.data.status != 'cancelled';
+    }
+
     function hasValidDeliveryPayment() {
       // NOTE: cannot use exists() here — the payments doc is created in the
       // same writeBatch as this order update, and Firestore rules evaluate
@@ -100,7 +114,8 @@ service cloud.firestore {
       allow create: if isOwner() && orderMathValid();
       allow update: if (isOwner()
             && (!touchesMoneyFields() || orderMathValid())
-            && (!isDeliveryTransition() || hasValidDeliveryPayment()))
+            && (!isDeliveryTransition() || hasValidDeliveryPayment())
+            && !isCancelTransition())
         || (isDriver()
             && resource.data.assignedDriverId == myDriverId()
             && (

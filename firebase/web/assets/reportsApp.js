@@ -17,6 +17,11 @@ import { escapeHtml, formatCurrency, requireRole } from "./shared.js";
 const RUN_LIMIT = 30;
 const DRIFT_LIMIT = 200;
 const EVENT_LIMIT = 100;
+// The whole cancellation ledger is tiny; pull a generous recent window and
+// filter client-side for the two "needs attention" conditions. There is no
+// compound OR query for refundStatus-in OR evidenceStatus, and a bounded recent
+// window keeps this a single read.
+const CANCELLATION_LIMIT = 300;
 
 // The job runs daily at 03:00 Asia/Ho_Chi_Minh. Past this much silence,
 // something is wrong with the schedule rather than with the data.
@@ -28,7 +33,9 @@ const state = {
   expanded: {},
   driftedOnly: false,
   events: [],
-  eventsError: null
+  eventsError: null,
+  cancellations: [],
+  cancellationsError: null
 };
 
 function el(id) {
@@ -388,6 +395,115 @@ async function loadEvents() {
   renderEvents();
 }
 
+// Read-only owner queue over orderCancellations/{caseId} (server-written, owner
+// read in firestore.rules). A case lands here while money is still owed back
+// (refundStatus pending/partial) or the refund proof has not been filed
+// (evidenceStatus missing) — the two states that need an owner to act. Every
+// other case (paid + evidence complete, or refund not required) drops off.
+function needsAttention(c) {
+  const refund = String(c.refundStatus || "");
+  const evidence = String(c.evidenceStatus || "");
+  return refund === "pending" || refund === "partial" || evidence === "missing";
+}
+
+function refundBadge(status) {
+  const s = String(status || "");
+  if (s === "pending") return `<span class="badge recon-badge-drift">Refund pending</span>`;
+  if (s === "partial") return `<span class="badge recon-badge-drift">Refund partial</span>`;
+  if (s === "paid") return `<span class="badge recon-badge-clean">Refund paid</span>`;
+  return `<span class="badge">${escapeHtml(s || "—")}</span>`;
+}
+
+function evidenceBadge(status) {
+  const s = String(status || "");
+  if (s === "missing") return `<span class="badge recon-badge-failed">Proof missing</span>`;
+  if (s === "complete") return `<span class="badge recon-badge-clean">Proof filed</span>`;
+  if (s === "legacy_attested") return `<span class="badge">Legacy attested</span>`;
+  return `<span class="badge">${escapeHtml(s || "—")}</span>`;
+}
+
+function renderCancellations() {
+  const listNode = el("refunds-list");
+  const statusNode = el("refunds-status");
+  if (!listNode) return;
+
+  if (state.cancellationsError) {
+    if (statusNode) statusNode.textContent = "";
+    listNode.innerHTML = `<p class="muted" style="padding:20px;text-align:center;color:var(--danger)">${escapeHtml(state.cancellationsError)}</p>`;
+    return;
+  }
+
+  const open = state.cancellations.filter(needsAttention);
+  if (statusNode) {
+    statusNode.textContent = open.length
+      ? `${open.length} case${open.length === 1 ? "" : "s"} awaiting a refund or its proof`
+      : "";
+  }
+
+  if (!open.length) {
+    listNode.innerHTML = `<p class="muted" style="padding:20px;text-align:center">No refunds due and no missing proof. Every cancellation case has been refunded and evidenced.</p>`;
+    return;
+  }
+
+  const body = open.map((c) => {
+    const orderHref = `./order.html?id=${encodeURIComponent(c.orderId || "")}`;
+    const required = Number(c.refundRequired || 0);
+    const remaining = Number(c.refundRemaining || 0);
+    return `
+      <tr class="recon-drift-row">
+        <td data-label="Order" class="recon-drift-order">
+          <a href="${orderHref}"><code>${escapeHtml(c.orderId || "")}</code></a>
+        </td>
+        <td data-label="Customer">${escapeHtml(c.customerId || "—")}</td>
+        <td data-label="Kind">${escapeHtml(c.kind || "—")}</td>
+        <td data-label="Refund required">${escapeHtml(formatCurrency(required))}</td>
+        <td data-label="Still owed"><strong>${escapeHtml(formatCurrency(remaining))}</strong></td>
+        <td data-label="Refund">${refundBadge(c.refundStatus)}</td>
+        <td data-label="Proof">${evidenceBadge(c.evidenceStatus)}</td>
+        <td data-label="Cancelled">${escapeHtml(formatRunTime(toDate(c.decidedAt || c.updatedAt || c.createdAt)))}</td>
+      </tr>
+    `;
+  }).join("");
+
+  listNode.innerHTML = `
+    <p class="muted" style="margin:0 0 12px">Cancellation cases where money is still owed back to the customer, or where the refund was paid but its proof has not been attached yet. Open the order to record a refund or attach the receipt.</p>
+    <div class="customer-table-wrap">
+      <table class="customer-table recon-drift-table">
+        <thead>
+          <tr>
+            <th>Order</th>
+            <th>Customer</th>
+            <th>Kind</th>
+            <th>Refund required</th>
+            <th>Still owed</th>
+            <th>Refund</th>
+            <th>Proof</th>
+            <th>Cancelled</th>
+          </tr>
+        </thead>
+        <tbody>${body}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+async function loadCancellations() {
+  const statusNode = el("refunds-status");
+  if (statusNode) statusNode.textContent = "Loading…";
+  try {
+    const snap = await getDocs(query(
+      collection(db, "orderCancellations"),
+      orderBy("updatedAt", "desc"),
+      limit(CANCELLATION_LIMIT)
+    ));
+    state.cancellations = snap.docs.map((d) => ({ id: d.id, ...(d.data() || {}) }));
+    state.cancellationsError = null;
+  } catch (error) {
+    state.cancellationsError = `Could not load cancellation cases: ${error.message || error}`;
+  }
+  renderCancellations();
+}
+
 async function loadRuns() {
   setStatus("Loading runs…");
   try {
@@ -408,6 +524,7 @@ el("refresh-button").addEventListener("click", () => {
   state.drifts = {};
   loadRuns();
   loadEvents();
+  loadCancellations();
 });
 el("drifted-only").addEventListener("change", (event) => {
   state.driftedOnly = event.target.checked;
@@ -425,5 +542,5 @@ onAuthStateChanged(auth, async (user) => {
   if (!(await requireRole(user, "owner"))) return;
   authView.classList.add("hidden");
   appView.classList.remove("hidden");
-  await Promise.all([loadRuns(), loadEvents()]);
+  await Promise.all([loadRuns(), loadEvents(), loadCancellations()]);
 });

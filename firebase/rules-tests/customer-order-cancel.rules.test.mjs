@@ -3,6 +3,13 @@
 // - a customer may directly cancel only their own pending_approval order;
 // - that direct cancellation records no reason/evidence/request documentation;
 // - approved-order cancellation requests are not a client-write path.
+//
+// Owner cancellation policy (P0-07 increment B part 2):
+// - the owner CANNOT direct-write a `cancelled` status from a browser client;
+//   owner cancels route through the submitOrderCancellation callable (Admin SDK,
+//   bypasses rules) so the deposit reversal + refund case stay atomic. This is
+//   pinned below for both an approved and a pending_approval order. Owner
+//   non-cancel transitions (e.g. approved -> assigned) stay allowed.
 
 import { initializeTestEnvironment, assertFails, assertSucceeds } from "@firebase/rules-unit-testing";
 import { readFileSync } from "node:fs";
@@ -19,6 +26,7 @@ const testEnv = await initializeTestEnvironment({
 
 await testEnv.clearFirestore();
 const customer = testEnv.authenticatedContext("customer-uid", { email: "customer@example.test", email_verified: true });
+const owner = testEnv.authenticatedContext("owner-uid", { role: "owner" });
 
 async function seedOrder(id, over = {}) {
   await testEnv.withSecurityRulesDisabled(async (ctx) => {
@@ -111,6 +119,35 @@ await it("customer CANNOT alter order data while cancelling", async () => {
     cancelledAt: "2026-07-20T01:00:00.000Z",
     cancelledBy: "customer",
     updatedAt: "2026-07-20T01:00:00.000Z"
+  }));
+});
+
+await it("owner CANNOT direct-write cancel an APPROVED order (must use callable)", async () => {
+  await seedOrder("ORD-OWNER-APPROVED", { status: "approved" });
+  await assertFails(updateDoc(doc(owner.firestore(), "orders", "ORD-OWNER-APPROVED"), {
+    status: "cancelled",
+    cancelledAt: "2026-07-21T01:00:00.000Z",
+    cancelledBy: "owner",
+    updatedAt: "2026-07-21T01:00:00.000Z"
+  }));
+});
+
+await it("owner CANNOT direct-write cancel a pending_approval order (must use callable)", async () => {
+  await seedOrder("ORD-OWNER-PENDING");
+  await assertFails(updateDoc(doc(owner.firestore(), "orders", "ORD-OWNER-PENDING"), {
+    status: "cancelled",
+    cancelledAt: "2026-07-21T01:00:00.000Z",
+    cancelledBy: "owner",
+    updatedAt: "2026-07-21T01:00:00.000Z"
+  }));
+});
+
+await it("owner CAN still make a non-cancel transition (approved -> assigned)", async () => {
+  await seedOrder("ORD-OWNER-ASSIGN", { status: "approved" });
+  await assertSucceeds(updateDoc(doc(owner.firestore(), "orders", "ORD-OWNER-ASSIGN"), {
+    status: "assigned",
+    assignedDriverId: "DRV-1",
+    updatedAt: "2026-07-21T01:00:00.000Z"
   }));
 });
 
