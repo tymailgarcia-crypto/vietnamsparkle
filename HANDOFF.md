@@ -80,16 +80,39 @@ and offer WhatsApp-chase on undelivered water. No `firestore.rules` change
 12/12, `commitDelivery.emulator` 8→12, parity 6/6, all regressions + the full
 takeover gate green (12/4/24/17/13/9, benign stderr only). Deployed
 `--only functions:recordPayment,functions:commitDelivery` + `--only hosting`
-(exactly 5/42 files, post-release 42/42 byte-identical). NOT owner-click-through
-QA'd — the standing gap.
+(exactly 5/42 files, post-release 42/42 byte-identical). **Owner click-through
+QA'd the same day — emulator AND production (Ty's session) — see the QA
+manifest below. First P0 with the click-through gap closed; P0-11's
+customer-side + mobile matrix stays open.**
 
 Next in SHIP-READINESS.md: **P0-10** (true final review + cart survives
 sign-in). Trust SHIP-READINESS.md for per-P0 status/evidence and ROADMAP.md
 "Shipped 2026-07-21" for the how/why.
 
+**P0-09 owner click-through QA was DONE on 2026-07-21 (emulator + production
+with Ty's own session in the CC browser pane — Ty signed in himself and
+explicitly authorized fixture writes because a full data reset is planned
+before handover). All flows green; `reports.html` shows zero real-time
+corrections. QA FIXTURE MANIFEST — production docs created, delete at the
+pre-handover reset (or earlier with the Admin SDK; client rules block hard
+deletes of payments/customers):**
+- `customers/CUS-84900000099` — "ZZ QA TEST DELETE", phone +84900000099, notes
+  say it is a QA fixture.
+- `orders/ORD-20260721110826-5845` — delivered; total 100,000; paid 110,000;
+  balance −10,000 (deliberate acknowledged credit). Plus its `orderItems` (1 ×
+  P-UNI-20L-JUG) and any `depositEvents` keyed to that orderId.
+- 3 `payments` docs for that orderId: the amount-0 deferred at delivery, 40,000
+  ("QA partial"), 70,000 ("QA intentional credit").
+- Until deleted these show in Finance (110,000 cash on 2026-07-21), the
+  customers list, and orders history. Everything is findable by that orderId +
+  customerId.
+
 Housekeeping: `firebase/scratch-authusers.json` is an empty stray (emulator
 export) — delete or ignore, do not commit. The `.manual-deploy-*` dirs and the
-PNG-cutline personal tools stay out of git as always.
+PNG-cutline personal tools stay out of git as always. Also NOT committed, by
+design: `.claude/launch.json` (local static-serve config for browser QA).
+**Ty's owner password was pasted into a Claude chat on 2026-07-21 — he was
+advised to rotate it before handover.**
 
 Verification bar used all session: pure/emulator tests green + the account-takeover
 gate (authuid-linking / email-propagation-takeover / customers / payments) re-run
