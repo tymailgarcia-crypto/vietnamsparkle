@@ -43,7 +43,7 @@ async function assertRejects(fn, code) {
     await fn();
   } catch (e) {
     if (code) assert.strictEqual(e.code, code, `expected code '${code}', got '${e.code}' (${e && e.message})`);
-    return;
+    return e;
   }
   throw new Error(`expected a rejection${code ? ` with code '${code}'` : ""}`);
 }
@@ -223,6 +223,60 @@ async function netHeld(customerId, type) {
     });
     assert.strictEqual(resB.pickupCleared, false);
     assert.strictEqual((await db.doc(`customers/${b.customerId}`).get()).data().emptiesPickupRequested, true);
+  });
+
+  await it("P0-09: zero collected while a balance remains is rejected (deferred is the zero path)", async () => {
+    const { orderId } = await seedOrder();
+    await assertRejects(() => commitDeliveryImpl("owner-uid", {
+      orderId, paymentId: `${orderId}-pay`,
+      payment: { collected: true, amount: 0, method: "cash" }, returns: []
+    }), "failed-precondition");
+    const order = (await db.doc(`orders/${orderId}`).get()).data();
+    assert.strictEqual(order.status, "out_for_delivery", "delivery did not close");
+    assert.strictEqual((await db.doc(`payments/${orderId}-pay`).get()).exists, false);
+  });
+
+  await it("P0-09: zero collected on a fully prepaid order still delivers (nothing was due)", async () => {
+    const { orderId } = await seedOrder();
+    await db.doc(`orders/${orderId}`).update({ amountPaid: 100000, balanceDue: 0, paymentStatus: "paid" });
+    const res = await commitDeliveryImpl("owner-uid", {
+      orderId, paymentId: `${orderId}-pay`,
+      payment: { collected: true, amount: 0, method: "cash" }, returns: []
+    });
+    assert.strictEqual(res.status, "delivered");
+    assert.strictEqual(res.balanceDue, 0);
+  });
+
+  await it("P0-09: fractional VND is rejected, no silent rounding", async () => {
+    const { orderId } = await seedOrder();
+    await assertRejects(() => commitDeliveryImpl("owner-uid", {
+      orderId, paymentId: `${orderId}-pay`,
+      payment: { collected: true, amount: 99999.5, method: "cash" }, returns: []
+    }), "invalid-argument");
+    assert.strictEqual((await db.doc(`orders/${orderId}`).get()).data().status, "out_for_delivery");
+  });
+
+  await it("P0-09: cash overpay needs the exact acknowledged credit — rejected with the fresh excess in details", async () => {
+    const { orderId } = await seedOrder();
+    // Extra zero: 1 000 000 typed against 100 000 due.
+    const err = await assertRejects(() => commitDeliveryImpl("owner-uid", {
+      orderId, paymentId: `${orderId}-pay`,
+      payment: { collected: true, amount: 1000000, method: "cash" }, returns: []
+    }), "failed-precondition");
+    assert.strictEqual(err.details && err.details.overpayment, true);
+    assert.strictEqual(err.details.excessCash, 900000);
+    assert.strictEqual(err.details.dueBefore, 100000);
+    assert.strictEqual((await db.doc(`orders/${orderId}`).get()).data().status, "out_for_delivery", "nothing written");
+    // Acknowledging the exact excess records it as customer credit.
+    const res = await commitDeliveryImpl("owner-uid", {
+      orderId, paymentId: `${orderId}-pay`,
+      payment: { collected: true, amount: 1000000, method: "cash" }, returns: [],
+      acknowledgeCashCredit: 900000
+    });
+    assert.strictEqual(res.status, "delivered");
+    assert.strictEqual(res.balanceDue, -900000, "credit carried on the order");
+    const order = (await db.doc(`orders/${orderId}`).get()).data();
+    assert.strictEqual(order.paymentStatus, "paid");
   });
 
   await it("missing order rejects and writes nothing", async () => {

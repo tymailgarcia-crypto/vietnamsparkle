@@ -53,6 +53,7 @@
           <div class="toolbar">
             <div>
               <p class="muted" id="list-status"></p>
+              <p class="muted" style="margin:4px 0 0">Delivered orders only — money for undelivered orders is collected at the door when the driver marks them delivered.</p>
             </div>
             <div class="button-row">
               <input id="search-input" type="search" placeholder="Search customer / order / phone" style="min-width:220px">
@@ -98,28 +99,42 @@
           <h3 class="span-2" style="margin:0">Record payment — <span id="record-payment-customer"></span></h3>
           <p class="muted span-2" style="margin:0">Balance due: <strong id="record-payment-due">0 VND</strong></p>
           <input type="hidden" id="record-payment-order-id">
-          <label>
-            Amount collected
-            <input id="record-payment-amount" type="number" min="0" step="1000" required>
-          </label>
-          <label>
-            Method
-            <select id="record-payment-method" required>
-              <option value="cash">Cash</option>
-              <option value="transfer">Bank transfer</option>
-              <option value="bank_qr">QR code</option>
-              <option value="other">Other</option>
-            </select>
-          </label>
-          <label class="span-2">
-            Reference (optional)
-            <input id="record-payment-reference" type="text" maxlength="199" placeholder="Bank reference or note">
-          </label>
-          <label class="span-2">
-            Proof photo (optional)
-            <input id="record-payment-proof" type="file" accept="image/*" capture="environment">
-            <span class="muted" id="record-payment-proof-hint">Transfer screenshot or signed receipt. Photos are compressed automatically; source max 30 MB.</span>
-          </label>
+
+          <div class="span-2 button-row">
+            <label class="button-row" style="gap:6px;cursor:pointer"><input type="radio" name="record-collected" value="collected" checked><span>Money received</span></label>
+            <label class="button-row" style="gap:6px;cursor:pointer"><input type="radio" name="record-collected" value="deferred"><span>Not collected — set follow-up</span></label>
+          </div>
+
+          <div id="record-collected-fields" class="span-2 form-grid">
+            <label>
+              Amount collected
+              <input id="record-payment-amount" type="number" min="0" step="1000">
+            </label>
+            <label>
+              Method
+              <select id="record-payment-method">
+                <option value="cash">Cash</option>
+                <option value="transfer">Bank transfer</option>
+                <option value="bank_qr">QR code</option>
+                <option value="other">Other</option>
+              </select>
+            </label>
+            <label class="span-2">
+              Reference (optional)
+              <input id="record-payment-reference" type="text" maxlength="199" placeholder="Bank reference or note">
+            </label>
+            <label class="span-2">
+              Proof photo (optional)
+              <input id="record-payment-proof" type="file" accept="image/*" capture="environment">
+              <span class="muted" id="record-payment-proof-hint">Transfer screenshot or signed receipt. Photos are compressed automatically; source max 30 MB.</span>
+            </label>
+          </div>
+
+          <div id="record-deferred-fields" class="span-2 form-grid hidden">
+            <label>Reason<select id="record-deferral-reason"><option value="customer_said_next_time">Customer said next time</option><option value="customer_unreachable">Customer unreachable</option><option value="dispute">Amount disputed</option><option value="waived_by_owner">Waived by owner</option><option value="other">Other</option></select></label>
+            <label>Follow up by<input id="record-follow-up" type="date"></label>
+            <label class="span-2">Notes<textarea id="record-deferral-notes" rows="2" maxlength="999" placeholder="What did the customer say?"></textarea></label>
+          </div>
           <div class="span-2 button-row">
             <button class="primary" type="submit">Save payment</button>
             <button class="ghost" type="button" id="record-payment-cancel-button">Discard</button>

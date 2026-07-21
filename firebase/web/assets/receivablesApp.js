@@ -3,17 +3,16 @@ import {
   collection,
   db,
   doc,
+  functions,
   getDoc,
   getDocs,
+  httpsCallable,
   onAuthStateChanged,
   query,
-  runTransaction,
-  setDoc,
   signOut,
-  updateDoc,
   where
 } from "./firebaseClient.js";
-import { buildPaymentId, formatCurrency, mergeThresholds, paymentStatusFor, requireRole, THRESHOLD_DEFAULTS, todayKey, withSubmitLock } from "./shared.js";
+import { buildPaymentId, collectedPaymentProblem, formatCurrency, mergeThresholds, requireRole, THRESHOLD_DEFAULTS, todayKey, withSubmitLock } from "./shared.js";
 import {
   invoiceContext,
   renderInvoiceHtml,
@@ -33,6 +32,11 @@ const state = {
   search: "",
   thresholds: { ...THRESHOLD_DEFAULTS }
 };
+
+// P0-09: the money write moved server-side (fresh status/balance re-read,
+// zero→deferred routing, acknowledged overpay credit, cancelled/undelivered
+// rejection) — same pattern as approval/cancellation/delivery-commit.
+const recordPaymentFn = httpsCallable(functions, "recordPayment");
 
 function el(id) {
   return document.getElementById(id);
@@ -161,7 +165,12 @@ async function loadReceivables() {
     const snap = await getDocs(query(collection(db, "orders"), where("balanceDue", ">", 0)));
     state.rows = snap.docs
       .map((d) => ({ id: d.id, ...d.data() }))
-      .filter((o) => o.status !== "cancelled" && o.status !== "pending_approval")
+      // P0-09: DELIVERED ONLY. This page used to include new/assigned/
+      // out_for_delivery orders under a column labelled "Delivered", so the
+      // owner could chase a customer for money on water that had not arrived
+      // yet. Undelivered money is collected at the door (commitDelivery), and
+      // recordPayment rejects undelivered orders server-side to match.
+      .filter((o) => o.status === "delivered")
       .sort((a, b) => String(a.deliveryDate || "").localeCompare(String(b.deliveryDate || "")));
     renderRows();
     renderNagTiles();
@@ -192,6 +201,21 @@ function renderNagTiles() {
   `;
 }
 
+function daysFromToday(days) {
+  const d = new Date();
+  d.setDate(d.getDate() + Number(days || 0));
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${dd}`;
+}
+
+function toggleRecordPaymentFields() {
+  const collected = document.querySelector('input[name="record-collected"]:checked')?.value === "collected";
+  el("record-collected-fields").classList.toggle("hidden", !collected);
+  el("record-deferred-fields").classList.toggle("hidden", collected);
+}
+
 function openRecordPaymentDialog(row) {
   const dialog = el("record-payment-dialog");
   if (!dialog || typeof dialog.showModal !== "function") return;
@@ -205,6 +229,14 @@ function openRecordPaymentDialog(row) {
   // next row's payment silently inherits the previous row's proof photo.
   const proofInput = el("record-payment-proof");
   if (proofInput) proofInput.value = "";
+  // P0-09: zero collected is not a payment — it routes to this explicit
+  // deferred branch, which records a reason and a follow-up date instead.
+  const collectedRadio = document.querySelector('input[name="record-collected"][value="collected"]');
+  if (collectedRadio) collectedRadio.checked = true;
+  el("record-deferral-reason").value = "customer_said_next_time";
+  el("record-follow-up").value = row.followUpBy || daysFromToday(state.thresholds.followUpDays);
+  el("record-deferral-notes").value = "";
+  toggleRecordPaymentFields();
   const statusNode = el("record-payment-status");
   if (statusNode) {
     statusNode.textContent = "";
@@ -219,35 +251,63 @@ async function saveRecordPayment(event) {
   const row = state.rows.find((r) => r.id === orderId);
   const statusNode = el("record-payment-status");
   if (!row) return;
-  const amount = Number(el("record-payment-amount").value || 0);
-  const method = el("record-payment-method").value;
-  const reference = el("record-payment-reference").value.trim() || null;
-  if (amount < 0) {
-    statusNode.textContent = "Amount cannot be negative.";
+  const showError = (message) => {
+    statusNode.textContent = message;
     statusNode.style.color = "var(--danger, #b3261e)";
-    return;
-  }
-  const proofInput = el("record-payment-proof");
-  const proofFile = proofInput && proofInput.files && proofInput.files[0] ? proofInput.files[0] : null;
-  if (proofFile) {
-    const problem = validateProofFile(proofFile);
+  };
+
+  // Snapshot every DOM input up front (same discipline as the delivery
+  // dialogs) — nothing below re-reads the form.
+  const collected = document.querySelector('input[name="record-collected"]:checked')?.value === "collected";
+  let paymentSnapshot;
+  let proofFile = null;
+  if (collected) {
+    const amount = Number(el("record-payment-amount").value || 0);
+    // Positive whole VND only. Every row here has a balance remaining (the
+    // page lists balanceDue > 0), so zero is rejected and routed to the
+    // "Not collected" branch. Same rule the server re-checks.
+    const problem = collectedPaymentProblem(amount, Math.max(1, Number(row.balanceDue || 0)));
     if (problem) {
-      statusNode.textContent = problem;
-      statusNode.style.color = "var(--danger, #b3261e)";
+      showError(problem);
       return;
     }
+    const proofInput = el("record-payment-proof");
+    proofFile = proofInput && proofInput.files && proofInput.files[0] ? proofInput.files[0] : null;
+    if (proofFile) {
+      const proofProblem = validateProofFile(proofFile);
+      if (proofProblem) {
+        showError(proofProblem);
+        return;
+      }
+    }
+    paymentSnapshot = {
+      collected: true,
+      amount,
+      method: el("record-payment-method").value || "cash",
+      reference: el("record-payment-reference").value.trim() || null
+    };
+  } else {
+    const followUpBy = el("record-follow-up").value;
+    if (!followUpBy) {
+      showError("Pick a follow-up date so this doesn't fall off the list.");
+      return;
+    }
+    paymentSnapshot = {
+      collected: false,
+      reason: el("record-deferral-reason").value || "other",
+      followUpBy,
+      notes: el("record-deferral-notes").value.trim() || null
+    };
   }
+
   await withSubmitLock(event, async () => {
     try {
       statusNode.textContent = "Saving...";
       statusNode.style.color = "";
-      const now = new Date().toISOString();
-      const today = todayKey();
       const paymentId = buildPaymentId();
-      // Upload before the transaction opens: an upload inside the closure would
-      // re-run on every Firestore retry and leave orphan copies, and a failed
-      // upload must abort the save rather than record a payment whose proof the
-      // owner believes attached. Same shape as adminApp.js::saveDeliveryPayment.
+      // Upload before the callable runs: a failed upload must abort the save
+      // rather than record a payment whose proof the owner believes attached.
+      // Same shape as the delivery dialogs.
       let proofDocumentId = null;
       let proofUrl = null;
       if (proofFile) {
@@ -259,44 +319,64 @@ async function saveRecordPayment(event) {
         proofUrl = proof.downloadUrl;
         statusNode.textContent = "Saving...";
       }
-      // Transaction re-reads the order every retry so newAmountPaid is
-      // computed against the fresh server value. Two owner tabs recording
-      // payments on the same order can't silently overwrite each other.
-      await runTransaction(db, async (tx) => {
-        const orderRef = doc(db, "orders", orderId);
-        const orderSnap = await tx.get(orderRef);
-        if (!orderSnap.exists()) throw new Error("Order no longer exists.");
-        const order = orderSnap.data();
-        const newAmountPaid = Number(order.amountPaid || 0) + amount;
-        const total = Number(order.subtotal || 0) + Number(order.depositTotal || 0);
-        const newBalance = total - newAmountPaid;
-        tx.set(doc(db, "payments", paymentId), {
-          orderId,
-          customerId: order.customerId || null,
-          authUid: order.authUid || null,
-          paymentDate: today,
-          method,
-          amount,
-          reference,
-          receivedBy: auth.currentUser ? auth.currentUser.email : "owner",
-          proofDocumentId,
-          proofUrl,
-          notes: "Recorded from receivables page",
-          deferred: false,
-          createdAt: now
-        });
-        tx.update(orderRef, {
-          amountPaid: newAmountPaid,
-          balanceDue: newBalance,
-          paymentStatus: paymentStatusFor(newAmountPaid, newBalance),
-          updatedAt: now
-        });
+
+      // Overpayment needs an explicit confirmation that STATES the resulting
+      // credit. First confirm against the dialog's number; the server
+      // recomputes against the FRESH balance and rejects a mismatch with the
+      // real figure, so a stale dialog re-confirms against the truth below.
+      let acknowledgeCredit = null;
+      if (paymentSnapshot.collected) {
+        const knownBalance = Math.max(0, Number(row.balanceDue || 0));
+        const credit = Math.max(0, paymentSnapshot.amount - knownBalance);
+        if (credit > 0) {
+          const ok = window.confirm(
+            `That is ${formatCurrency(credit)} more than the ${formatCurrency(knownBalance)} due. ` +
+            `The extra stays on ${row.customerName || "the customer"}'s account as credit. Record it?`
+          );
+          if (!ok) {
+            statusNode.textContent = "Not saved.";
+            return;
+          }
+          acknowledgeCredit = credit;
+        }
+      }
+
+      // P0-09: the write is one server transaction (recordPayment callable) —
+      // it re-reads fresh status AND balance, rejects cancelled/undelivered
+      // orders, and is idempotent per paymentId.
+      const callRecord = (ack) => recordPaymentFn({
+        orderId,
+        paymentId,
+        payment: paymentSnapshot,
+        proofDocumentId,
+        proofUrl,
+        acknowledgeCredit: ack
       });
+      try {
+        await callRecord(acknowledgeCredit);
+      } catch (error) {
+        const details = error && error.details;
+        if (details && details.overpayment && Number.isInteger(details.resultingCredit)) {
+          // Stale dialog: the balance changed since it opened. Nothing was
+          // written; re-confirm with the server's fresh numbers and retry
+          // under the same paymentId.
+          const ok = window.confirm(
+            `The balance changed since this dialog opened — ${formatCurrency(details.freshBalance)} is due now, ` +
+            `so this payment leaves ${formatCurrency(details.resultingCredit)} as customer credit. Record it?`
+          );
+          if (!ok) {
+            statusNode.textContent = "Not saved — refresh to see the current balance.";
+            return;
+          }
+          await callRecord(details.resultingCredit);
+        } else {
+          throw error;
+        }
+      }
       el("record-payment-dialog").close();
       await loadReceivables();
     } catch (error) {
-      statusNode.textContent = error.message || String(error);
-      statusNode.style.color = "var(--danger, #b3261e)";
+      showError(error.message || String(error));
     }
   });
 }
@@ -417,6 +497,9 @@ el("refresh-button").addEventListener("click", loadReceivables);
 el("record-payment-form").addEventListener("submit", saveRecordPayment);
 el("record-payment-cancel-button").addEventListener("click", () => {
   el("record-payment-dialog").close();
+});
+document.querySelectorAll('input[name="record-collected"]').forEach((radio) => {
+  radio.addEventListener("change", toggleRecordPaymentFields);
 });
 const invoiceCloseBtn = el("invoice-close-button");
 if (invoiceCloseBtn) invoiceCloseBtn.addEventListener("click", () => el("invoice-dialog").close());

@@ -243,25 +243,27 @@ Evidence/commit/deploy:
 
 ### P0-09 — Guard payment entry and keep Receivables honest
 
-**Status:** [ ]
-**Owner:** unassigned
-**Likely files:** `firebase/web/assets/adminApp.js`, `orderApp.js`, `receivablesApp.js`, related HTML and tests
+**Status:** [x] DONE — record-payment moved to a server callable (`recordPayment`); `commitDelivery` gained the same amount gates; Receivables is delivered-only.
+**Owner:** Claude
+**Likely files:** `firebase/web/assets/adminApp.js`, `orderApp.js`, `receivablesApp.js`, `shared.js`, `receivables.html`, `functions/index.js`, tests
 
 Payment dialogs reject negative amounts but accept zero and arbitrarily large values. A stale dialog or extra zero can create a material overpayment. Receivables currently includes `new`, `assigned`, and `out_for_delivery` orders in a view labelled Delivered and can prompt customers before delivery.
 
 Acceptance:
 
-- [ ] Collected payment must be a positive whole-VND amount when a balance remains.
-- [ ] Zero is routed to an explicit deferred/uncollected path with follow-up state.
-- [ ] Fresh order status and balance are re-read inside the transaction.
-- [ ] Overpayment requires an explicit confirmation that states the resulting customer credit.
-- [ ] Cancelled orders reject payment.
-- [ ] Receivables separates delivered overdue debt from optional prepayment, or shows delivered orders only.
-- [ ] Tests cover stale dialog, zero, extra zero, exact payment, intentional credit, cancelled order, and undelivered order.
+- [x] Collected payment must be a positive whole-VND amount when a balance remains. (`collectedPaymentProblem` in `shared.js`, mirrored in `functions/index.js` — negative, fractional, and zero-while-due all rejected on every payment surface; `paymentEntry.parity.test.mjs` pins the mirror. `commitDelivery` no longer silently `Math.round`s.)
+- [x] Zero is routed to an explicit deferred/uncollected path with follow-up state. (Receivables dialog gained the delivery dialog's "Money received / Not collected — set follow-up" split; the deferred branch writes an amount-0 `deferred:true` payment with reason + follow-up date and stamps `followUpBy` on the order. A follow-up date is required server-side.)
+- [x] Fresh order status and balance are re-read inside the transaction. (Both `recordPaymentImpl` and `commitDeliveryImpl` compute the due amount from the in-transaction order doc; the dialogs' numbers are never trusted.)
+- [x] Overpayment requires an explicit confirmation that states the resulting customer credit. (Client confirms the credit and passes `acknowledgeCredit`/`acknowledgeCashCredit`; the server recomputes the credit from the FRESH balance and rejects a mismatch with the real figure in `HttpsError.details` — a stale dialog re-confirms against the truth and retries under the same paymentId.)
+- [x] Cancelled orders reject payment. (`recordPayment`: explicit "cancelled" failed-precondition; delivery already rejects anything not `out_for_delivery`.)
+- [x] Receivables separates delivered overdue debt from optional prepayment, or shows delivered orders only. (Delivered-only chosen: the "Delivered" column and the WhatsApp chase are now truthful; `recordPayment` rejects undelivered orders server-side to match, and a page note explains where undelivered money is collected.)
+- [x] Tests cover stale dialog, zero, extra zero, exact payment, intentional credit, cancelled order, and undelivered order. (`recordPayment.emulator.test.js` 12/12 — includes the stale-dialog acknowledge-reject-reconfirm cycle, idempotent retry, and all four undelivered statuses; `commitDelivery.emulator.test.js` 8→12 with the delivery-side P0-09 cases.)
 
 Evidence/commit/deploy:
 
-- _Pending._
+- 2026-07-21: `recordPayment` Admin-SDK callable created (P0-06/07/08 pattern; the receivables dialog was the last client-side `/payments` writer). Idempotent per paymentId. No `firestore.rules` change — the append-only `/payments` owner-create branch stays as defence-in-depth, same posture as P0-08.
+- 2026-07-21: suites — recordPayment 12/12, commitDelivery 12/12, paymentEntry parity 6/6; regressions depositLedger 27 / accountTruth 12 / deliveryValidation 11 / cancellation 29 / approveOrder 9 / orderSubmission 7; full takeover gate green (12/4/24/17/13/9, documented-benign stderr only, rules untouched). Receivables page smoke-tested in a real browser (module graph, radio toggle both ways, helper import, delivered-only note).
+- 2026-07-21: deployed `--only functions:recordPayment,functions:commitDelivery` (create + update, us-central1; anonymous probe → PERMISSION_DENIED "Owner only.") + `--only hosting` (exactly 5/42 files: `receivables.html`, `receivablesApp.js`, `adminApp.js`, `orderApp.js`, `shared.js`; post-release full-tree audit 42/42 byte-identical). **NOT owner-click-through QA'd — no session, the standing gap.**
 
 ### P0-10 — Add a true final review and preserve the cart through sign-in
 

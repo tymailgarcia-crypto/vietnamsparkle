@@ -25,6 +25,7 @@ import {
   buildDepositEventId,
   buildOrderId,
   buildPaymentId,
+  collectedPaymentProblem,
   computeDepositBreakdown,
   containerReturnProofProblem,
   containerReturnProofType,
@@ -1762,9 +1763,14 @@ async function saveDeliveryPayment(event) {
   let paymentSnapshot;
   if (collected === "collected") {
     const amount = Number(document.getElementById("delivery-payment-amount").value || 0);
-    if (amount < 0) {
+    // P0-09: positive whole VND only, and zero while a balance remains routes
+    // to the "Not collected today" branch instead of writing a silent 0 VND
+    // payment. The server re-checks this against the FRESH balance; this is
+    // the friendlier local stop.
+    const amountProblem = collectedPaymentProblem(amount, deliveryDialogState.balanceDue);
+    if (amountProblem) {
       if (statusNode) {
-        statusNode.textContent = "Amount cannot be negative.";
+        statusNode.textContent = amountProblem;
         statusNode.style.color = "var(--danger, #b3261e)";
       }
       return;
@@ -1871,6 +1877,28 @@ async function saveDeliveryPayment(event) {
     lossReport = { lossType, lossQty, depositPerUnit: held.depositPerUnit || 0, lossNote };
   }
 
+  // P0-09: cash beyond what is still due becomes customer credit and needs an
+  // explicit confirmation that STATES that credit (an extra typed zero is a 10x
+  // overpayment). Confirmed here against the dialog's number; the server
+  // recomputes against the FRESH balance and rejects a mismatch with the real
+  // figure, which is re-confirmed in the catch below. Mirrors orderApp.js.
+  let acknowledgeCashCredit = null;
+  if (paymentSnapshot.collected) {
+    const knownBalance = Math.max(0, Number(deliveryDialogState.balanceDue || 0));
+    const excessCash = Math.max(0, paymentSnapshot.amount - knownBalance);
+    if (excessCash > 0) {
+      const ok = window.confirm(
+        `That collects ${formatCurrency(excessCash)} more than the ${formatCurrency(knownBalance)} due. ` +
+        `The extra stays on the customer's account as credit. Continue?`
+      );
+      if (!ok) {
+        if (statusNode) statusNode.textContent = "Not saved.";
+        return;
+      }
+      acknowledgeCashCredit = excessCash;
+    }
+  }
+
   await withSubmitLock(event, async () => {
     try {
       if (statusNode) {
@@ -1918,7 +1946,7 @@ async function saveDeliveryPayment(event) {
       // (client-side, id-referenced), the same pattern refund proofs use. The
       // money math lives on the server now; this dashboard no longer computes
       // balances or writes deposit events directly.
-      await commitDeliveryFn({
+      const callCommit = (ack) => commitDeliveryFn({
         orderId,
         paymentId,
         payment: paymentSnapshot.collected
@@ -1939,12 +1967,34 @@ async function saveDeliveryPayment(event) {
           ? { lossType: lossReport.lossType, lossQty: lossReport.lossQty, lossNote: lossReport.lossNote }
           : null,
         overCreditChoice,
+        acknowledgeCashCredit: ack,
         proofDocumentId,
         proofUrl,
         returnProofDocumentId,
         returnProofType,
         returnProofNote
       });
+      try {
+        await callCommit(acknowledgeCashCredit);
+      } catch (error) {
+        const details = error && error.details;
+        if (details && details.overpayment && Number.isInteger(details.excessCash)) {
+          // Stale dialog: the balance changed since it opened. Nothing was
+          // written; re-confirm with the server's fresh numbers and retry
+          // under the same paymentId.
+          const ok = window.confirm(
+            `The balance changed since this dialog opened — ${formatCurrency(details.dueBefore)} is due now, ` +
+            `so this collects ${formatCurrency(details.excessCash)} extra as customer credit. Continue?`
+          );
+          if (!ok) {
+            if (statusNode) statusNode.textContent = "Not saved — reload to see the current balance.";
+            return;
+          }
+          await callCommit(details.excessCash);
+        } else {
+          throw error;
+        }
+      }
       document.getElementById("delivery-payment-dialog").close();
       await refreshDashboard();
     } catch (error) {

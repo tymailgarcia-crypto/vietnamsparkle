@@ -6,8 +6,9 @@ The tree-reconciliation the July-20 briefing below asked for is **DONE**: commit
 `088d653` synced HEAD to production (all 42 hosted files byte-verified, full
 rules gate green) and was pushed. Then a run of SHIP-READINESS P0 blockers
 shipped. **All of the following are deployed, live, and verified — but committed
-locally only. `main` is 6 commits ahead of `origin/main`; nothing is pushed and
-there is no release tag.** Push/tag only when Ty asks.
+locally only. `main` is 13 commits ahead of `origin/main` (after the P0-09
+commit); nothing is pushed and there is no release tag.** Push/tag only when Ty
+asks.
 
 Commits since the sync (newest first), each deployed + gated:
 - `6e05d82` P0-07 inc. B part 2 — **P0-07 COMPLETE (7/7).** Refunds-due/proof-missing owner queue on `reports.html`/`reportsApp.js` (read-only over `orderCancellations`: `refundStatus` pending/partial OR `evidenceStatus` missing) + scoped `firestore.rules` tightening (new `isCancelTransition()`; owner orders-update branch now denies any direct client cancel — owner cancels go through `submitOrderCancellation`; customer unpaid `pending_approval→cancelled` self-cancel untouched). Full rules gate green before+after; `customer-order-cancel` 6→9. Deployed `--only firestore:rules` + `--only hosting` (2 files).
@@ -58,8 +59,32 @@ not touched. Deployed `--only functions:commitDelivery` (created, us-central1) +
 standing gap. See SHIP-READINESS P0-08 + ROADMAP "Shipped 2026-07-21 (P0-08
 increment 2 …)".
 
-Next in SHIP-READINESS.md: **P0-09** (guard payment entry / keep Receivables
-honest). Trust SHIP-READINESS.md for per-P0 status/evidence and ROADMAP.md
+**P0-09 is COMPLETE (all acceptance items).** Payment entry is guarded and
+Receivables is honest: a new Admin-SDK callable **`recordPayment`** replaced the
+receivables dialog's client transaction (the LAST client-side `/payments`
+writer) — one transaction re-reads fresh status AND balance, rejects cancelled
+and undelivered orders, requires a positive whole-VND amount, and is idempotent
+per paymentId. Zero routes to an explicit deferred path (new "Money received /
+Not collected — set follow-up" split in the receivables dialog; amount-0
+`deferred:true` payment + `followUpBy` on the order). Overpayment goes through
+only when the client acknowledges the EXACT resulting credit, which the server
+recomputes from the fresh balance — a stale dialog is rejected with the real
+figure in error details and re-confirms. `commitDelivery` gained the same
+gates (zero-while-due rejected, fractional rejected, cash-overpay
+acknowledgement; prepaid-zero still delivers). Shared rule
+`collectedPaymentProblem` lives in `shared.js`, mirrored in `functions/index.js`,
+pinned by `paymentEntry.parity.test.mjs`. **Receivables now lists DELIVERED
+orders only** — it used to label new/assigned/out_for_delivery as "Delivered"
+and offer WhatsApp-chase on undelivered water. No `firestore.rules` change
+(same defence-in-depth posture as P0-08). Suites: `recordPayment.emulator`
+12/12, `commitDelivery.emulator` 8→12, parity 6/6, all regressions + the full
+takeover gate green (12/4/24/17/13/9, benign stderr only). Deployed
+`--only functions:recordPayment,functions:commitDelivery` + `--only hosting`
+(exactly 5/42 files, post-release 42/42 byte-identical). NOT owner-click-through
+QA'd — the standing gap.
+
+Next in SHIP-READINESS.md: **P0-10** (true final review + cart survives
+sign-in). Trust SHIP-READINESS.md for per-P0 status/evidence and ROADMAP.md
 "Shipped 2026-07-21" for the how/why.
 
 Housekeeping: `firebase/scratch-authusers.json` is an empty stray (emulator

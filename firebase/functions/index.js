@@ -681,6 +681,22 @@ function forfeitEventId(orderId, containerType) {
   return `${orderId}-forfeit-${containerType}`;
 }
 
+// P0-09 — MIRROR of collectedPaymentProblem in web/assets/shared.js (CommonJS
+// can't import the ESM module). Keep the two in sync —
+// paymentEntry.parity.test.mjs fails when they drift. Overpayment is deliberately
+// not flagged here: it has its own explicit-acknowledgement gate in the
+// transaction, where the credit is computed against the FRESH balance.
+function collectedPaymentProblem(amount, balanceRemaining) {
+  const value = Number(amount);
+  if (!Number.isFinite(value)) return "Enter the amount collected.";
+  if (value < 0) return "Amount cannot be negative.";
+  if (!Number.isInteger(value)) return "Amount must be whole VND — no decimals.";
+  if (value === 0 && Number(balanceRemaining || 0) > 0) {
+    return 'Nothing was collected — choose "Not collected" instead, so the order gets a follow-up date rather than a silent zero payment.';
+  }
+  return null;
+}
+
 // Re-aggregate a customer's held containers from /depositEvents INSIDE a
 // transaction. MIRRORS loadHeldContainersForCustomer in both client files:
 // charged adds; refunded/credited/forfeited/charge_reversed subtract;
@@ -725,10 +741,21 @@ async function commitDeliveryImpl(ownerUid, data) {
 
   const payment = input.payment || {};
   const collected = payment.collected === true;
-  const cashAmount = collected ? Math.round(Number(payment.amount || 0)) : 0;
-  if (collected && (!Number.isFinite(cashAmount) || cashAmount < 0)) {
-    throw new HttpsError("invalid-argument", "Collected amount cannot be negative.");
+  // P0-09: no silent Math.round — a fractional amount is a typo, not a payment.
+  // Negative/fractional are rejected here; the zero-while-balance-remains rule
+  // needs the FRESH balance and runs inside the transaction below.
+  const cashAmount = collected ? Number(payment.amount || 0) : 0;
+  if (collected) {
+    const problem = collectedPaymentProblem(cashAmount, 0);
+    if (problem) throw new HttpsError("invalid-argument", problem);
   }
+  // P0-09: cash collected beyond what was due before this delivery becomes
+  // customer credit and must be explicitly acknowledged at that exact number —
+  // see the in-transaction gate. (Returned-container credit beyond the balance
+  // has its own explicit carry/refund choice and is not double-gated here.)
+  const acknowledgedCashCredit = Number.isInteger(input.acknowledgeCashCredit)
+    ? input.acknowledgeCashCredit
+    : null;
   const overCreditChoice = input.overCreditChoice === "refund" ? "refund" : "carry";
   const requestedReturns = Array.isArray(input.returns) ? input.returns : [];
 
@@ -817,6 +844,29 @@ async function commitDeliveryImpl(ownerUid, data) {
 
     // ---- Money math (mirror of both client delivery transactions) ----
     const total = Number(order.subtotal || 0) + Number(order.depositTotal || 0);
+
+    // P0-09: both gates run against the FRESH order, not the dialog's numbers.
+    // Zero while a balance remains is not a payment — route it to the explicit
+    // "not collected" path so the order gets follow-up state instead of a
+    // silent 0 VND payment doc that looks like settlement.
+    const dueBeforeDelivery = total - Number(order.amountPaid || 0);
+    if (collected) {
+      const zeroProblem = collectedPaymentProblem(cashAmount, dueBeforeDelivery);
+      if (zeroProblem) throw new HttpsError("failed-precondition", zeroProblem);
+      // An extra zero typed into the amount field is a 10x overpayment. It only
+      // goes through when the client states the exact resulting credit back —
+      // computed HERE against the fresh balance, so a stale dialog's
+      // acknowledgement of a different number is rejected with the real one.
+      const excessCash = Math.max(0, cashAmount - Math.max(0, dueBeforeDelivery));
+      if (excessCash > 0 && acknowledgedCashCredit !== excessCash) {
+        throw new HttpsError(
+          "failed-precondition",
+          `That collects ${excessCash} VND more than the ${Math.max(0, dueBeforeDelivery)} VND still due — the extra stays on the account as customer credit. Confirm the credit to record it.`,
+          { overpayment: true, excessCash, dueBefore: Math.max(0, dueBeforeDelivery) }
+        );
+      }
+    }
+
     const creditTotal = returns
       .filter((r) => r.handling === "credit")
       .reduce((s, r) => s + r.returnedQty * r.depositPerUnit, 0);
@@ -998,6 +1048,181 @@ async function commitDeliveryImpl(ownerUid, data) {
 exports.commitDelivery = onCall(async (request) => {
   const ownerUid = requireOwner(request);
   return commitDeliveryImpl(ownerUid, request.data || {});
+});
+
+// --- P0-09: record a payment against a delivered order ----------------------
+//
+// The receivables "Record payment" dialog used to run this as a client-side
+// transaction. It moved server-side for the same reason approval (P0-06),
+// cancellation (P0-07) and delivery commit (P0-08) did: the checks that matter
+// — fresh status, fresh balance, the exact resulting credit — must be computed
+// against what is in Firestore at commit time, not against whatever the dialog
+// loaded minutes ago.
+//
+// The gate:
+//  - Delivered orders only. Cancelled orders reject outright. Undelivered
+//    orders reject too — their money is collected at the door through
+//    commitDelivery, and Receivables no longer lists them (P0-09: the page
+//    shows delivered debt only, so it stops chasing customers pre-delivery).
+//  - A collected amount must be a positive whole-VND integer. Zero is not a
+//    payment; it routes to the explicit deferred path ({collected:false}),
+//    which records the reason + a follow-up date instead of a silent 0.
+//  - Paying more than the fresh balance goes through only when the client
+//    acknowledges the EXACT resulting credit (acknowledgeCredit). A stale
+//    dialog acknowledging yesterday's number is rejected with the real one in
+//    error details, so the owner re-confirms against the truth.
+//  - Idempotent per paymentId: a retry after a lost response returns the
+//    already-recorded outcome instead of double-counting amountPaid.
+async function recordPaymentImpl(ownerUid, data) {
+  const input = data || {};
+  const orderId = String(input.orderId || "").trim();
+  if (!orderId) throw new HttpsError("invalid-argument", "orderId is required.");
+  const paymentId = String(input.paymentId || "").trim();
+  if (!paymentId) throw new HttpsError("invalid-argument", "paymentId is required.");
+
+  const payment = input.payment || {};
+  const collected = payment.collected === true;
+  const amount = collected ? Number(payment.amount || 0) : 0;
+  if (collected) {
+    // balanceRemaining floor of 1: on this path zero is NEVER a collected
+    // payment, even against a settled order — the deferred branch is the only
+    // zero path. (The delivery dialog differs: a fully prepaid order really
+    // does collect 0 there.)
+    const problem = collectedPaymentProblem(amount, 1);
+    if (problem) throw new HttpsError("invalid-argument", problem);
+  } else {
+    // The deferred path exists to create follow-up state; without a date it
+    // records nothing anyone will act on.
+    const followUpBy = String(payment.followUpBy || "").trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(followUpBy)) {
+      throw new HttpsError("invalid-argument", "A follow-up date (YYYY-MM-DD) is required when nothing was collected.");
+    }
+  }
+  const acknowledgedCredit = Number.isInteger(input.acknowledgeCredit)
+    ? input.acknowledgeCredit
+    : null;
+  const proofDocumentId = input.proofDocumentId || null;
+  const proofUrl = input.proofUrl || null;
+
+  const now = new Date().toISOString();
+  const today = businessTodayKey();
+
+  return db().runTransaction(async (tx) => {
+    // ---- READS (all before any write) ----
+    const orderRef = db().doc(`orders/${orderId}`);
+    const orderSnap = await tx.get(orderRef);
+    if (!orderSnap.exists) throw new HttpsError("not-found", "Order no longer exists.");
+    const order = orderSnap.data() || {};
+
+    // Idempotent retry — checked BEFORE the status gates so a retry of an
+    // already-recorded payment reports its real outcome even if the order's
+    // state moved on afterwards.
+    const payRef = db().doc(`payments/${paymentId}`);
+    const paySnap = await tx.get(payRef);
+    if (paySnap.exists) {
+      return {
+        orderId,
+        duplicate: true,
+        amountPaid: Number(order.amountPaid || 0),
+        balanceDue: Number(order.balanceDue || 0),
+        paymentStatus: order.paymentStatus || null,
+        resultingCredit: 0
+      };
+    }
+
+    // ---- Fresh status gates (P0-09) ----
+    if (order.status === "cancelled") {
+      throw new HttpsError("failed-precondition", "This order is cancelled — payments can no longer be recorded against it. Reload the page.");
+    }
+    if (order.status !== "delivered") {
+      throw new HttpsError("failed-precondition", "This order has not been delivered yet — money for it is collected in the delivery dialog, not here. Reload the page.");
+    }
+
+    // ---- Fresh balance (never the dialog's number) ----
+    const total = Number(order.subtotal || 0) + Number(order.depositTotal || 0);
+    const freshBalance = total - Number(order.amountPaid || 0);
+
+    if (!collected) {
+      // Deferred/uncollected: an amount-0 deferred payment doc keeps the audit
+      // trail of the chase (same shape commitDelivery writes at the door), and
+      // the order carries the follow-up date Receivables sorts on.
+      tx.set(payRef, {
+        orderId,
+        customerId: order.customerId || null,
+        authUid: order.authUid || null,
+        paymentDate: today,
+        method: "deferred",
+        amount: 0,
+        reference: null,
+        receivedBy: ownerUid || "owner",
+        proofDocumentId: null,
+        proofUrl: null,
+        notes: payment.notes || null,
+        deferred: true,
+        deferralReason: payment.reason || "other",
+        followUpBy: payment.followUpBy,
+        createdAt: now
+      });
+      tx.update(orderRef, { followUpBy: payment.followUpBy, updatedAt: now });
+      return {
+        orderId,
+        duplicate: false,
+        amountPaid: Number(order.amountPaid || 0),
+        balanceDue: Number(order.balanceDue || 0),
+        paymentStatus: order.paymentStatus || null,
+        resultingCredit: 0
+      };
+    }
+
+    // ---- Overpayment gate against the FRESH balance ----
+    const resultingCredit = Math.max(0, amount - Math.max(0, freshBalance));
+    if (resultingCredit > 0 && acknowledgedCredit !== resultingCredit) {
+      throw new HttpsError(
+        "failed-precondition",
+        `That is ${resultingCredit} VND more than the ${Math.max(0, freshBalance)} VND still due — the extra stays on the account as customer credit. Confirm the credit to record it.`,
+        { overpayment: true, resultingCredit, freshBalance: Math.max(0, freshBalance) }
+      );
+    }
+
+    const newAmountPaid = Number(order.amountPaid || 0) + amount;
+    const newBalance = total - newAmountPaid;
+    tx.set(payRef, {
+      orderId,
+      customerId: order.customerId || null,
+      authUid: order.authUid || null,
+      paymentDate: today,
+      method: payment.method || "cash",
+      amount,
+      reference: payment.reference || null,
+      receivedBy: ownerUid || "owner",
+      proofDocumentId,
+      proofUrl,
+      notes: "Recorded from receivables page",
+      deferred: false,
+      createdAt: now
+    });
+    tx.update(orderRef, {
+      amountPaid: newAmountPaid,
+      balanceDue: newBalance,
+      paymentStatus: paymentStatusFor(newAmountPaid, newBalance),
+      updatedAt: now
+    });
+    return {
+      orderId,
+      duplicate: false,
+      amountPaid: newAmountPaid,
+      balanceDue: newBalance,
+      paymentStatus: paymentStatusFor(newAmountPaid, newBalance),
+      resultingCredit
+    };
+  });
+}
+
+// Owner-only: proof photos are uploaded client-side first and referenced by id,
+// the same pattern the delivery dialogs use.
+exports.recordPayment = onCall(async (request) => {
+  const ownerUid = requireOwner(request);
+  return recordPaymentImpl(ownerUid, request.data || {});
 });
 
 // --- Nightly reconciliation ----------------------------------------------
@@ -2255,5 +2480,12 @@ if (process.env.NODE_ENV === "test" || process.env.FUNCTIONS_EMULATOR === "true"
     commitDeliveryImpl,
     aggregateHoldings,
     forfeitEventId
+  });
+  // P0-09: guarded payment entry (fresh status/balance, zero→deferred,
+  // acknowledged overpay credit, cancelled/undelivered rejection) + the
+  // client-mirror validation helper for the parity test.
+  exports._recordPaymentTestApi = () => ({
+    recordPaymentImpl,
+    collectedPaymentProblem
   });
 }

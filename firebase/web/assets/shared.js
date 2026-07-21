@@ -719,6 +719,28 @@ export function paymentStatusFor(amountPaid, balanceDue) {
   return "unpaid";
 }
 
+// P0-09 — what is wrong with a "collected" payment amount, or null when it is
+// fine. One rule for every payment-entry surface (both delivery dialogs + the
+// receivables record-payment dialog) so the bar cannot drift between screens.
+// MIRRORED in functions/index.js (CommonJS can't import this ESM module) —
+// keep the two in sync; paymentEntry.parity.test.mjs fails when they drift.
+//
+// Deliberately does NOT flag overpayment: paying more than the balance is a
+// legitimate intentional credit, guarded by its own explicit confirmation
+// (the server rejects it unless the stated credit is acknowledged), not by
+// this yes/no gate. Zero with nothing due is fine — delivering a fully
+// prepaid order collects nothing.
+export function collectedPaymentProblem(amount, balanceRemaining) {
+  const value = Number(amount);
+  if (!Number.isFinite(value)) return "Enter the amount collected.";
+  if (value < 0) return "Amount cannot be negative.";
+  if (!Number.isInteger(value)) return "Amount must be whole VND — no decimals.";
+  if (value === 0 && Number(balanceRemaining || 0) > 0) {
+    return 'Nothing was collected — choose "Not collected" instead, so the order gets a follow-up date rather than a silent zero payment.';
+  }
+  return null;
+}
+
 // Redirect signed-in users to /account.html when they don't have the role
 // this page expects. Prevents a signed-in customer (or a driver on a page
 // they don't own) from watching the owner shell load and then eating a
