@@ -512,11 +512,21 @@ function canLinkAuthUidToCustomer(order, existingData) {
 }
 
 async function upsertCustomerFromOrder(order) {
-  const customerId = buildCustomerId(order.phone);
+  // P0-04: key on the order's uid-anchored customerId (set by submitPublicOrder
+  // from the auth uid), NOT a phone-derived id. Mirrors the dashboard approval
+  // path in adminApp.js — re-deriving from order.phone let a typo point approval
+  // at a stranger's record and overwrite their profile.
+  const customerId = order.customerId
+    || (order.authUid ? `CUS-${order.authUid}` : buildCustomerId(order.phone));
   if (!customerId) return { customerId: "", createdNew: false, linkedAuthUid: false };
   const ref = doc(db, "customers", customerId);
   const existing = await getDoc(ref);
   const existingData = existing.exists() ? existing.data() : null;
+  // Never overwrite a record that belongs to a different sign-in (belt-and-braces
+  // — the uid anchoring above already prevents it). Surfaces to the approve catch.
+  if (existingData && existingData.authUid && order.authUid && existingData.authUid !== order.authUid) {
+    throw new Error(`This order resolves to customer ${customerId}, which belongs to a different sign-in. Approval stopped to avoid overwriting another customer — investigate a possible id/phone collision.`);
+  }
   const canLinkAuthUid = canLinkAuthUidToCustomer(order, existingData);
   const payload = {
     name: order.customerName,
@@ -750,6 +760,25 @@ async function ensureDepositCharge(order) {
 async function approveOrder() {
   const order = state.order;
   if (!order) return;
+  // P0-04: warn on a phone that already belongs to a different customer record
+  // (usually a typo). The order still routes to the customer's own account.
+  const phoneId = buildCustomerId(order.phone);
+  if (phoneId && phoneId !== (order.customerId || "")) {
+    try {
+      const otherSnap = await getDoc(doc(db, "customers", phoneId));
+      if (otherSnap.exists() && otherSnap.data().archived !== true) {
+        const other = otherSnap.data();
+        const proceed = confirm(
+          `The phone on this order (${order.phone}) already belongs to a different customer: ${other.name || phoneId}.\n\n`
+          + `Approving will NOT touch that customer — this order stays on ${order.customerName || "this customer"}'s own account. `
+          + `If the phone was a typo, Cancel and fix it with Edit details first.\n\nApprove anyway?`
+        );
+        if (!proceed) return;
+      }
+    } catch (_) {
+      // A failed lookup must not block a legitimate approval.
+    }
+  }
   const { customerId, createdNew, linkedAuthUid } = await upsertCustomerFromOrder(order);
   const deliveryLocation = await resolveDeliveryLocation(order, customerId);
   await updateDoc(doc(db, "orders", order.id), {

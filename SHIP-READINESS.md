@@ -95,44 +95,49 @@ Evidence/commit/deploy:
 
 ### P0-03 — Enforce valid delivery date and service area on the server
 
-**Status:** [ ]
-**Owner:** unassigned
+**Status:** [x] shipped + deployed 2026-07-21 (all items decided)
+**Owner:** Claude
 **Likely files:** `firebase/web/index.html`, `firebase/web/assets/publicApp.js`, `firebase/functions/index.js`, tests
 
 The form defaults to today but does not prevent past dates, and the callable validates date format only. Saved coordinates can bypass the client-side Da Nang boundary.
 
 Acceptance:
 
-- [ ] The date input has a current minimum and refreshes correctly across midnight.
-- [ ] The callable rejects past dates using `Asia/Ho_Chi_Minh`, not server UTC.
-- [ ] The business decides and documents whether same-day orders have a cutoff.
-- [ ] The callable enforces the same service-area boundary as the map UI.
-- [ ] Out-of-area legacy saved pins are rejected with a useful repair message.
-- [ ] Tests cover timezone boundary, stale tab, malformed date, and boundary coordinates.
+- [x] The date input has a current minimum and refreshes correctly across midnight. (`refreshDeliveryDateFloor` sets `input.min` on load and re-floors on `visibilitychange`/`focus`/60s tick; a static HTML `min` was deliberately NOT used because it would freeze at the build-time date.)
+- [x] The callable rejects past dates using `Asia/Ho_Chi_Minh`, not server UTC. (`businessTodayKey` via `Intl` in the business zone; string-compared to a zero-padded ISO date.)
+- [x] The business decides and documents whether same-day orders have a cutoff. **DECIDED 2026-07-21 (Ty): no cutoff — "stamp them as they come."** `SAME_DAY_CUTOFF_HOUR = null` is the intended final state, not a placeholder. A same-day order placed at any hour is accepted for that day.
+- [x] The callable enforces the same service-area boundary as the map UI. (`isInsideDeliveryArea` against `DA_NANG_DELIVERY_BOUNDS`, mirrored client↔server; a pin outside the rectangle is rejected `failed-precondition`.)
+- [x] Out-of-area legacy saved pins are rejected with a useful repair message. (Message points the customer to My account → Delivery addresses to re-pin.)
+- [x] Tests cover timezone boundary, stale tab, malformed date, and boundary coordinates. (`deliveryValidation.parity.test.mjs` 11/11.)
 
 Evidence/commit/deploy:
 
-- _Pending._
+- 2026-07-21: canonical rule lives in `web/assets/shared.js` (`DA_NANG_DELIVERY_BOUNDS`, `isInsideDeliveryArea`, `todayKeyInZone`/`BUSINESS_TIME_ZONE`, `SAME_DAY_CUTOFF_HOUR`, `deliveryDateProblem`); `functions/index.js` mirrors it (CommonJS can't import the ESM module) behind a keep-in-sync note. `deliveryValidation.parity.test.mjs` loads BOTH copies and asserts they agree on a battery of dates and edge coordinates, so a future edit to one and not the other fails in test, not production. **11/11**, including the midnight case UTC gets wrong (a Da-Nang-yesterday date placed 00:00–07:00 local is rejected by the business-zone floor, which a UTC floor would wrongly accept).
+- 2026-07-21: deployed `--only functions` (all 9 updated) then `--only hosting` (**exactly 2/42 files uploaded**: `assets/publicApp.js`, `assets/shared.js`; preflight hashed all 42 web files vs prod and only these two differed). Both re-fetched byte-identical to disk live. P0-02 emulator suite re-run green (7/7) after the `index.js` edits.
+- **Not yet done:** authenticated customer click-through QA (no customer session; the live callable was not exercised because that would create/reject a real production order — the anonymous probe stops at the sign-in gate, which correctly runs before the area check). The 6-way duplication of the bounds constant across Codex-owned client files is documented in ROADMAP for a later single-source cleanup, not touched here.
 
 ### P0-04 — Stop phone edits and typos from corrupting customer identity
 
-**Status:** [ ]
-**Owner:** unassigned
+**Status:** [x] shipped + deployed 2026-07-21
+**Owner:** Claude
 **Likely files:** `firebase/functions/index.js`, `firebase/web/assets/accountApp.js`, `publicApp.js`, `adminApp.js`, rules/tests as required
 
 A signed-in order still derives `customerId` from the typed phone. Phone edits can split one customer into multiple records, while a typo matching another record can cause approval to overwrite that customer's profile fields.
 
 Acceptance:
 
-- [ ] Signed-in orders use the authenticated customer's stable linked ID.
-- [ ] Phone is a guarded contact attribute, not the primary identity key for an authenticated customer.
-- [ ] Approval blocks and explains any phone collision with another customer/auth UID.
-- [ ] No approval path overwrites a different customer's name, address, email, or phone.
-- [ ] Tests preserve the existing account-takeover protections and cover one-digit typo, existing-number collision, and legitimate phone change.
+- [x] Signed-in orders use the authenticated customer's stable linked ID. (`submitPublicOrder` now calls `resolveSignedInCustomerId(authUid)` — the doc linked to the uid, or the uid-derived id — instead of `buildCustomerId(phone)`.)
+- [x] Phone is a guarded contact attribute, not the primary identity key for an authenticated customer. (Phone is still validated and stored on the order/profile, but never determines `customerId`.)
+- [x] Approval blocks and explains any phone collision with another customer/auth UID. (Both approval paths — `adminApp.js` dashboard and `orderApp.js` order-detail — warn when the typed phone already belongs to a different customer record, and stop unless the owner confirms.)
+- [x] No approval path overwrites a different customer's name, address, email, or phone. (Approval writes to the order's uid-anchored `customerId`, and a belt-and-braces guard throws before overwriting any doc whose `authUid` differs from the order's. The `authUid`/`email` writes stay behind `canLinkAuthUidToCustomer`.)
+- [x] Tests preserve the existing account-takeover protections and cover one-digit typo, existing-number collision, and legitimate phone change.
 
 Evidence/commit/deploy:
 
-- _Pending._
+- 2026-07-21: **the fix is an identity re-anchor, not a rules change** — `firestore.rules` untouched. Two phone-keying spots removed: the server callable and BOTH owner approval paths (the dashboard `adminApp.js` and the order-detail `orderApp.js` each carry their own `upsertCustomerFromOrder`). Since ordering requires sign-in (P0-01), every order has an authUid, so identity always resolves from it. `mergeCustomers` already clears `authUid` off archived sources, so `where authUid == uid` returns one live doc — mirrored server-side by `resolveSignedInCustomerId`, matching the client's existing `findByAuthUid`-first resolution.
+- 2026-07-21: tests — `functions/customerIdentity.test.mjs` **17/17** (pure `pickSignedInCustomerId` + source guards on BOTH approval copies, incl. the takeover gate in the unpinned `orderApp.js` duplicate), `functions/customerIdentity.emulator.test.js` **6/6** (typo, existing-number collision leaves the stranger's record intact, legitimate phone change keeps the id, archived-doc skip). **Account-takeover suites re-run green and unchanged: `authuid-linking` 11/11, `email-propagation-takeover` 4/4, `customers.rules` 24/24, `payments.rules` 17/17.** Only the documented-benign L187/L249/L266 stderr residuals; every assertion passes. P0-02 emulator suite still 7/7.
+- 2026-07-21: deployed `--only functions` (all 9 updated) then `--only hosting` (**exactly 2/42 files uploaded**: `assets/adminApp.js`, `assets/orderApp.js`; preflight confirmed only these differ from prod). Both byte-identical live.
+- **Not yet done:** authenticated owner click-through of the approval collision prompt (needs an owner session). **Note on in-flight orders:** orders created before this deploy carry a phone-derived `customerId`; on approval they write to that id (unchanged behaviour). The re-anchor protects every order created after the deploy. Pending-approval orders clear within days, so the window is small.
 
 ### P0-05 — Make customer open orders, balances, credits, and returns truthful
 

@@ -319,15 +319,29 @@ export function canLinkAuthUidToCustomer(order, existingData) {
 }
 
 async function upsertCustomerFromOrder(order) {
-  const customerId = buildCustomerId(order.phone);
+  // P0-04: write to the order's own uid-anchored customerId (assigned by
+  // submitPublicOrder from the auth uid), NOT a phone-derived id. Re-deriving
+  // from order.phone here was the corruption vector: a typo'd or edited phone
+  // pointed approval at a stranger's phone-keyed doc and overwrote their
+  // profile. Fallbacks cover legacy orders written before this change: a
+  // uid-derived id when we have the uid, phone only as a last resort for the
+  // (now impossible) truly-anonymous order.
+  const customerId = order.customerId
+    || (order.authUid ? `CUS-${order.authUid}` : buildCustomerId(order.phone));
   if (!customerId) {
     return { customerId: "", createdNew: false, linkedAuthUid: false };
   }
-  // `email` is safe to merge unconditionally: if the order was signed-in,
-  // propagating it enables future auto-link-by-email on that same browser.
   const ref = doc(db, "customers", customerId);
   const existing = await getDoc(ref);
   const existingData = existing.exists() ? existing.data() : null;
+  // Belt-and-braces: never overwrite a record that belongs to a DIFFERENT
+  // sign-in. The uid anchoring above should make this unreachable, but approval
+  // writes name/address/phone with merge:true, so a mis-keyed legacy order must
+  // not be allowed to corrupt a stranger. Surfaces to the owner via the approve
+  // handler's catch.
+  if (existingData && existingData.authUid && order.authUid && existingData.authUid !== order.authUid) {
+    throw new Error(`This order resolves to customer ${customerId}, which belongs to a different sign-in. Approval stopped to avoid overwriting another customer — investigate a possible id/phone collision.`);
+  }
   const canLinkAuthUid = canLinkAuthUidToCustomer(order, existingData);
   const payload = {
     name: order.customerName,
@@ -648,6 +662,29 @@ async function approveOrder(orderId) {
   const order = state.orders.find((row) => row.id === orderId);
   if (!order) {
     return;
+  }
+  // P0-04: the order routes to the customer's OWN uid-anchored record, so a
+  // typo can no longer corrupt a stranger. But a typed phone that already
+  // belongs to a DIFFERENT customer record is a data-quality red flag worth
+  // stopping on — usually a one-digit typo. Explain it and let the owner fix
+  // the number (Edit details) or approve anyway.
+  const phoneId = buildCustomerId(order.phone);
+  if (phoneId && phoneId !== (order.customerId || "")) {
+    try {
+      const otherSnap = await getDoc(doc(db, "customers", phoneId));
+      if (otherSnap.exists() && otherSnap.data().archived !== true) {
+        const other = otherSnap.data();
+        const proceed = confirm(
+          `The phone on this order (${order.phone}) already belongs to a different customer: ${other.name || phoneId}.\n\n`
+          + `Approving will NOT touch that customer — this order stays on ${order.customerName || "this customer"}'s own account. `
+          + `If the phone was a typo, Cancel and fix it with Edit details first.\n\nApprove anyway?`
+        );
+        if (!proceed) return;
+      }
+    } catch (_) {
+      // A failed lookup must not block a legitimate approval; the uid anchoring
+      // already prevents cross-customer corruption regardless.
+    }
   }
   const { customerId, createdNew, linkedAuthUid } = await upsertCustomerFromOrder(order);
   const deliveryLocation = await resolveDeliveryLocation(order, customerId);

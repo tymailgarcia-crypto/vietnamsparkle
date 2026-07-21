@@ -15,6 +15,28 @@ export function todayKey() {
   return `${y}-${m}-${day}`;
 }
 
+// Business timezone. The shop runs on Vietnam time regardless of where the
+// customer's device thinks it is: a traveller ordering from Europe at 23:00
+// their time is ordering on TOMORROW's date in Da Nang, and the server (which
+// enforces the same rule) would otherwise reject their form's default as a
+// past date. Use this for any date the BUSINESS owns; todayKey() stays
+// device-local for owner-side screens where that is what's meant.
+export const BUSINESS_TIME_ZONE = "Asia/Ho_Chi_Minh";
+
+// Today's YYYY-MM-DD in a named IANA zone. Intl is the only correct way to do
+// this — manual UTC+7 arithmetic silently breaks if Vietnam ever adopts DST,
+// and getting it wrong here rejects real orders placed near midnight.
+export function todayKeyInZone(timeZone = BUSINESS_TIME_ZONE, now = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(now);
+  const get = (type) => (parts.find((p) => p.type === type) || {}).value || "";
+  return `${get("year")}-${get("month")}-${get("day")}`;
+}
+
 // Convenience for other callers that need a local YYYY-MM-DD for a specific
 // Date instance (e.g. deposit event dates, payment dates).
 export function localDateKey(date) {
@@ -690,6 +712,70 @@ function resolveSubmitButton(target) {
     if (form && typeof form.querySelector === "function") {
       return form.querySelector('button[type="submit"], button:not([type]), input[type="submit"]');
     }
+  }
+  return null;
+}
+
+// --- Delivery date + service area (P0-03) ----------------------------------
+//
+// The public order callable enforces both of these server-side. These are the
+// CANONICAL definitions; `functions/index.js` mirrors them (it is CommonJS and
+// cannot import this module) behind a keep-in-sync comment. If you widen the
+// area or change the date rule, change both or the server will reject orders
+// the form happily accepted.
+//
+// KNOWN DUPLICATION, not introduced here: the same rectangle is hardcoded in
+// accountApp.js, editOrderAddress.js, adminApp.js, orderApp.js, customersApp.js
+// and customerApp.js. Those are map-bias/marker call sites in another agent's
+// files; see ROADMAP → "Service area is defined in eight places".
+
+export const DA_NANG_DELIVERY_BOUNDS = Object.freeze({
+  west: 108.05,
+  south: 15.90,
+  east: 108.35,
+  north: 16.20
+});
+
+// Accepts a plain {lat, lng} or a google.maps.LatLng (whose lat/lng are
+// functions), so map callbacks and stored pins can share one check.
+export function isInsideDeliveryArea(position) {
+  const latValue = typeof position?.lat === "function" ? position.lat() : position?.lat;
+  const lngValue = typeof position?.lng === "function" ? position.lng() : position?.lng;
+  const lat = Number(latValue);
+  const lng = Number(lngValue);
+  return Number.isFinite(lat) && Number.isFinite(lng)
+    && lat >= DA_NANG_DELIVERY_BOUNDS.south
+    && lat <= DA_NANG_DELIVERY_BOUNDS.north
+    && lng >= DA_NANG_DELIVERY_BOUNDS.west
+    && lng <= DA_NANG_DELIVERY_BOUNDS.east;
+}
+
+// Same-day ordering is currently allowed with no cutoff hour. Whether a
+// same-day order placed at (say) 20:00 should be pushed to tomorrow is a
+// BUSINESS decision that is still open with Ty — see SHIP-READINESS P0-03.
+// Leaving this null means "no cutoff"; setting it to an hour 0-23 activates
+// the rule on both client and server. Do not invent a value here: a wrong
+// cutoff silently refuses real money.
+export const SAME_DAY_CUTOFF_HOUR = null;
+
+// Returns null when the requested delivery date is acceptable, else a
+// customer-facing reason. `today` is the business-zone date key.
+export function deliveryDateProblem(dateKey, today) {
+  const value = String(dateKey || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return "Delivery date must be YYYY-MM-DD.";
+  }
+  // The regex accepts impossible dates (2026-02-31, 2026-13-01). Round-trip
+  // through UTC and require the parts to survive, rather than letting Date
+  // roll 02-31 forward into March behind the customer's back.
+  const [y, m, d] = value.split("-").map(Number);
+  const probe = new Date(Date.UTC(y, m - 1, d));
+  if (probe.getUTCFullYear() !== y || probe.getUTCMonth() !== m - 1 || probe.getUTCDate() !== d) {
+    return "That delivery date does not exist. Please pick a date from the calendar.";
+  }
+  // String compare is safe and timezone-free for zero-padded ISO dates.
+  if (value < today) {
+    return `That delivery date has passed. Please choose ${today} or later.`;
   }
   return null;
 }

@@ -99,6 +99,37 @@ function buildOrderId(prefix) {
   return `${prefix}-${stamp}-${random}`;
 }
 
+// --- Signed-in customer identity (P0-04) -----------------------------------
+//
+// A signed-in customer's identity is anchored to their auth uid, NOT the phone
+// they typed into the order form. Keying on the phone let a one-digit typo (or
+// an edited number) either split one customer into two records or — worse —
+// route the order onto a STRANGER whose phone happened to match, whose profile
+// the owner's routine approval then overwrote. Since ordering now requires
+// sign-in (P0-01) every order carries an authUid, so we can always resolve the
+// customer's own record from it and treat the phone as a plain contact field.
+//
+// Pure decision, split out so it can be unit-tested without the emulator:
+// given the docs currently linked to this uid, pick the customer's stable id.
+function pickSignedInCustomerId(authUid, linkedDocs) {
+  // A live linked doc IS the customer's canonical record (whether CUS-<uid> or
+  // a claimed CUS-<E164>). mergeCustomers clears authUid off archived sources,
+  // so there is normally at most one; guard against a stray archived hit anyway.
+  const live = (linkedDocs || []).find((d) => d && d.id && d.archived !== true);
+  if (live) return live.id;
+  // No linked doc yet (first order before accountApp minted the stub, or an
+  // owner-created doc the customer hasn't claimed): a uid-derived id, which can
+  // only ever be this customer's. NEVER CUS-<phone> for a signed-in order —
+  // that is exactly the collision this closes.
+  return `CUS-${authUid}`;
+}
+
+async function resolveSignedInCustomerId(authUid) {
+  const snap = await db().collection("customers").where("authUid", "==", authUid).get();
+  const docs = snap.docs.map((d) => ({ id: d.id, archived: (d.data() || {}).archived === true }));
+  return pickSignedInCustomerId(authUid, docs);
+}
+
 // --- Idempotent order creation (P0-02) -------------------------------------
 //
 // Client keys mirror SUBMISSION_KEY_PATTERN in web/assets/shared.js.
@@ -142,6 +173,73 @@ async function createOrderUnderSubmissionKey({ authUid, submissionKey, orderId, 
     });
     return { orderId, duplicate: false };
   });
+}
+
+// --- Delivery date + service area (P0-03) ----------------------------------
+//
+// SERVER enforcement of the two rules the public form applies client-side.
+// These MIRROR the canonical definitions in web/assets/shared.js — this file
+// is CommonJS and cannot import that ESM module, so the values are duplicated
+// behind this keep-in-sync note. If you change the bounds, the cutoff, or the
+// date rule, change BOTH or the server will reject orders the form accepted
+// (or, worse, accept ones the form blocked).
+
+// Mirror of shared.js DA_NANG_DELIVERY_BOUNDS.
+const DA_NANG_DELIVERY_BOUNDS = Object.freeze({
+  west: 108.05,
+  south: 15.90,
+  east: 108.35,
+  north: 16.20
+});
+
+// Mirror of shared.js isInsideDeliveryArea (numeric-only; the server never
+// sees a google.maps.LatLng).
+function isInsideDeliveryArea(lat, lng) {
+  return Number.isFinite(lat) && Number.isFinite(lng)
+    && lat >= DA_NANG_DELIVERY_BOUNDS.south
+    && lat <= DA_NANG_DELIVERY_BOUNDS.north
+    && lng >= DA_NANG_DELIVERY_BOUNDS.west
+    && lng <= DA_NANG_DELIVERY_BOUNDS.east;
+}
+
+// Mirror of shared.js SAME_DAY_CUTOFF_HOUR. null = no cutoff (open business
+// decision — see SHIP-READINESS P0-03). Kept here only so the two files line
+// up; the callable does not yet act on it.
+const SAME_DAY_CUTOFF_HOUR = null;
+
+// Mirror of shared.js todayKeyInZone — today's YYYY-MM-DD in the business zone.
+// Uses Intl (not manual UTC+7) so it stays correct if the zone rules ever
+// change; getting this wrong rejects real orders placed near local midnight.
+const BUSINESS_TIME_ZONE = "Asia/Ho_Chi_Minh";
+function businessTodayKey(now = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: BUSINESS_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(now);
+  const get = (type) => (parts.find((p) => p.type === type) || {}).value || "";
+  return `${get("year")}-${get("month")}-${get("day")}`;
+}
+
+// Mirror of shared.js deliveryDateProblem. Returns null when acceptable, else a
+// customer-facing reason. `today` is the business-zone date key.
+function deliveryDateProblem(dateKey, today) {
+  const value = String(dateKey || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return "Delivery date must be YYYY-MM-DD.";
+  }
+  // The regex accepts impossible dates (2026-02-31). Round-trip through UTC and
+  // require the parts to survive, rather than letting Date roll 02-31 into March.
+  const [y, m, d] = value.split("-").map(Number);
+  const probe = new Date(Date.UTC(y, m - 1, d));
+  if (probe.getUTCFullYear() !== y || probe.getUTCMonth() !== m - 1 || probe.getUTCDate() !== d) {
+    return "That delivery date does not exist. Please pick a date from the calendar.";
+  }
+  if (value < today) {
+    return `That delivery date has passed. Please choose ${today} or later.`;
+  }
+  return null;
 }
 
 // --- The callable ---
@@ -188,6 +286,16 @@ exports.submitPublicOrder = onCall(async (request) => {
     if (!Number.isFinite(lat) || lat < -90 || lat > 90 || !Number.isFinite(lng) || lng < -180 || lng > 180) {
       throw new HttpsError("invalid-argument", "Invalid delivery map location.");
     }
+    // P0-03: the map UI restricts pins to the Da Nang delivery rectangle, but a
+    // legacy saved pin (or a crafted payload) can carry coordinates outside it.
+    // Reject here so the boundary is actually enforced, with a message that
+    // tells the customer how to fix a stale saved pin rather than just failing.
+    if (!isInsideDeliveryArea(lat, lng)) {
+      throw new HttpsError(
+        "failed-precondition",
+        "That delivery pin is outside our Da Nang delivery area. Re-confirm your address on the map — if this is a saved address, edit it once under My account → Delivery addresses to set a current pin."
+      );
+    }
     deliveryLocation = {
       lat,
       lng,
@@ -214,8 +322,18 @@ exports.submitPublicOrder = onCall(async (request) => {
   if (address.length < 5 || address.length >= 500) {
     throw new HttpsError("invalid-argument", "Address must be 5–499 characters.");
   }
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(deliveryDate)) {
-    throw new HttpsError("invalid-argument", "Delivery date must be YYYY-MM-DD.");
+  // P0-03: enforce a real, non-past delivery date in the BUSINESS timezone.
+  // A stale tab (opened yesterday) or a device clock in another zone would
+  // otherwise submit yesterday's date; UTC comparison would wrongly reject a
+  // valid same-day order placed before 07:00 Vietnam time.
+  const dateProblem = deliveryDateProblem(deliveryDate, businessTodayKey());
+  if (dateProblem) {
+    // Format failures stay invalid-argument; a real-but-past/nonexistent date
+    // is a precondition the customer can fix.
+    const code = dateProblem === "Delivery date must be YYYY-MM-DD."
+      ? "invalid-argument"
+      : "failed-precondition";
+    throw new HttpsError(code, dateProblem);
   }
   if (deliveryWindow.length >= 200) {
     throw new HttpsError("invalid-argument", "Delivery window too long.");
@@ -292,10 +410,13 @@ exports.submitPublicOrder = onCall(async (request) => {
     throw new HttpsError("failed-precondition", "Deposit total out of range.");
   }
 
-  // ---- Canonical customer id (phone preferred) --------------------------
-  const customerId = buildCustomerId(phoneE164) || (authUid ? `CUS-${authUid}` : null);
+  // ---- Canonical customer id (P0-04: anchored to the auth uid) ----------
+  // Resolved from the signed-in uid, not the typed phone, so a typo or an
+  // edited number can never split the customer or hijack a stranger's record.
+  // phoneE164 is still validated above and stored on the order as contact data.
+  const customerId = await resolveSignedInCustomerId(authUid);
   if (!customerId) {
-    throw new HttpsError("invalid-argument", "Could not derive a customer id from the phone number.");
+    throw new HttpsError("invalid-argument", "Could not derive a customer id.");
   }
 
   // P0-02: idempotency key minted by the client and reused across retry /
@@ -1497,5 +1618,19 @@ if (process.env.NODE_ENV === "test" || process.env.FUNCTIONS_EMULATOR === "true"
   exports._orderSubmissionTestApi = () => ({
     createOrderUnderSubmissionKey,
     SUBMISSION_KEY_PATTERN
+  });
+  // P0-03: pure date/area validators, so the mirror can be tested against the
+  // canonical shared.js copy without spinning up the emulator.
+  exports._deliveryValidationTestApi = () => ({
+    deliveryDateProblem,
+    isInsideDeliveryArea,
+    businessTodayKey,
+    DA_NANG_DELIVERY_BOUNDS,
+    SAME_DAY_CUTOFF_HOUR
+  });
+  // P0-04: signed-in customer identity resolution (pure pick + emulator query).
+  exports._customerIdentityTestApi = () => ({
+    pickSignedInCustomerId,
+    resolveSignedInCustomerId
   });
 }

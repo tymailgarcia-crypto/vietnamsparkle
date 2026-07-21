@@ -22,9 +22,12 @@ import {
 } from "./firebaseClient.js";
 import {
   computeOrderTotals,
+  DA_NANG_DELIVERY_BOUNDS,
+  deliveryDateProblem,
   escapeHtml,
   formatCurrency,
   isBrokenDepositBalance,
+  isInsideDeliveryArea,
   normalizePhoneWithCountry,
   phoneEntryErrorMessage,
   productCategoryKey,
@@ -35,7 +38,7 @@ import {
   setDeliveryWindow,
   submissionFingerprint,
   summarizeHeldContainers,
-  todayKey,
+  todayKeyInZone,
   withSubmitLock
 } from "./shared.js";
 import { mapsApiKey, mapsDefaultCenter } from "./firebaseWebConfig.js";
@@ -280,23 +283,22 @@ let addressAutocompleteRequestId = 0;
 let addressAutocompletePredictions = [];
 let addressAutocompleteActiveIndex = -1;
 
-const DA_NANG_DELIVERY_BOUNDS = Object.freeze({
-  west: 108.05,
-  south: 15.90,
-  east: 108.35,
-  north: 16.20
-});
+// P0-03: bounds + the inside-area test now live in shared.js so the callable's
+// mirrored copy has one thing to track. Local alias keeps the map call sites
+// (locationRestriction, LatLngBounds) reading the same as before.
+const isInsideDaNangDeliveryArea = isInsideDeliveryArea;
 
-function isInsideDaNangDeliveryArea(position) {
-  const latValue = typeof position?.lat === "function" ? position.lat() : position?.lat;
-  const lngValue = typeof position?.lng === "function" ? position.lng() : position?.lng;
-  const lat = Number(latValue);
-  const lng = Number(lngValue);
-  return Number.isFinite(lat) && Number.isFinite(lng)
-    && lat >= DA_NANG_DELIVERY_BOUNDS.south
-    && lat <= DA_NANG_DELIVERY_BOUNDS.north
-    && lng >= DA_NANG_DELIVERY_BOUNDS.west
-    && lng <= DA_NANG_DELIVERY_BOUNDS.east;
+// P0-03: the delivery-date field's floor. Recomputed rather than captured once
+// at load, because this page is left open overnight — a tab opened yesterday
+// would otherwise keep offering yesterday and the server would reject it.
+function refreshDeliveryDateFloor() {
+  const input = document.getElementById("delivery-date");
+  if (!input) return;
+  const today = todayKeyInZone();
+  input.min = today;
+  // Only drag the value forward when it has actually gone stale. Never
+  // rewrite a future date the customer deliberately picked.
+  if (!input.value || input.value < today) input.value = today;
 }
 
 function loadGoogleMaps() {
@@ -1463,7 +1465,7 @@ async function submitOrder(event) {
       state.quantities = {};
       renderCatalog();
       renderTotals();
-      document.getElementById("delivery-date").value = todayKey();
+      refreshDeliveryDateFloor();
       setDeliveryWindow(document.getElementById("delivery-window"), "");
       successOrderId = orderId;
     } catch (error) {
@@ -1961,7 +1963,16 @@ function hideAppLoading() {
 // they can't dismiss.
 setTimeout(hideAppLoading, 8000);
 
-document.getElementById("delivery-date").value = todayKey();
+refreshDeliveryDateFloor();
+// A phone left on this page overnight, or backgrounded for hours, must not
+// submit yesterday. Re-floor on every return to the tab and on a slow tick;
+// both are cheap and either one alone leaves a real gap (a tab that is never
+// hidden still crosses midnight).
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) refreshDeliveryDateFloor();
+});
+window.addEventListener("focus", refreshDeliveryDateFloor);
+setInterval(refreshDeliveryDateFloor, 60000);
 setDeliveryWindow(document.getElementById("delivery-window"), "");
 if (isEmulatorMode) {
   document.getElementById("address-verify-button")?.classList.add("hidden");
