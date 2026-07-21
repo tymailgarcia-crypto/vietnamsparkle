@@ -10,6 +10,7 @@ locally only. `main` is 6 commits ahead of `origin/main`; nothing is pushed and
 there is no release tag.** Push/tag only when Ty asks.
 
 Commits since the sync (newest first), each deployed + gated:
+- `6e05d82` P0-07 inc. B part 2 — **P0-07 COMPLETE (7/7).** Refunds-due/proof-missing owner queue on `reports.html`/`reportsApp.js` (read-only over `orderCancellations`: `refundStatus` pending/partial OR `evidenceStatus` missing) + scoped `firestore.rules` tightening (new `isCancelTransition()`; owner orders-update branch now denies any direct client cancel — owner cancels go through `submitOrderCancellation`; customer unpaid `pending_approval→cancelled` self-cancel untouched). Full rules gate green before+after; `customer-order-cancel` 6→9. Deployed `--only firestore:rules` + `--only hosting` (2 files).
 - `1fe4ff0` P0-07 inc. B part 1 — refund-evidence attach UI + `/refund-proofs` Storage tests.
 - `6ed3726` P0-07 inc. A — cancellation routes through the atomic case workflow; **new `charge_reversed` deposit event type** (reverses the deposit charge inside the cancellation transaction; 8 client "containers held" nets + `summarizeHeldContainers` learned it; `physicalReturnsFromDepositEvents` deliberately excludes it).
 - `bb799e1` P0-06 — order approval is one server transaction (`approveOrder` callable / `approveOrderImpl`); **the account-takeover gate `canLinkAuthUidToCustomer` MOVED from `adminApp.js` to `functions/index.js`** — `rules-tests/authuid-linking.test.mjs` now pins the server copy. CLAUDE.md's hard-constraint pointer was updated to match.
@@ -17,22 +18,21 @@ Commits since the sync (newest first), each deployed + gated:
 - `473c8ea` P0-03 + P0-04 — server-enforced delivery date/area; uid-anchored customer identity.
 - `8da405e` P0-02 — idempotent public order submission (committed by Ty).
 
-**Where P0-07 stands: 6 of 7 acceptance items done.** Remaining = **increment B
-part 2**, the clean next task:
-1. **Refunds-due / proof-missing owner queue** (acceptance item 5) — a read-only
-   owner view listing `orderCancellations` where `refundStatus` in
-   `['pending','partial']` OR `evidenceStatus == 'missing'`. Likely a new section
-   on `reports.html`/`reportsApp.js` (owner-only reconciliation viewer) or a new
-   page. No new callable/rules needed — it just reads the case ledger.
-2. **Scoped `firestore.rules` tightening** — block a *direct client* write that
-   sets an approved order's `status` to `cancelled` (owner cancels now go through
-   the `submitOrderCancellation` Admin-SDK callable), while KEEPING the customer
-   unpaid `pending_approval → cancelled` transition (firestore.rules ~L121).
-   Crown-jewel file: read ROADMAP "Audit follow-ups → Critical", run the FULL
-   `rules-tests/` gate before and after, read stderr. The current client no longer
-   does a direct cancel, so this is defence-in-depth, not a live hole.
+**P0-07 is COMPLETE (7 of 7 acceptance items), shipped as `6e05d82`.** Both
+increment-B-part-2 items landed: the refunds-due/proof-missing owner queue (a
+read-only "Refunds due & missing proof" panel on `reports.html`/`reportsApp.js`
+over `orderCancellations` where `refundStatus` in `['pending','partial']` OR
+`evidenceStatus == 'missing'`) and the scoped `firestore.rules` tightening (new
+`isCancelTransition()`; the owner orders-update branch now denies any direct
+client cancel, so owner cancels must go through the `submitOrderCancellation`
+Admin-SDK callable, while the customer unpaid `pending_approval → cancelled`
+self-cancel branch is untouched). Full `rules-tests/` gate re-run green before
+and after (authuid-linking 12, email-takeover 4, customers 24, payments 17,
+ordercancellations 13); `customer-order-cancel` extended 6→9. Only the
+pre-existing documented-benign driver/customer bare-field stderr (L-shifted by
+the added helper). Not owner-click-through QA'd — no session, the standing gap.
 
-After P0-07: **P0-08** (revalidate container holdings at delivery-commit time) is
+Next in SHIP-READINESS: **P0-08** (revalidate container holdings at delivery-commit time) is
 next in SHIP-READINESS.md. Trust SHIP-READINESS.md for per-P0 status/evidence and
 ROADMAP.md "Shipped 2026-07-21" for the how/why.
 
