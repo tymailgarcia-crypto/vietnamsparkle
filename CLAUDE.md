@@ -15,7 +15,9 @@ github.com/tymailgarcia-crypto/vietnamsparkle.
   against the code; trust them over your assumptions about how this app works.
 
 Hard constraint: before touching `firestore.rules` or `canLinkAuthUidToCustomer`
-in `adminApp.js`, read "Audit follow-ups → Critical" in ROADMAP.md and run the
-suites in `firebase/rules-tests/`. They pin an account takeover shut. If one
-fails, the takeover is back — fix the code, never the test. Read the emulator's
-stderr, not just the pass count.
+(in `firebase/functions/index.js` — `approveOrderImpl`; it moved there from
+`adminApp.js` in 2026-07-21's P0-06 when approval became a server transaction),
+read "Audit follow-ups → Critical" in ROADMAP.md and run the suites in
+`firebase/rules-tests/`. They pin an account takeover shut. If one fails, the
+takeover is back — fix the code, never the test. Read the emulator's stderr, not
+just the pass count.

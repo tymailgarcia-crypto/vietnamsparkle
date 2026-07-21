@@ -46,6 +46,7 @@ const el = (id) => document.getElementById(id);
 const escapeHtml = (value) => String(value == null ? "" : value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 const orderId = new URLSearchParams(location.search).get("id") || "";
 const mergeCustomersFn = httpsCallable(functions, "mergeCustomers");
+const approveOrderFn = httpsCallable(functions, "approveOrder");
 const recordOrderRefundFn = httpsCallable(functions, "recordOrderRefund");
 const resolveOrderCancellationFn = httpsCallable(functions, "resolveOrderCancellation");
 let currentInvoiceContext = null;
@@ -507,65 +508,12 @@ async function handleOrderAction(event) {
   }
 }
 
-function canLinkAuthUidToCustomer(order, existingData) {
-  return Boolean(order.authUid) && (!existingData || existingData.authUid === order.authUid);
-}
-
-async function upsertCustomerFromOrder(order) {
-  // P0-04: key on the order's uid-anchored customerId (set by submitPublicOrder
-  // from the auth uid), NOT a phone-derived id. Mirrors the dashboard approval
-  // path in adminApp.js — re-deriving from order.phone let a typo point approval
-  // at a stranger's record and overwrite their profile.
-  const customerId = order.customerId
-    || (order.authUid ? `CUS-${order.authUid}` : buildCustomerId(order.phone));
-  if (!customerId) return { customerId: "", createdNew: false, linkedAuthUid: false };
-  const ref = doc(db, "customers", customerId);
-  const existing = await getDoc(ref);
-  const existingData = existing.exists() ? existing.data() : null;
-  // Never overwrite a record that belongs to a different sign-in (belt-and-braces
-  // — the uid anchoring above already prevents it). Surfaces to the approve catch.
-  if (existingData && existingData.authUid && order.authUid && existingData.authUid !== order.authUid) {
-    throw new Error(`This order resolves to customer ${customerId}, which belongs to a different sign-in. Approval stopped to avoid overwriting another customer — investigate a possible id/phone collision.`);
-  }
-  const canLinkAuthUid = canLinkAuthUidToCustomer(order, existingData);
-  const payload = {
-    name: order.customerName,
-    billingName: null,
-    phone: normalizePhone(order.phone),
-    secondaryPhone: null,
-    taxId: null,
-    address: order.address,
-    area: null,
-    addressHistory: order.address,
-    notes: null,
-    lastSourceChannel: order.sourceChannel,
-    lastOrderAt: order.deliveryDate,
-    orderCount: 1,
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp()
-  };
-  // Ownership-sensitive identity fields use the same proof gate as the
-  // dashboard approval path. Never link an arbitrary signed-in orderer's uid
-  // or verified email onto an existing, unclaimed phone-keyed customer.
-  if (order.email && canLinkAuthUid) payload.email = order.email;
-  if (canLinkAuthUid) payload.authUid = order.authUid;
-  await setDoc(ref, payload, { merge: true });
-  return { customerId, createdNew: !existingData, linkedAuthUid: canLinkAuthUid };
-}
-
-async function foldSelfServeStubInto(customerId, authUid) {
-  const stubId = `CUS-${authUid}`;
-  if (!authUid || stubId === customerId) return;
-  try {
-    const stubSnap = await getDoc(doc(db, "customers", stubId));
-    if (!stubSnap.exists()) return;
-    const stub = stubSnap.data() || {};
-    if (stub.archived === true || stub.authUid !== authUid) return;
-    await mergeCustomersFn({ fromId: stubId, toId: customerId });
-  } catch (error) {
-    console.warn(`Could not fold stub ${stubId} into ${customerId}:`, error?.message || error);
-  }
-}
+// P0-06: order approval (customer linkage + deposit charges + status change)
+// moved into the server callable `approveOrder` (functions/index.js), where it
+// runs in one transaction. The old client upsertCustomerFromOrder /
+// foldSelfServeStubInto (and the takeover gate canLinkAuthUidToCustomer) lived
+// here; the gate is now in functions/index.js, pinned by
+// rules-tests/authuid-linking.test.mjs.
 
 const mapsSdkState = { ready: false, geocoder: null, loadPromise: null };
 
@@ -706,57 +654,6 @@ function confirmEditAddress() {
 
 const editAddressController = createEditOrderAddressController({ loadMaps: loadMapsSdk });
 
-async function resolveDeliveryLocation(order, customerId) {
-  const confirmed = order?.deliveryLocation;
-  if (confirmed && typeof confirmed.lat === "number" && typeof confirmed.lng === "number") return confirmed;
-  const address = String(order?.address || "").trim();
-  if (address) {
-    try {
-      await loadMapsSdk();
-      const geo = await geocodeAddress(address);
-      if (geo) return { ...geo, geocodedAt: new Date().toISOString() };
-    } catch (error) {
-      console.warn(`Geocode failed for order ${order?.id || orderId}:`, error?.message || error);
-    }
-  }
-  if (customerId) {
-    try {
-      const snap = await getDoc(doc(db, "customers", customerId));
-      const loc = snap.exists() ? snap.data().location : null;
-      if (loc && typeof loc.lat === "number" && typeof loc.lng === "number") {
-        return { lat: loc.lat, lng: loc.lng, formattedAddress: loc.formattedAddress || address || null, geocodedAt: new Date().toISOString(), sourceCustomerId: customerId };
-      }
-    } catch (_) {
-      // Approval and edits remain usable even if a fallback pin cannot load.
-    }
-  }
-  return null;
-}
-
-async function ensureDepositCharge(order) {
-  if (state.deposits.some((event) => event.eventType === "charged")) return;
-  const productsById = Object.fromEntries(state.products.map((product) => [product.id, product]));
-  const breakdown = computeDepositBreakdown(state.items, productsById);
-  if (!breakdown.length) return;
-  const customerId = order.customerId || buildCustomerId(order.phone) || null;
-  const batch = writeBatch(db);
-  breakdown.forEach((entry) => {
-    batch.set(doc(db, "depositEvents", buildDepositEventId()), {
-      orderId: order.id,
-      customerId,
-      authUid: order.authUid || null,
-      containerType: entry.containerType,
-      qty: entry.qty,
-      amount: entry.amount,
-      eventType: "charged",
-      eventDate: order.deliveryDate || todayKey(),
-      linkedDocumentId: null,
-      notes: "Auto-charged on approval"
-    });
-  });
-  await batch.commit();
-}
-
 async function approveOrder() {
   const order = state.order;
   if (!order) return;
@@ -779,16 +676,9 @@ async function approveOrder() {
       // A failed lookup must not block a legitimate approval.
     }
   }
-  const { customerId, createdNew, linkedAuthUid } = await upsertCustomerFromOrder(order);
-  const deliveryLocation = await resolveDeliveryLocation(order, customerId);
-  await updateDoc(doc(db, "orders", order.id), {
-    status: "new",
-    customerId: customerId || null,
-    deliveryLocation,
-    updatedAt: new Date().toISOString()
-  });
-  await ensureDepositCharge({ ...order, customerId });
-  if (customerId && createdNew && linkedAuthUid) await foldSelfServeStubInto(customerId, order.authUid);
+  // P0-06: atomic server transaction (status precondition, customer linkage,
+  // deposit charges, status transition). Retry-safe and idempotent.
+  await approveOrderFn({ orderId: order.id });
 }
 
 async function emitDepositReversalsFor(order) {

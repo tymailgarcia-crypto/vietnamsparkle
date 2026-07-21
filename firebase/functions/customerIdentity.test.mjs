@@ -85,35 +85,40 @@ function expectSource(name, cond) {
   it(name, () => assert.ok(cond));
 }
 for (const file of ["adminApp.js", "orderApp.js"]) {
-  console.log(`\n${file} approval routing (source)\n`);
+  console.log(`\n${file} approval wrapper (source)\n`);
   const src = readFileSync(new URL(`../web/assets/${file}`, import.meta.url), "utf8");
+  // P0-06: the customer upsert (and its takeover gate) moved to the server
+  // callable; the client no longer upserts at approval.
   expectSource(
-    "upsertCustomerFromOrder keys on order.customerId (uid-anchored), not the phone",
-    /const customerId = order\.customerId\s*\n?\s*\|\|/.test(src)
+    "client no longer contains its own upsertCustomerFromOrder",
+    !/async function upsertCustomerFromOrder/.test(src)
   );
   expectSource(
     "the old phone-derived primary key is gone",
     !/const customerId = buildCustomerId\(order\.phone\);/.test(src)
   );
   expectSource(
-    "a different-sign-in doc is never overwritten (belt-and-braces guard present)",
-    /belongs to a different sign-in/.test(src)
-  );
-  expectSource(
-    "approveOrder blocks + explains a phone collision with another customer",
+    "approve still blocks + explains a phone collision with another customer",
     /already belongs to a different customer/.test(src)
   );
-  // Preserve the takeover gate in this copy too (authuid-linking pins adminApp
-  // only; orderApp carries an unpinned duplicate).
   expectSource(
-    "authUid write stays gated by canLinkAuthUid",
-    /if \(canLinkAuthUid\) payload\.authUid = order\.authUid;/.test(src)
-  );
-  expectSource(
-    "email write stays gated by canLinkAuthUid",
-    /if \(order\.email && canLinkAuthUid\) payload\.email = order\.email;/.test(src)
+    "approve routes through the server callable (approveOrderFn)",
+    /approveOrderFn\(\{ orderId/.test(src)
   );
 }
+
+// The uid-anchored routing and the different-sign-in guard now live in the
+// server approval transaction. Pin them there.
+console.log("\napproveOrderImpl identity routing (source: functions/index.js)\n");
+const serverSrc = readFileSync(new URL("./index.js", import.meta.url), "utf8");
+expectSource(
+  "server keys customerId on order.customerId / the auth uid, never the phone",
+  /const customerId = order\.customerId \|\| \(order\.authUid \? `CUS-\$\{order\.authUid\}` : null\);/.test(serverSrc)
+);
+expectSource(
+  "server refuses to overwrite a customer owned by a different sign-in",
+  /belongs to a different sign-in/.test(serverSrc)
+);
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

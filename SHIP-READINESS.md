@@ -164,23 +164,26 @@ Evidence/commit/deploy:
 
 ### P0-06 — Make approval plus deposit charging atomic and retry-safe
 
-**Status:** [ ]
-**Owner:** unassigned
+**Status:** [x] shipped + deployed 2026-07-21
+**Owner:** Claude
 **Likely files:** `firebase/web/assets/adminApp.js`, `orderApp.js`, `firebase/functions/index.js`, rules/tests
 
 Both approval paths update the order and then create deposit charges separately. The charge duplicate check uses stale client data and fresh IDs, so failure can leave an approved order without a charge and an ambiguous retry can double-charge.
 
 Acceptance:
 
-- [ ] One server transaction handles the status precondition, customer linkage, order approval, and deposit charges.
-- [ ] Deposit charge IDs are deterministic per order and container type.
-- [ ] Repeating the same approval returns success without changing the ledger twice.
-- [ ] Approve is guarded against double-tap and stale status.
-- [ ] Tests cover partial failure, parallel approval, retry, no-deposit products, and mixed container types.
+- [x] One server transaction handles the status precondition, customer linkage, order approval, and deposit charges. (New callable `approveOrder` → `approveOrderImpl`, one Admin-SDK transaction. Firestore rolls the whole thing back on any failure.)
+- [x] Deposit charge IDs are deterministic per order and container type. (`depositChargeId(orderId, type)` → `${orderId}-charge-${slug}`; retries address the same doc instead of appending a random one.)
+- [x] Repeating the same approval returns success without changing the ledger twice. (Existing charges are skipped; an already-approved order re-runs idempotently and does not re-transition.)
+- [x] Approve is guarded against double-tap and stale status. (Server status precondition: only `pending_approval` transitions; `cancelled` is rejected; a second/concurrent call is a no-op on the ledger.)
+- [x] Tests cover partial failure, parallel approval, retry, no-deposit products, and mixed container types. (`approveOrder.emulator.test.js` **9/9**.)
 
 Evidence/commit/deploy:
 
-- _Pending._
+- 2026-07-21: approval moved from two separate client flows (`adminApp.js` + `order.html`'s `orderApp.js`, each doing update-then-charge with a stale dup-check and random ids) into `approveOrderImpl`. The client approve buttons are now thin wrappers around the callable that keep only the P0-04 phone-collision confirmation. **The account-takeover gate (`canLinkAuthUidToCustomer`) moved with the customer linkage from `adminApp.js` to `functions/index.js`.** Rules unchanged (Admin SDK writes bypass rules; the client's other owner writes — delivery-dialog deposit events, later status transitions — are untouched).
+- 2026-07-21: **takeover gate re-run after the relocation and GREEN** — `authuid-linking` (now pinning the server copy) 12/12, `email-propagation-takeover` 4/4, `customers.rules` 24/24, `payments.rules` 17/17, `customerIdentity` 15/15 + emulator 6/6; only the documented-benign L187/L249 stderr. New `approveOrder.emulator.test.js` 9/9 (happy path, no-deposit, mixed types, retry idempotency, parallel → exactly one charge set, partial-failure rollback, cancelled rejected, missing order, gate refuses to stamp an unclaimed doc). P0-02/03 + cancellation suites still green (7/11/23).
+- 2026-07-21: deployed `--only functions` (`approveOrder` **created**; all others updated) then `--only hosting` (**exactly 2/42 files**: `adminApp.js`, `orderApp.js`). Live probe: unauthenticated `approveOrder` → `PERMISSION_DENIED` "Owner only." Owner pages browser-smoke-tested (admin.html, order.html load clean).
+- **Behaviour change worth knowing:** the old client geocoded a missing pin on approval; the server does not (no browser geocoder). Since P0-03 every public order already carries a customer-confirmed pin, so this only affects rare legacy/owner-created orders with no pin — the server backfills from the customer record's saved location if present, otherwise the owner sets the pin via Edit details. **Not yet owner-click-through QA'd** (needs an owner session to approve a real order).
 
 ### P0-07 — Route every approved cancellation and refund through one atomic case workflow
 

@@ -1,32 +1,31 @@
-// Truth table for canLinkAuthUidToCustomer (adminApp.js).
+// Truth table for canLinkAuthUidToCustomer — the account-takeover gate.
 //
 // Run: node rules-tests/authuid-linking.test.mjs
 //
-// This predicate decides whether the owner's approve action stamps an order's
-// authUid onto the phone-keyed customer doc. Firestore rules CANNOT guard it —
-// the owner performs the write and owners may write anything — so this pure
+// This predicate decides whether approving an order stamps the order's authUid
+// (and verified email) onto the customer doc. Firestore rules CANNOT guard it —
+// approval is an owner action and owners may write anything — so this pure
 // function is the only thing standing between a stranger and someone else's
 // order history. Hence a test.
 //
-// Since 2026-07-17 the SAME predicate also gates the email write in
-// upsertCustomerFromOrder — planting the orderer's email onto an unproven doc
-// was a second takeover key (see email-propagation-takeover.test.mjs). The
-// source-level checks at the bottom pin that both writes stay behind it.
+// RELOCATED 2026-07-21 (P0-06): approval moved from the client into the server
+// callable `approveOrder` (functions/index.js), so the gate and both gated
+// writes moved with it. This test now pins the SERVER copy. The security
+// property is unchanged — only its home. The client `upsertCustomerFromOrder`
+// that this used to read no longer exists; do not restore it.
 //
-// Imported by regex rather than by `import` because adminApp.js pulls in the
-// Firebase web SDK at module load, which needs a browser.
+// Since 2026-07-17 the SAME predicate also gates the email write — planting the
+// orderer's email onto an unproven doc was a second takeover key (see
+// email-propagation-takeover.test.mjs). The source-level checks pin that both
+// writes stay behind it.
 
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 
-const src = readFileSync(new URL("../web/assets/adminApp.js", import.meta.url), "utf8");
-const match = src.match(
-  /export function canLinkAuthUidToCustomer\(order, existingData\) \{([\s\S]*?)\n\}/
-);
-if (!match) {
-  console.error("FAIL  could not locate canLinkAuthUidToCustomer in adminApp.js");
-  process.exit(1);
-}
-const canLinkAuthUidToCustomer = new Function("order", "existingData", match[1]);
+process.env.NODE_ENV = "test"; // exposes _approvalTestApi in index.js
+
+const require = createRequire(import.meta.url);
+const { canLinkAuthUidToCustomer } = require("../functions/index.js")._approvalTestApi();
 
 let passed = 0;
 let failed = 0;
@@ -41,85 +40,93 @@ function expect(name, actual, want) {
   }
 }
 
-console.log("\ncanLinkAuthUidToCustomer\n");
+console.log("\ncanLinkAuthUidToCustomer (server: functions/index.js)\n");
 
-// The attack this exists to block.
+// The attack this exists to block: an attacker signed in as `attacker-uid`
+// quotes a stranger's phone; the stranger's doc is unclaimed (authUid null).
 expect(
   "attacker quoting a stranger's phone is NOT linked to their record",
-  canLinkAuthUidToCustomer(
-    { authUid: "attacker-uid", phone: "0901234567" },
-    { authUid: null, name: "Real Victim", orderCount: 50 }
-  ),
+  canLinkAuthUidToCustomer("attacker-uid", { authUid: null, name: "Real Victim", orderCount: 50 }),
   false
 );
 
 expect(
   "unclaimed doc is never auto-claimed, even with no history",
-  canLinkAuthUidToCustomer({ authUid: "u1" }, { authUid: null }),
+  canLinkAuthUidToCustomer("u1", { authUid: null }),
   false
 );
 
 // Legitimate flows that must keep working.
 expect(
   "brand-new doc for a signed-in customer IS linked",
-  canLinkAuthUidToCustomer({ authUid: "u1" }, null),
+  canLinkAuthUidToCustomer("u1", null),
   true
 );
 
 expect(
   "doc already owned by the same uid stays linked",
-  canLinkAuthUidToCustomer({ authUid: "u1" }, { authUid: "u1" }),
+  canLinkAuthUidToCustomer("u1", { authUid: "u1" }),
   true
 );
 
 // Guards that already existed and must not regress.
 expect(
   "doc owned by someone else is never re-stamped",
-  canLinkAuthUidToCustomer({ authUid: "u1" }, { authUid: "u2" }),
+  canLinkAuthUidToCustomer("u1", { authUid: "u2" }),
   false
 );
 
 expect(
   "anonymous order links nothing to a new doc",
-  canLinkAuthUidToCustomer({ authUid: null }, null),
+  canLinkAuthUidToCustomer(null, null),
   false
 );
 
 expect(
   "anonymous order links nothing to an existing doc",
-  canLinkAuthUidToCustomer({ authUid: null }, { authUid: null }),
+  canLinkAuthUidToCustomer(null, { authUid: null }),
   false
 );
 
 expect(
   "empty-string authUid is falsy, links nothing",
-  canLinkAuthUidToCustomer({ authUid: "" }, null),
+  canLinkAuthUidToCustomer("", null),
   false
 );
 
 // --- Source-level guards: both authUid and email must stay gated -----------
 //
-// The truth table above proves the PREDICATE is correct. These prove
-// upsertCustomerFromOrder actually routes both sensitive writes through it,
-// so a future edit can't silently reintroduce the unguarded `payload.email`.
+// The truth table proves the PREDICATE is correct. These prove approveOrderImpl
+// actually routes both sensitive writes through it, so a future edit can't
+// silently reintroduce an unguarded email/authUid stamp.
 
-console.log("\nupsertCustomerFromOrder write gating (source)\n");
+console.log("\napproveOrderImpl write gating (source: functions/index.js)\n");
 
+const src = readFileSync(new URL("../functions/index.js", import.meta.url), "utf8");
 function expectSource(name, cond) {
   expect(name, !!cond, true);
 }
 
 expectSource(
-  "authUid write is gated by canLinkAuthUid",
-  /if \(canLinkAuthUid\) payload\.authUid = order\.authUid;/.test(src)
+  "authUid write is gated by canLink",
+  /if \(canLink\) customerPatch\.authUid = order\.authUid;/.test(src)
 );
 expectSource(
-  "email write is gated by canLinkAuthUid (not the bare `if (order.email)`)",
-  /if \(order\.email && canLinkAuthUid\) payload\.email = order\.email;/.test(src)
+  "email write is gated by canLink (not a bare `if (order.email)`)",
+  /if \(order\.email && canLink\) customerPatch\.email = order\.email;/.test(src)
 );
 expectSource(
-  "the unguarded email write is gone",
-  !/if \(order\.email\) payload\.email = order\.email;/.test(src)
+  "there is no ungated customerPatch.email = order.email write",
+  !/(^|\n)\s*customerPatch\.email = order\.email;/.test(
+    // strip the one gated occurrence, then look for any remaining bare write
+    src.replace(/if \(order\.email && canLink\) customerPatch\.email = order\.email;/g, "")
+  )
+);
+expectSource(
+  "there is no ungated customerPatch.authUid = order.authUid write",
+  !/(^|\n)\s*customerPatch\.authUid = order\.authUid;/.test(
+    src.replace(/if \(canLink\) customerPatch\.authUid = order\.authUid;/g, "")
+  )
 );
 
 console.log(`\n${passed} passed, ${failed} failed\n`);

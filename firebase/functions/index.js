@@ -130,6 +130,162 @@ async function resolveSignedInCustomerId(authUid) {
   return pickSignedInCustomerId(authUid, docs);
 }
 
+// --- Order approval + deposit charging, atomically (P0-06) ------------------
+//
+// The account-takeover gate, relocated from adminApp.js to the server when
+// approval moved into this callable. Read "Audit follow-ups → Critical" in
+// ROADMAP before touching it. It decides whether approval may stamp an order's
+// authUid / verified email onto the customer doc: ONLY a brand-new doc, or one
+// already owned by this same uid. Never an existing doc owned by nobody — the
+// person who typed a phone into the order form is not proven to own that phone,
+// and stamping their uid/email onto a stranger's unclaimed record hands it over.
+// Firestore rules cannot catch this (the owner performs the write), so this pure
+// predicate is the guard. Pinned by rules-tests/authuid-linking.test.mjs.
+function canLinkAuthUidToCustomer(orderAuthUid, existingData) {
+  return !!orderAuthUid && (!existingData || existingData.authUid === orderAuthUid);
+}
+
+// Mirror of shared.js computeDepositBreakdown — one charge per returnable
+// container type, priced from the canonical products doc (server-read, so an
+// owner-side price tweak can't inflate a deposit charge). Products with no
+// containerType or a zero deposit (accessories) contribute nothing.
+function computeDepositBreakdown(items, productsById) {
+  const byType = {};
+  items.forEach((item) => {
+    const product = productsById[item.productId];
+    const containerType = (product && product.containerType) || item.containerType || null;
+    const deposit = Number((product ? product.defaultDepositAmount : item.defaultDepositAmount) || 0);
+    if (!containerType || deposit <= 0) return;
+    const qty = Number(item.quantity || 0);
+    if (qty <= 0) return;
+    if (!byType[containerType]) byType[containerType] = { containerType, qty: 0, amount: 0 };
+    byType[containerType].qty += qty;
+    byType[containerType].amount += qty * deposit;
+  });
+  return Object.values(byType);
+}
+
+// Deterministic deposit-charge id: one per (order, container type). Using a
+// fixed id is what makes re-approval idempotent — a retry addresses the same
+// doc instead of appending a fresh random one (the old client bug that could
+// double-charge). Container types are simple slugs (jug, crate); sanitized
+// defensively so an odd type can't escape the id path.
+function depositChargeId(orderId, containerType) {
+  const slug = String(containerType || "other").replace(/[^A-Za-z0-9_-]+/g, "_");
+  return `${orderId}-charge-${slug}`;
+}
+
+// The whole of approval in ONE transaction: status precondition, customer
+// linkage (denormalized profile + gated identity keys), deposit charges, and
+// the order's approval transition. Firestore rolls the whole thing back on any
+// failure, so an approved order can never exist without its charges, and a
+// retry (deterministic charge ids + status check) never changes the ledger
+// twice. Owner-gated by the callable wrapper.
+async function approveOrderImpl(orderId, ownerUid) {
+  const orderRef = db().doc(`orders/${orderId}`);
+  return db().runTransaction(async (tx) => {
+    // ---- READS (Admin-SDK transactions require all reads before any write) --
+    const orderSnap = await tx.get(orderRef);
+    if (!orderSnap.exists) throw new HttpsError("not-found", "Order not found.");
+    const order = orderSnap.data() || {};
+
+    if (order.status === "cancelled") {
+      throw new HttpsError("failed-precondition", "This order is cancelled and cannot be approved.");
+    }
+    // Idempotency: only pending_approval transitions to new. An already-approved
+    // order re-runs the (idempotent) charge/linkage writes and returns success
+    // without moving the status — a double-tap or retry is harmless.
+    const alreadyApproved = order.status !== "pending_approval";
+
+    const customerId = order.customerId || (order.authUid ? `CUS-${order.authUid}` : null);
+    const customerRef = customerId ? db().doc(`customers/${customerId}`) : null;
+    const customerSnap = customerRef ? await tx.get(customerRef) : null;
+
+    const itemsSnap = await tx.get(db().collection("orderItems").where("orderId", "==", orderId));
+    const items = itemsSnap.docs.map((d) => d.data() || {});
+    const productIds = Array.from(new Set(items.map((i) => String(i.productId || "")).filter(Boolean)));
+    const productSnaps = await Promise.all(productIds.map((id) => tx.get(db().doc(`products/${id}`))));
+    const productsById = {};
+    productSnaps.forEach((s) => { if (s.exists) productsById[s.id] = s.data(); });
+
+    const breakdown = computeDepositBreakdown(items, productsById);
+    const chargeTargets = breakdown.map((b) => ({ b, ref: db().doc(`depositEvents/${depositChargeId(orderId, b.containerType)}`) }));
+    const chargeSnaps = await Promise.all(chargeTargets.map((c) => tx.get(c.ref)));
+
+    // ---- WRITES ------------------------------------------------------------
+    const existingCustomer = customerSnap && customerSnap.exists ? customerSnap.data() : null;
+    if (customerRef) {
+      // Never overwrite a customer record owned by a DIFFERENT sign-in. With
+      // P0-04's uid-anchored customerId this should be unreachable, but approval
+      // writes profile fields with merge, so guard it.
+      if (existingCustomer && existingCustomer.authUid && order.authUid && existingCustomer.authUid !== order.authUid) {
+        throw new HttpsError("failed-precondition", `Customer ${customerId} belongs to a different sign-in; approval stopped to avoid overwriting another customer.`);
+      }
+      const canLink = canLinkAuthUidToCustomer(order.authUid, existingCustomer);
+      const customerPatch = {
+        name: order.customerName || null,
+        phone: order.phone || null,
+        address: order.address || null,
+        addressHistory: order.address || null,
+        lastSourceChannel: order.sourceChannel || null,
+        lastOrderAt: order.deliveryDate || null,
+        updatedAt: FieldValue.serverTimestamp()
+      };
+      // Identity keys ride the takeover gate — same as the old client upsert.
+      if (order.email && canLink) customerPatch.email = order.email;
+      if (canLink) customerPatch.authUid = order.authUid;
+      if (!existingCustomer) customerPatch.createdAt = FieldValue.serverTimestamp();
+      tx.set(customerRef, customerPatch, { merge: true });
+    }
+
+    // Deposit charges: create only the ones that don't already exist, so a
+    // repeat approval never changes the ledger twice and never rewrites an
+    // existing charge's amount.
+    const eventDate = order.deliveryDate || new Date().toISOString().slice(0, 10);
+    let chargesCreated = 0;
+    chargeTargets.forEach(({ b, ref }, i) => {
+      if (chargeSnaps[i].exists) return;
+      tx.set(ref, {
+        orderId,
+        customerId: customerId || null,
+        authUid: order.authUid || null,
+        containerType: b.containerType,
+        qty: b.qty,
+        amount: b.amount,
+        eventType: "charged",
+        eventDate,
+        linkedDocumentId: null,
+        notes: "Auto-charged on approval",
+        chargedBy: ownerUid,
+        createdAtServer: FieldValue.serverTimestamp()
+      });
+      chargesCreated += 1;
+    });
+
+    // Order approval transition (status only when it was actually pending).
+    const orderPatch = {
+      customerId: customerId || null,
+      updatedAt: new Date().toISOString()
+    };
+    if (!alreadyApproved) orderPatch.status = "new";
+    // Keep the customer-confirmed pin (P0-03). Only backfill from the customer
+    // record when the order has none — no server geocoding.
+    const hasPin = order.deliveryLocation && typeof order.deliveryLocation.lat === "number";
+    if (!hasPin && existingCustomer && existingCustomer.location && typeof existingCustomer.location.lat === "number") {
+      orderPatch.deliveryLocation = existingCustomer.location;
+    }
+    tx.update(orderRef, orderPatch);
+
+    return {
+      orderId,
+      status: alreadyApproved ? order.status : "new",
+      alreadyApproved,
+      chargesCreated,
+      charged: breakdown.map((b) => ({ containerType: b.containerType, qty: b.qty, amount: b.amount }))
+    };
+  });
+}
+
 // --- Idempotent order creation (P0-02) -------------------------------------
 //
 // Client keys mirror SUBMISSION_KEY_PATTERN in web/assets/shared.js.
@@ -466,6 +622,19 @@ exports.submitPublicOrder = onCall(async (request) => {
   }));
 
   return createOrderUnderSubmissionKey({ authUid, submissionKey, orderId, orderDoc, itemDocs });
+});
+
+// P0-06: owner approves an order. Everything approval touches — the status
+// precondition, customer linkage, deposit charges, and the status transition —
+// happens in approveOrderImpl's single transaction. The old client flow did
+// these as separate awaits with a stale duplicate-check and random charge ids,
+// so a failure could approve an order with no deposit charge and a retry could
+// double-charge. Owner-only; anonymous/customer callers are rejected.
+exports.approveOrder = onCall(async (request) => {
+  const ownerUid = requireOwner(request);
+  const orderId = String((request.data || {}).orderId || "").trim();
+  if (!orderId) throw new HttpsError("invalid-argument", "orderId is required.");
+  return approveOrderImpl(orderId, ownerUid);
 });
 
 // --- Nightly reconciliation ----------------------------------------------
@@ -1632,5 +1801,12 @@ if (process.env.NODE_ENV === "test" || process.env.FUNCTIONS_EMULATOR === "true"
   exports._customerIdentityTestApi = () => ({
     pickSignedInCustomerId,
     resolveSignedInCustomerId
+  });
+  // P0-06: atomic approval core + the relocated account-takeover gate.
+  exports._approvalTestApi = () => ({
+    approveOrderImpl,
+    canLinkAuthUidToCustomer,
+    computeDepositBreakdown,
+    depositChargeId
   });
 }

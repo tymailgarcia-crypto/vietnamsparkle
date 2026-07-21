@@ -70,6 +70,7 @@ import { mapsApiKey } from "./firebaseWebConfig.js";
 import { createEditOrderAddressController } from "./editOrderAddress.js";
 
 const mergeCustomersFn = httpsCallable(functions, "mergeCustomers");
+const approveOrderFn = httpsCallable(functions, "approveOrder");
 
 function initialSelectedDate() {
   const params = new URLSearchParams(location.search);
@@ -298,146 +299,15 @@ function driverName(driverId) {
   return driver ? driver.driverName : "Unassigned";
 }
 
-// Stamp `order.authUid` onto the phone-keyed customer doc ONLY when that doc
-// is brand new, or already belongs to this same uid.
-//
-// The tempting third case — "doc exists but is unclaimed (authUid == null), so
-// linking is harmless" — is an account takeover. Nothing proves the person who
-// typed a phone number into the public order form owns that number. An
-// attacker signs in with any account, orders quoting a stranger's phone, and
-// the owner's routine approve stamps the attacker's uid onto the stranger's
-// record — handing over their profile and, via the orders claim rule, their
-// entire history. Firestore rules cannot catch this: the owner performs the
-// write, and owners may write anything.
-//
-// A real customer whose record predates their sign-in still links up, through
-// the paths that actually prove ownership: verified-email match in
-// accountApp's findUnclaimedByEmail, or an explicit owner merge.
-export function canLinkAuthUidToCustomer(order, existingData) {
-  return !!order.authUid
-    && (!existingData || existingData.authUid === order.authUid);
-}
-
-async function upsertCustomerFromOrder(order) {
-  // P0-04: write to the order's own uid-anchored customerId (assigned by
-  // submitPublicOrder from the auth uid), NOT a phone-derived id. Re-deriving
-  // from order.phone here was the corruption vector: a typo'd or edited phone
-  // pointed approval at a stranger's phone-keyed doc and overwrote their
-  // profile. Fallbacks cover legacy orders written before this change: a
-  // uid-derived id when we have the uid, phone only as a last resort for the
-  // (now impossible) truly-anonymous order.
-  const customerId = order.customerId
-    || (order.authUid ? `CUS-${order.authUid}` : buildCustomerId(order.phone));
-  if (!customerId) {
-    return { customerId: "", createdNew: false, linkedAuthUid: false };
-  }
-  const ref = doc(db, "customers", customerId);
-  const existing = await getDoc(ref);
-  const existingData = existing.exists() ? existing.data() : null;
-  // Belt-and-braces: never overwrite a record that belongs to a DIFFERENT
-  // sign-in. The uid anchoring above should make this unreachable, but approval
-  // writes name/address/phone with merge:true, so a mis-keyed legacy order must
-  // not be allowed to corrupt a stranger. Surfaces to the owner via the approve
-  // handler's catch.
-  if (existingData && existingData.authUid && order.authUid && existingData.authUid !== order.authUid) {
-    throw new Error(`This order resolves to customer ${customerId}, which belongs to a different sign-in. Approval stopped to avoid overwriting another customer — investigate a possible id/phone collision.`);
-  }
-  const canLinkAuthUid = canLinkAuthUidToCustomer(order, existingData);
-  const payload = {
-    name: order.customerName,
-    billingName: null,
-    phone: normalizePhone(order.phone),
-    secondaryPhone: null,
-    taxId: null,
-    address: order.address,
-    area: null,
-    addressHistory: order.address,
-    notes: null,
-    lastSourceChannel: order.sourceChannel,
-    lastOrderAt: order.deliveryDate,
-    orderCount: 1,
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp()
-  };
-  // email is gated by the SAME ownership proof as authUid, and for the same
-  // reason. order.email is the signed-in orderer's verified token email
-  // (submitPublicOrder: `email: authEmail || ...`). Writing it onto a doc the
-  // orderer cannot prove they own re-opens the 2026-07-15 takeover through the
-  // `email` key: the customers claim rule honours a stored-email match, so a
-  // planted email later hands the profile + order history to whoever owns that
-  // email. Reproduced in rules-tests/email-propagation-takeover.test.mjs.
-  // Safe cases (canLinkAuthUid true): a brand-new doc, or one already owned by
-  // this uid. Everything else keeps its stored email untouched — the same
-  // posture 2026-07-15 chose for authUid (anonymous-then-sign-in customers link
-  // via foldSelfServeStubInto or an owner merge, not via an unproven phone).
-  if (order.email && canLinkAuthUid) payload.email = order.email;
-  if (canLinkAuthUid) payload.authUid = order.authUid;
-  await setDoc(ref, payload, { merge: true });
-  return { customerId, createdNew: !existingData, linkedAuthUid: canLinkAuthUid };
-}
-
-// Fold a self-serve `CUS-<uid>` stub into the canonical phone-keyed doc.
-//
-// The stub is unavoidable: at Google/magic-link sign-in there is no phone to
-// key on (user.phoneNumber is null for those providers), and the customers
-// create rule deliberately forbids a customer from minting a phone-keyed doc
-// — that would be id squatting. So accountApp mints CUS-<uid>, and the first
-// approved order is the earliest moment both halves of the identity are known.
-//
-// Gated on the phone doc having been created FRESH for this same uid. Never
-// fold into a pre-existing doc: mergeCustomers copies the source authUid onto
-// a target that lacks one, which would re-open the very takeover that
-// canLinkAuthUidToCustomer above closes.
-async function foldSelfServeStubInto(customerId, authUid) {
-  const stubId = `CUS-${authUid}`;
-  if (!authUid || stubId === customerId) return;
-  try {
-    const stubSnap = await getDoc(doc(db, "customers", stubId));
-    if (!stubSnap.exists()) return;
-    const stub = stubSnap.data() || {};
-    if (stub.archived === true) return;
-    if (stub.authUid !== authUid) return;
-    await mergeCustomersFn({ fromId: stubId, toId: customerId });
-  } catch (error) {
-    // Best-effort: approval must still succeed. The owner can merge by hand
-    // from the customer page if this ever fails.
-    console.warn(`Could not fold stub ${stubId} into ${customerId}:`, error && error.message ? error.message : error);
-  }
-}
-
-async function ensureDepositCharge(order) {
-  // Skip if this order has ANY prior charged event — either from before this
-  // fix (a single "mixed" event) or from a previous re-approval. Prevents
-  // double-charging on re-clicks; legacy "mixed" data stays until manually
-  // reconciled.
-  const alreadyCharged = state.depositEvents.some(
-    (event) => event.orderId === order.id && event.eventType === "charged"
-  );
-  if (alreadyCharged) return;
-
-  const items = productLinesForOrder(order.id);
-  const productsById = Object.fromEntries(state.products.map((p) => [p.id, p]));
-  const breakdown = computeDepositBreakdown(items, productsById);
-  if (!breakdown.length) return;
-
-  const customerId = order.customerId || buildCustomerId(order.phone) || null;
-  const batch = writeBatch(db);
-  breakdown.forEach((entry) => {
-    batch.set(doc(db, "depositEvents", buildDepositEventId()), {
-      orderId: order.id,
-      customerId,
-      authUid: order.authUid || null,
-      containerType: entry.containerType,
-      qty: entry.qty,
-      amount: entry.amount,
-      eventType: "charged",
-      eventDate: order.deliveryDate || todayKey(),
-      linkedDocumentId: null,
-      notes: "Auto-charged on approval"
-    });
-  });
-  await batch.commit();
-}
+// P0-06: order approval — customer linkage, deposit charging, and the status
+// transition — moved into the server callable `approveOrder` (functions/index.js
+// approveOrderImpl), where they run in ONE transaction. The old client versions
+// of upsertCustomerFromOrder / foldSelfServeStubInto / ensureDepositCharge lived
+// here; they did the work as separate awaits with a stale duplicate-check and
+// random charge ids, so a failure could approve an order with no deposit charge
+// and a retry could double-charge. The account-takeover gate
+// (canLinkAuthUidToCustomer) moved with the linkage; it is now in
+// functions/index.js, still pinned by rules-tests/authuid-linking.test.mjs.
 
 async function updateOrderStatus(orderId, nextStatus) {
   const order = state.orders.find((row) => row.id === orderId);
@@ -686,18 +556,10 @@ async function approveOrder(orderId) {
       // already prevents cross-customer corruption regardless.
     }
   }
-  const { customerId, createdNew, linkedAuthUid } = await upsertCustomerFromOrder(order);
-  const deliveryLocation = await resolveDeliveryLocation(order, customerId);
-  await updateDoc(doc(db, "orders", orderId), {
-    status: "new",
-    customerId: customerId || null,
-    deliveryLocation: deliveryLocation,
-    updatedAt: new Date().toISOString()
-  });
-  await ensureDepositCharge({ ...order, customerId });
-  if (customerId && createdNew && linkedAuthUid) {
-    await foldSelfServeStubInto(customerId, order.authUid);
-  }
+  // P0-06: the atomic work (status precondition, customer linkage, deposit
+  // charges, status transition) runs server-side in one transaction. Retry-safe
+  // and idempotent, so a double-tap or a lost response can't double-charge.
+  await approveOrderFn({ orderId });
 }
 
 // Reverse every charged deposit event on this order that hasn't already been
