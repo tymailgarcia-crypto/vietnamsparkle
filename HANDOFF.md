@@ -6,9 +6,9 @@ The tree-reconciliation the July-20 briefing below asked for is **DONE**: commit
 `088d653` synced HEAD to production (all 42 hosted files byte-verified, full
 rules gate green) and was pushed. Then a run of SHIP-READINESS P0 blockers
 shipped. **All of the following are deployed, live, and verified — but committed
-locally only. `main` is 15 commits ahead of `origin/main` (after the P0-09 and
-P0-10 commits); nothing is pushed and there is no release tag.** Push/tag only
-when Ty asks.
+locally only. `main` is 16 commits ahead of `origin/main` (after the P0-09,
+P0-10 and P0-11-reorder-fix commits); nothing is pushed and there is no release
+tag.** Push/tag only when Ty asks.
 
 Commits since the sync (newest first), each deployed + gated:
 - `6e05d82` P0-07 inc. B part 2 — **P0-07 COMPLETE (7/7).** Refunds-due/proof-missing owner queue on `reports.html`/`reportsApp.js` (read-only over `orderCancellations`: `refundStatus` pending/partial OR `evidenceStatus` missing) + scoped `firestore.rules` tightening (new `isCancelTransition()`; owner orders-update branch now denies any direct client cancel — owner cancels go through `submitOrderCancellation`; customer unpaid `pending_approval→cancelled` self-cancel untouched). Full rules gate green before+after; `customer-order-cancel` 6→9. Deployed `--only firestore:rules` + `--only hosting` (2 files).
@@ -106,8 +106,28 @@ the total was right — now reflects `state.quantities`. Hosting only (5/42 file
 the emulator (fake Google + email draft round trip); NOT yet on production with a
 real customer sign-in — that's P0-11.
 
-Next in SHIP-READINESS.md: **P0-11** (authenticated end-to-end release QA
-matrix). Trust SHIP-READINESS.md for per-P0 status/evidence and ROADMAP.md
+**P0-11 (authenticated E2E QA) — emulator matrix DONE; a real P0 bug was found
+and fixed.** Ran the full matrix on the emulator with authenticated owner +
+customer (fake Google AND real email-link via the Auth emulator oobCode):
+new-customer both auth methods → order → confirmation → account; double-tap
+idempotency; approval retry (one deposit charge); the P0-08 parallel two-tab
+return (net held 0, never negative); paid-full cancellation + partial+final
+refund (net 0); the reconciliation trigger (console payment → order corrected +
+event logged). **Found + fixed a real P0: customer reorder was completely broken**
+— the `/orderItems` list query wasn't authUid-constrained, so the rule denied it
+for every customer (Firestore denies a list unless the query proves the rule).
+Fixed client-side (add `where("authUid","==",uid)` to both reorder queries;
+`firestore.rules` UNCHANGED), added the missing retired-product reorder warning,
+new `rules-tests/orderitems.rules.test.mjs` 7/7. Deployed `--only hosting` (2/42,
+42/42 byte-identical). See ROADMAP "customer reorder was completely broken".
+**Residual P0-11 items need Ty:** a real Android phone at 360–390px; a real
+WhatsApp + email invoice RECEIPT; photo-proof upload + a forced upload failure;
+refund proof-attach via a real Storage object; a true offline/flaky pass; and a
+production run with a genuine customer sign-in (emulator used fake credentials).
+All P0-11 QA data was emulator-only — nothing written to production this session.
+
+Next: work the residual P0-11 items with Ty, or P0-12's remaining operator
+binding. Trust SHIP-READINESS.md for per-P0 status/evidence and ROADMAP.md
 "Shipped 2026-07-2x" for the how/why.
 
 **P0-09 owner click-through QA was DONE on 2026-07-21 (emulator + production

@@ -1219,23 +1219,55 @@ function buildCallablePayload(form) {
 async function applyReorderById(reorderId) {
   const feedback = document.getElementById("public-feedback");
   const cached = state.pastItemsByOrderId[reorderId];
+  // The /orderItems read rule requires authUid==myUid, and Firestore denies a
+  // list unless the QUERY proves that — a query by orderId alone is rejected
+  // ("Property authUid is undefined … for 'list'"), which silently broke every
+  // customer reorder. Constrain on authUid too (two equality filters, no
+  // composite index needed). Signed out there is nothing to reorder.
+  const uid = state.user?.uid || null;
+  if (!cached && !uid) {
+    if (feedback) feedback.textContent = "Sign in to load one of your past orders.";
+    return false;
+  }
   const items = cached
-    || (await getDocs(query(collection(db, "orderItems"), where("orderId", "==", reorderId))))
-      .docs.map((d) => d.data());
+    || (await getDocs(query(
+        collection(db, "orderItems"),
+        where("orderId", "==", reorderId),
+        where("authUid", "==", uid)
+      ))).docs.map((d) => d.data());
   if (!cached) state.pastItemsByOrderId[reorderId] = items;
   if (!items.length) {
     if (feedback) feedback.textContent = "Could not load that past order to reorder. It may have been removed.";
     return false;
   }
   state.quantities = {};
+  // A product retired since the past order (active:false, so absent from the
+  // catalog) must NOT silently vanish from the rebuilt cart — the customer
+  // would submit a smaller order than they meant to. Collect the dropped names
+  // and tell them, so they can pick a replacement.
+  const droppedNames = [];
   items.forEach((item) => {
     const productId = item.productId;
     if (!productId) return;
+    const stillAvailable = state.products.some((p) => p.id === productId);
+    if (!stillAvailable) {
+      droppedNames.push(item.productName || productId);
+      return;
+    }
     state.quantities[productId] = Number(item.quantity || 0);
   });
   renderCatalog();
   renderTotals();
-  if (feedback) feedback.textContent = "";
+  if (feedback) {
+    if (droppedNames.length) {
+      const list = droppedNames.join(", ");
+      feedback.textContent = droppedNames.length === 1
+        ? `${list} is no longer available, so it was left out of this reorder. Add a replacement before you submit.`
+        : `These items from that order are no longer available and were left out: ${list}. Add replacements before you submit.`;
+    } else {
+      feedback.textContent = "";
+    }
+  }
   return true;
 }
 
@@ -1326,9 +1358,21 @@ async function loadPastOrdersPage({ append } = { append: false }) {
 async function loadOrderItemsForOrders(orders) {
   const missing = orders.filter((o) => !state.pastItemsByOrderId[o.id]);
   if (!missing.length) return;
+  // Same authUid constraint as applyReorderById — the orderItems list rule
+  // requires it, so a by-orderId-only query is denied. These are the customer's
+  // own past orders, so state.user.uid always matches.
+  const uid = state.user?.uid || null;
+  if (!uid) {
+    missing.forEach((order) => { state.pastItemsByOrderId[order.id] = []; });
+    return;
+  }
   await Promise.all(missing.map(async (order) => {
     try {
-      const snap = await getDocs(query(collection(db, "orderItems"), where("orderId", "==", order.id)));
+      const snap = await getDocs(query(
+        collection(db, "orderItems"),
+        where("orderId", "==", order.id),
+        where("authUid", "==", uid)
+      ));
       state.pastItemsByOrderId[order.id] = snap.docs.map((d) => d.data());
     } catch (_) {
       state.pastItemsByOrderId[order.id] = [];

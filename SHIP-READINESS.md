@@ -299,30 +299,33 @@ Evidence/commit/deploy:
 
 ### P0-11 — Complete authenticated end-to-end release QA
 
-**Status:** [ ]
-**Owner:** unassigned
+**Status:** [~] Emulator matrix DONE (authenticated owner + customer, both auth methods) — found + fixed a real P0 (customer reorder was fully broken). Residual items need Ty's real phone / real WhatsApp-email receipt / a production customer sign-in.
+**Owner:** Claude
 **Files/area:** production-equivalent release candidate, Ty's phone, emulator fixtures
 
 Static and source-level tests are green, but the highest-risk flows have not been exercised end-to-end with owner/customer authentication.
 
-Required matrix:
+Required matrix (emulator = production-equivalent stack: fake Google + real email-link via the Auth emulator oobCode, owner + customer):
 
-- [ ] New customer: Google sign-in, email-link sign-in, order, confirmation, account visibility.
-- [ ] Repeat order and retired-product reorder warning.
-- [ ] Deliberate double-tap and network timeout after server commit.
-- [ ] Approval retry and stale approval tab.
-- [ ] Delivery: exact cash, deferred cash, deposit credit, cash refund, over-credit, no-return pickup request, note proof, photo proof, upload failure.
-- [ ] Two stale delivery tabs attempting the same container return.
-- [ ] Paid, partially paid, and unpaid cancellation; partial and final refund; proof attachment.
-- [ ] Receivables payment from a stale dialog and intentional overpayment.
-- [ ] Invoice received through WhatsApp and email after dashboard and order-page close flows.
-- [ ] Reconciliation event appears after an intentional console payment and the nightly job remains healthy.
-- [ ] Offline/network errors preserve entered data and offer a clear retry.
-- [ ] Chrome/Android phone QA at 360–390 px and one desktop pass.
+- [x] New customer: Google sign-in, email-link sign-in, order, confirmation, account visibility. (Emulator: fresh Google customer ordered `WEB-…171903-3017`, saw confirmation + "View your orders", the order showed on account.html as "Waiting for confirmation", no console errors; a separate email-link customer signed in via the emulator oobCode, URL cleaned.)
+- [x] Repeat order and retired-product reorder warning. **Found a P0 bug: reorder was completely broken** (orderItems list query wasn't authUid-constrained → rules denied it for every customer). Fixed client-side + added the missing retired-product warning. See the ROADMAP "customer reorder was completely broken" note. Both the `?reorder=` link and the Reorder dialog now rebuild the cart; a retired line surfaces "no longer available … add a replacement."
+- [x] Deliberate double-tap and network timeout after server commit. (Two concurrent `submitPublicOrder` with the same submissionKey → both resolved to ONE orderId, one `duplicate:false`, one `duplicate:true`; exactly one order created. This is the P0-02 protection — a lost-response retry is the same path.)
+- [x] Approval retry and stale approval tab. (First `approveOrder` + two concurrent retries → exactly one deterministic deposit charge `…-charge-20l_jug` 60000; order → `new`; retries no-op.)
+- [~] Delivery: exact cash, deferred, deposit credit, cash refund, over-credit, no-return pickup, note proof, photo proof, upload failure. (Parallel + note-proof + deferred + over-credit exercised here and in prior P0-08/P0-09 QA; the full variant set incl. photo proof + upload failure is pinned by `commitDelivery.emulator.test.js` 12/12. **Photo-proof upload with a real image + a forced upload failure still want a real-device pass.**)
+- [x] Two stale delivery tabs attempting the same container return. (Two OFD orders for one customer holding 3 jugs, both returning 3 concurrently → only 3 credited total, net held **0**, never negative. P0-08 core, E2E.)
+- [~] Paid, partially paid, and unpaid cancellation; partial and final refund; proof attachment. (PAID full cancel → case `refundRequired` 100000; partial refund 50000 → remaining 50000/"partial"; final 50000 → remaining 0/"paid"; idempotent retry → "already_recorded"; order cancelled, payments net 0. Partial + unpaid variants pinned by `cancellation.emulator.test.js` 29/29. **Proof attachment via a real Storage upload still wants a live pass — storage.rules 31/31 covers auth/immutability.**)
+- [x] Receivables payment from a stale dialog and intentional overpayment. (Done in P0-09 QA — emulator AND production with Ty's session: stale-dialog fresh-figure re-confirm cycle, acknowledged-credit overpay.)
+- [~] Invoice received through WhatsApp and email after close flows. (Link SHAPE builds correctly and the PDF upload path is exercised, but **actual receipt on a real phone/inbox needs Ty** — no receipt is testable in the emulator.)
+- [x] Reconciliation event appears after an intentional console payment and the nightly job remains healthy. (Admin-SDK "console" payment written without the atomic order update → `reconcileOnPaymentWrite` corrected the order amountPaid 0→100000 / balanceDue→0 in seconds and logged one `reconciliationEvents` doc with before/after. Nightly health production-verified 2026-07-20.)
+- [~] Offline/network errors preserve entered data and offer a clear retry. (A callable error leaves the form populated and shows the message rather than resetting; the P0-10 draft + P0-02 submission key harden the reload case. **A true offline/flaky-connection pass wants a real device.**)
+- [~] Chrome/Android phone QA at 360–390 px and one desktop pass. (Desktop 1280px pass done this session; 375px done extensively in P0-10. **A real Android phone at 360–390px is the remaining piece for Ty.**)
 
 Evidence:
 
-- _Record fixture IDs, device/browser, result, screenshots where useful, and cleanup performed._
+- 2026-07-21/22: emulator matrix run authenticated (owner `owner@qa.test`; customers via fake-Google `p11repeat@example.test` / `p11new-google@…` and email-link `p11new-email@…`). Fixtures: `CUS-p11repeat` + past order `P11-PAST-0001` (with a retired line), `P11-PENDING-0001` (approval), `P11-OFD-0001/0002` (parallel delivery), `P11-PAID-0001` (cancellation), `P11-RECON-0001` (reconciliation), product `P11-RETIRED` (active:false). All emulator-only — nothing written to production this session.
+- 2026-07-22: **P0 fix shipped** — customer reorder (broken for all customers) + retired-product warning; `--only hosting` (2/42, 42/42 byte-identical); `orderitems.rules.test.mjs` 7/7 added; no rules/functions change. Committed with the P0-11 evidence.
+- **Remaining for Ty (real device / real delivery / production customer):** a real Android phone pass at 360–390px; a real WhatsApp + email invoice RECEIPT; a photo-proof upload + forced upload-failure; a refund proof-attachment via a real Storage object; a true offline/flaky-network pass; and a production run with a genuine customer Google/email sign-in (the flows are identical to the emulator, which uses fake credentials).
+- 2026-07-20 monitoring-only check: Cloud Scheduler was ENABLED for 03:00 `Asia/Ho_Chi_Minh`. Direct Cloud Run logs confirmed successful nightly completions on July 16–20 local, all with zero failures and zero drift; the latest scanned 9 orders and skipped 1. This verifies scheduler health only, not the remaining authenticated QA matrix or intentional-payment event check.
 - 2026-07-20 monitoring-only check: Cloud Scheduler was ENABLED for 03:00 `Asia/Ho_Chi_Minh`. Direct Cloud Run logs confirmed successful nightly completions on July 16–20 local, all with zero failures and zero drift; the latest scanned 9 orders and skipped 1. This verifies scheduler health only, not the remaining authenticated QA matrix or intentional-payment event check.
 
 ### P0-12 — Establish backup, restore, access, and handover safety
