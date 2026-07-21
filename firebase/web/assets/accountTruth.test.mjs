@@ -139,6 +139,16 @@ it("credited and refunded events are returns; charged and forfeited are not", ()
   );
 });
 
+it("a charge_reversed (cancelled order) is NOT a physical return", () => {
+  // P0-07: reversing a deposit charge because the order was cancelled reduces
+  // the holding, but no container came back, so it must not show as a return.
+  const returns = physicalReturnsFromDepositEvents([
+    { eventType: "charged", qty: 2, containerType: "jug", amount: 60000 },
+    { eventType: "charge_reversed", qty: 2, containerType: "jug", amount: 60000, eventDate: "2026-05-20" }
+  ]);
+  assert.deepStrictEqual(returns, []);
+});
+
 it("falls back to createdAt when eventDate is absent, and handles an empty set", () => {
   const [r] = physicalReturnsFromDepositEvents([{ eventType: "credited", qty: 1, createdAt: "2026-06-01T00:00:00Z" }]);
   assert.strictEqual(r.date, "2026-06-01T00:00:00Z");

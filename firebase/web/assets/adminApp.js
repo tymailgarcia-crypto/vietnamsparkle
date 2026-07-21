@@ -71,6 +71,15 @@ import { createEditOrderAddressController } from "./editOrderAddress.js";
 
 const mergeCustomersFn = httpsCallable(functions, "mergeCustomers");
 const approveOrderFn = httpsCallable(functions, "approveOrder");
+const submitOrderCancellationFn = httpsCallable(functions, "submitOrderCancellation");
+
+// P0-07: a stable per-action token so the cancellation callable's caseId
+// (`${orderId}-cx-${clientRequestId}`) is idempotent under a retry.
+function newCancelRequestId() {
+  const uuid = globalThis.crypto && typeof globalThis.crypto.randomUUID === "function"
+    ? globalThis.crypto.randomUUID() : null;
+  return uuid || ("cx" + Date.now().toString(36) + Math.random().toString(36).slice(2, 12));
+}
 
 function initialSelectedDate() {
   const params = new URLSearchParams(location.search);
@@ -221,7 +230,7 @@ function computeFinanceSummary(orders, payments, depositEvents) {
     const amount = finiteAmount(event.amount);
     const direction = event.eventType === "charged"
       ? 1
-      : (["refunded", "credited", "forfeited"].includes(event.eventType) ? -1 : 0);
+      : (["refunded", "credited", "forfeited", "charge_reversed"].includes(event.eventType) ? -1 : 0);
     depositBalances.set(key, (depositBalances.get(key) || 0) + (direction * amount));
   });
   const depositsHeld = Array.from(depositBalances.values())
@@ -566,74 +575,41 @@ async function approveOrder(orderId) {
 // refunded/credited/forfeited. Emits one "refunded" event per still-outstanding
 // container type, matching qty and amount, so the deposits page + customer
 // balance zero out for this cancelled order.
-async function emitDepositReversalsFor(orderId, order) {
-  // Re-read from Firestore so we cover orders outside the currently-loaded
-  // date range (cancellations can be triggered from any board view).
-  const snap = await getDocs(query(collection(db, "depositEvents"), where("orderId", "==", orderId)));
-  const netByType = {};
-  snap.docs.forEach((docSnap) => {
-    const e = docSnap.data();
-    const type = e.containerType || "other";
-    const qty = Number(e.qty || 0);
-    const amt = Number(e.amount || 0);
-    if (!netByType[type]) netByType[type] = { qty: 0, amount: 0 };
-    if (e.eventType === "charged") {
-      netByType[type].qty += qty;
-      netByType[type].amount += amt;
-    } else if (["refunded", "credited", "forfeited"].includes(e.eventType)) {
-      netByType[type].qty -= qty;
-      netByType[type].amount -= amt;
-    }
-  });
-  const batch = writeBatch(db);
-  let wrote = 0;
-  const nowStr = todayKey();
-  Object.entries(netByType).forEach(([type, net]) => {
-    if (net.qty <= 0 && net.amount <= 0.01) return;
-    batch.set(doc(db, "depositEvents", buildDepositEventId()), {
-      orderId,
-      customerId: order?.customerId || null,
-      authUid: order?.authUid || null,
-      containerType: type,
-      qty: Math.max(0, net.qty),
-      amount: Math.max(0, net.amount),
-      eventType: "refunded",
-      eventDate: nowStr,
-      linkedDocumentId: null,
-      notes: "Order cancelled — deposit reversed"
-    });
-    wrote += 1;
-  });
-  if (wrote) await batch.commit();
-}
-
+// P0-07: order cancellation now goes through the server `submitOrderCancellation`
+// callable, which cancels the order, writes the cancellation case, computes the
+// refund liability from immutable payments, and reverses the deposit charge —
+// all in ONE transaction. The old client flow (direct status flip + a separate
+// emitDepositReversalsFor deposit write) could leave a cancelled order with its
+// deposit not reversed if the second write failed, and it bypassed the case
+// ledger entirely.
 async function cancelOrder(orderId, reason) {
   const trimmed = String(reason || "").trim();
-  const order = state.orders.find((row) => row.id === orderId);
-  await updateDoc(doc(db, "orders", orderId), {
-    status: "cancelled",
-    cancellationReason: trimmed || null,
-    cancelledAt: new Date().toISOString(),
-    cancelledBy: "owner",
-    updatedAt: new Date().toISOString()
+  await submitOrderCancellationFn({
+    orderId,
+    kind: "full",
+    reason: trimmed.length >= 3 ? trimmed : "Cancelled by owner",
+    clientRequestId: newCancelRequestId()
   });
-  await emitDepositReversalsFor(orderId, order);
 }
 
 async function approveCancellationRequest(orderId) {
   const order = state.orders.find((row) => row.id === orderId);
   if (!order) return;
+  const reason = String(order.cancellationRequestReason || "").trim();
+  await submitOrderCancellationFn({
+    orderId,
+    kind: "full",
+    reason: reason.length >= 3 ? reason : "Approved cancellation request",
+    clientRequestId: newCancelRequestId()
+  });
+  // Clear the legacy request flags — the server cancels the order + writes the
+  // case, but does not touch these older flags.
   await updateDoc(doc(db, "orders", orderId), {
-    status: "cancelled",
-    cancellationReason: order.cancellationRequestReason || null,
-    cancelledAt: new Date().toISOString(),
-    cancelledBy: "owner_via_request",
     cancellationRequested: null,
     cancellationRequestReason: null,
     cancellationRequestedAt: null,
     updatedAt: new Date().toISOString()
   });
-  await emitDepositReversalsFor(orderId, order);
 }
 
 async function dismissCancellationRequest(orderId) {
@@ -1396,7 +1372,7 @@ async function saveEditedOrder(event) {
           if (e.eventType === "charged") {
             existingByType[type].qty += qty;
             existingByType[type].amount += amt;
-          } else if (["refunded", "credited", "forfeited"].includes(e.eventType)) {
+          } else if (["refunded", "credited", "forfeited", "charge_reversed"].includes(e.eventType)) {
             existingByType[type].qty -= qty;
             existingByType[type].amount -= amt;
           }
@@ -1493,7 +1469,7 @@ async function loadHeldContainersForCustomer(customerId) {
       byType[type].amount += amount;
       byType[type].totalChargedAmount += amount;
       byType[type].totalChargedQty += qty;
-    } else if (event.eventType === "refunded" || event.eventType === "credited" || event.eventType === "forfeited") {
+    } else if (event.eventType === "refunded" || event.eventType === "credited" || event.eventType === "forfeited" || event.eventType === "charge_reversed") {
       byType[type].qty -= qty;
       byType[type].amount -= amount;
     }

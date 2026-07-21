@@ -52,7 +52,7 @@ function computeMonthSummary(orders, payments, depositEvents) {
     const key = `${ownerKey}|${event.containerType || "other"}`;
     const direction = event.eventType === "charged"
       ? 1
-      : (["refunded", "credited", "forfeited"].includes(event.eventType) ? -1 : 0);
+      : (["refunded", "credited", "forfeited", "charge_reversed"].includes(event.eventType) ? -1 : 0);
     depositBalances.set(key, (depositBalances.get(key) || 0) + direction * finiteAmount(event.amount));
   });
   const depositsHeld = Array.from(depositBalances.values())

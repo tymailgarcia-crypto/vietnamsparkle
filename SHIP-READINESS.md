@@ -187,25 +187,28 @@ Evidence/commit/deploy:
 
 ### P0-07 — Route every approved cancellation and refund through one atomic case workflow
 
-**Status:** [ ]
-**Owner:** unassigned
+**Status:** [~] increment A shipped + deployed 2026-07-21 (routing + atomic deposit reversal); increment B pending (evidence UI, refunds queue, Storage tests, rule tightening)
+**Owner:** Claude
 **Likely files:** `firebase/web/assets/adminApp.js`, `orderApp.js`, `firebase/functions/index.js`, cancellation tests, refund-proof tests/UI
 
 Visible Cancel actions still directly update order status and then reverse deposits separately. They bypass the new cancellation/refund ledger, including for paid orders. Refund evidence can be marked missing, but there is no web action to attach it and no central queue to stop unfinished refunds being forgotten.
 
 Acceptance:
 
-- [ ] Old direct approved-order cancellation paths are removed or disabled.
-- [ ] One callable atomically creates/resolves the cancellation case, changes the order, and creates required ledger reversals.
-- [ ] Paid and partially paid orders compute refund liability from immutable payments.
-- [ ] The owner can attach refund evidence from the UI.
-- [ ] A central owner queue shows `refundRemaining > 0` and missing evidence.
-- [ ] Duplicate requests/refund IDs are idempotent.
-- [ ] Focused Storage tests cover `/refund-proofs` authorization, file type, size, and immutability.
+- [x] Old direct approved-order cancellation paths are removed or disabled. (The client `cancelOrder`/`approveCancellationRequest` in BOTH `adminApp.js` and `orderApp.js` now call `submitOrderCancellation`; the direct status-flip + separate `emitDepositReversalsFor` were removed. The rule-layer block of a direct client cancel is deferred to increment B — noted below.)
+- [x] One callable atomically creates/resolves the cancellation case, changes the order, and creates required ledger reversals. (`applyApprovalTransaction` now emits `charge_reversed` deposit events in the SAME transaction — full: all outstanding; partial: the removed lines, capped at outstanding — deterministic id `${caseId}-chargerev-${type}`.)
+- [x] Paid and partially paid orders compute refund liability from immutable payments. (`computeRefundRequired` from the summed `payments`; already built in the server slice, now reached via the routed buttons.)
+- [ ] The owner can attach refund evidence from the UI. **Increment B** (the `attachRefundEvidence` callable + Storage rules exist; no button yet).
+- [ ] A central owner queue shows `refundRemaining > 0` and missing evidence. **Increment B.**
+- [x] Duplicate requests/refund IDs are idempotent. (Case id `${orderId}-cx-${clientRequestId}`; refund payment id `${caseId}-refund-${refundId}`; deposit reversal id per case — all deterministic. Covered by the emulator suite.)
+- [ ] Focused Storage tests cover `/refund-proofs` authorization, file type, size, and immutability. **Increment B.**
 
 Evidence/commit/deploy:
 
-- _Pending._
+- 2026-07-21 (increment A): the money-critical core — the deferred `charge_reversed` deposit reversal (CANCELLATION-REFUND-PLAN §"Not yet done") built into `applyApprovalTransaction`, plus the coordinated client change so every "containers held" net learns `charge_reversed` (`shared.js` `summarizeHeldContainers` + 8 aggregation sites in `adminApp/orderApp/customerApp/customersApp/depositsApp/financeApp`). `charge_reversed` is deliberately NOT a physical return, so `physicalReturnsFromDepositEvents` excludes it (pinned). The visible Cancel + approve-request buttons in both owner surfaces route through `submitOrderCancellation`.
+- 2026-07-21: `cancellation.emulator.test.js` **29/29** (23 prior + 6 new: full reverses all outstanding / only-remaining-after-a-return / nothing-outstanding writes none / partial reverses removed line / partial capped at outstanding / net-holding-zero). `depositLedger.test.mjs` **27/27** (+2 charge_reversed), `accountTruth.test.mjs` **12/12** (+1: charge_reversed is not a return). Full takeover + approval gate re-run green (email-propagation 4, customers 24, payments 17, approveOrder 9, orderSubmission 7; only documented-benign L187/L249 stderr). Owner pages browser-smoke-tested clean.
+- 2026-07-21: deployed `--only functions` then `--only hosting` (**exactly 7/42 files**). Live probe: unauthenticated `submitOrderCancellation` → `UNAUTHENTICATED`. No `firestore.rules`/`storage.rules` change in this increment.
+- **Increment B (pending):** the refund-evidence **attach** UI, the **refunds-due / proof-missing** owner queue, focused **Storage tests** for `/refund-proofs`, and the **scoped rule tightening** (block a direct client cancel of an approved order while preserving the customer unpaid `pending_approval → cancelled` transition). Until the rule tightening lands, a stale cached client could still perform a direct cancel — the current client no longer does.
 
 ### P0-08 — Revalidate container holdings at commit time
 

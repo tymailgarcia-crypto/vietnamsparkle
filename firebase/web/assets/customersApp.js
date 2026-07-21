@@ -201,7 +201,7 @@ function buildCustomerInsights(orders, depositEvents) {
   depositEvents.forEach((event) => {
     if (!event.customerId) return;
     const item = get(event.customerId);
-    const direction = event.eventType === "charged" ? 1 : ["refunded", "credited", "forfeited"].includes(event.eventType) ? -1 : 0;
+    const direction = event.eventType === "charged" ? 1 : ["refunded", "credited", "forfeited", "charge_reversed"].includes(event.eventType) ? -1 : 0;
     item.containers += direction * Number(event.qty || 0);
     const eventDate = event.eventDate || event.createdAt;
     if (direction > 0 && eventDate && (!item.oldestContainerDate || String(eventDate) < item.oldestContainerDate)) {

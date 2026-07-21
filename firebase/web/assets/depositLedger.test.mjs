@@ -38,7 +38,7 @@ function netBalance(events) {
     const qty = Number(event.qty || 0);
     const amount = Number(event.amount || 0);
     if (event.eventType === "charged") return { qty: acc.qty + qty, amount: acc.amount + amount };
-    if (["refunded", "credited", "forfeited"].includes(event.eventType)) {
+    if (["refunded", "credited", "forfeited", "charge_reversed"].includes(event.eventType)) {
       return { qty: acc.qty - qty, amount: acc.amount - amount };
     }
     return acc;
@@ -48,6 +48,7 @@ function netBalance(events) {
 const charge = (qty, amount) => ({ eventType: "charged", qty, amount });
 const forfeit = (qty, amount) => ({ eventType: "forfeited", qty, amount });
 const credited = (qty, amount) => ({ eventType: "credited", qty, amount });
+const chargeReversed = (qty, amount) => ({ eventType: "charge_reversed", qty, amount });
 
 console.log("\ndeposit ledger guards\n");
 
@@ -148,6 +149,22 @@ it("summarize: credited and refunded both reduce the holding", () => {
   ]);
   assert.strictEqual(rowFor(rows, "glass_crate").qty, 1);
   assert.strictEqual(rowFor(rows, "glass_crate").deposit, 200000);
+});
+
+it("summarize: a charge_reversed (cancelled order) stops the deposit being held", () => {
+  // P0-07: cancelling an order reverses its deposit charge. The customer no
+  // longer holds the container and is owed nothing back for it.
+  const rows = summarizeHeldContainers([
+    chargeOf("glass_crate", 2, 400000, "2026-07-01"),
+    { eventType: "charge_reversed", containerType: "glass_crate", qty: 2, amount: 400000 }
+  ]);
+  assert.strictEqual(rowFor(rows, "glass_crate"), undefined);
+});
+
+it("charge_reversed reduces the raw net balance too", () => {
+  const net = netBalance([charge(2, 400000), chargeReversed(2, 400000)]);
+  assert.strictEqual(net.qty, 0);
+  assert.strictEqual(net.amount, 0);
 });
 
 it("summarize: types are kept apart", () => {

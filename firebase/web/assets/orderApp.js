@@ -49,7 +49,15 @@ const mergeCustomersFn = httpsCallable(functions, "mergeCustomers");
 const approveOrderFn = httpsCallable(functions, "approveOrder");
 const recordOrderRefundFn = httpsCallable(functions, "recordOrderRefund");
 const resolveOrderCancellationFn = httpsCallable(functions, "resolveOrderCancellation");
+const submitOrderCancellationFn = httpsCallable(functions, "submitOrderCancellation");
 let currentInvoiceContext = null;
+
+// P0-07: stable per-action token for the cancellation callable's idempotent caseId.
+function newCancelRequestId() {
+  const uuid = globalThis.crypto && typeof globalThis.crypto.randomUUID === "function"
+    ? globalThis.crypto.randomUUID() : null;
+  return uuid || ("cx" + Date.now().toString(36) + Math.random().toString(36).slice(2, 12));
+}
 const state = {
   order: null,
   customer: {},
@@ -681,64 +689,35 @@ async function approveOrder() {
   await approveOrderFn({ orderId: order.id });
 }
 
-async function emitDepositReversalsFor(order) {
-  const snap = await getDocs(query(collection(db, "depositEvents"), where("orderId", "==", order.id)));
-  const netByType = {};
-  snap.docs.forEach((row) => {
-    const event = row.data();
-    const type = event.containerType || "other";
-    if (!netByType[type]) netByType[type] = { qty: 0, amount: 0 };
-    const direction = event.eventType === "charged" ? 1 : ["refunded", "credited", "forfeited"].includes(event.eventType) ? -1 : 0;
-    netByType[type].qty += direction * Number(event.qty || 0);
-    netByType[type].amount += direction * Number(event.amount || 0);
-  });
-  const batch = writeBatch(db);
-  let wrote = false;
-  Object.entries(netByType).forEach(([type, net]) => {
-    if (net.qty <= 0 && net.amount <= 0.01) return;
-    batch.set(doc(db, "depositEvents", buildDepositEventId()), {
-      orderId: order.id,
-      customerId: order.customerId || null,
-      authUid: order.authUid || null,
-      containerType: type,
-      qty: Math.max(0, net.qty),
-      amount: Math.max(0, net.amount),
-      eventType: "refunded",
-      eventDate: todayKey(),
-      linkedDocumentId: null,
-      notes: "Order cancelled — deposit reversed"
-    });
-    wrote = true;
-  });
-  if (wrote) await batch.commit();
-}
-
+// P0-07: cancellation goes through the server `submitOrderCancellation` callable
+// (atomic status flip + case + refund liability + deposit-charge reversal),
+// replacing the old direct status write + separate emitDepositReversalsFor.
 async function cancelOrder(reason) {
   const order = state.order;
   const trimmed = String(reason || "").trim();
-  await updateDoc(doc(db, "orders", order.id), {
-    status: "cancelled",
-    cancellationReason: trimmed || null,
-    cancelledAt: new Date().toISOString(),
-    cancelledBy: "owner",
-    updatedAt: new Date().toISOString()
+  await submitOrderCancellationFn({
+    orderId: order.id,
+    kind: "full",
+    reason: trimmed.length >= 3 ? trimmed : "Cancelled by owner",
+    clientRequestId: newCancelRequestId()
   });
-  await emitDepositReversalsFor(order);
 }
 
 async function approveCancellationRequest() {
   const order = state.order;
+  const reason = String(order.cancellationRequestReason || "").trim();
+  await submitOrderCancellationFn({
+    orderId: order.id,
+    kind: "full",
+    reason: reason.length >= 3 ? reason : "Approved cancellation request",
+    clientRequestId: newCancelRequestId()
+  });
   await updateDoc(doc(db, "orders", order.id), {
-    status: "cancelled",
-    cancellationReason: order.cancellationRequestReason || null,
-    cancelledAt: new Date().toISOString(),
-    cancelledBy: "owner_via_request",
     cancellationRequested: null,
     cancellationRequestReason: null,
     cancellationRequestedAt: null,
     updatedAt: new Date().toISOString()
   });
-  await emitDepositReversalsFor(order);
 }
 
 async function dismissCancellationRequest() {
@@ -915,7 +894,7 @@ async function saveEditedOrder(event) {
       state.deposits.forEach((deposit) => {
         const type = deposit.containerType || "other";
         if (!existingByType[type]) existingByType[type] = { qty: 0, amount: 0 };
-        const direction = deposit.eventType === "charged" ? 1 : ["refunded", "credited", "forfeited"].includes(deposit.eventType) ? -1 : 0;
+        const direction = deposit.eventType === "charged" ? 1 : ["refunded", "credited", "forfeited", "charge_reversed"].includes(deposit.eventType) ? -1 : 0;
         existingByType[type].qty += direction * Number(deposit.qty || 0);
         existingByType[type].amount += direction * Number(deposit.amount || 0);
       });
@@ -1000,7 +979,7 @@ async function loadHeldContainersForCustomer(customerId) {
       byType[type].amount += amount;
       byType[type].totalChargedAmount += amount;
       byType[type].totalChargedQty += quantity;
-    } else if (["refunded", "credited", "forfeited"].includes(event.eventType)) {
+    } else if (["refunded", "credited", "forfeited", "charge_reversed"].includes(event.eventType)) {
       byType[type].qty -= quantity;
       byType[type].amount -= amount;
     }

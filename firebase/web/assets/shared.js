@@ -620,7 +620,10 @@ export function summarizeHeldContainers(depositEvents = []) {
       const row = byType[String(event.containerType || "other")];
       row.chargedQty += qty;
       row.chargedAmount += amount;
-    } else if (event.eventType === "credited" || event.eventType === "refunded" || event.eventType === "forfeited") {
+    } else if (event.eventType === "credited" || event.eventType === "refunded" || event.eventType === "forfeited" || event.eventType === "charge_reversed") {
+      // charge_reversed (P0-07): the deposit charge was undone because the order
+      // was cancelled — it reduces what the customer holds, same as a return,
+      // but it is NOT a physical return (see physicalReturnsFromDepositEvents).
       bump(event.containerType, -qty, -amount, null);
     }
   });

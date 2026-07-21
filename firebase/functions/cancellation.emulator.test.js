@@ -29,7 +29,8 @@ const {
   reconcileCaseRefund,
   recordOrderRefundImpl,
   attachRefundEvidenceImpl,
-  resolveLegacyCancellationImpl
+  resolveLegacyCancellationImpl,
+  depositReversalId
 } = require("./index.js")._cancellationTestApi();
 
 let passed = 0;
@@ -74,6 +75,16 @@ async function seedItem(orderId, productId, qty, unitPrice) {
 }
 async function seedPayment(id, orderId, amount, extra) {
   await db.doc(`payments/${id}`).set({ orderId, amount, method: "cash", createdAt: ISO, ...(extra || {}) });
+}
+async function seedProductTyped(productId, unitPrice, deposit, containerType) {
+  await db.doc(`products/${productId}`).set({ productName: productId, unitPrice, defaultDepositAmount: deposit, containerType, active: true });
+}
+async function seedDeposit(id, orderId, containerType, qty, amount, eventType) {
+  await db.doc(`depositEvents/${id}`).set({ orderId, customerId: "CUS-1", authUid: "cust-1", containerType, qty, amount, eventType, eventDate: "2026-07-19" });
+}
+async function reversalsFor(orderId) {
+  const snap = await db.collection("depositEvents").where("orderId", "==", orderId).where("eventType", "==", "charge_reversed").get();
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
 }
 const owner = (orderId, req, over) => ({
   orderId, caseId: `${orderId}-cx-${req}`, reason: "test reason",
@@ -173,6 +184,82 @@ await it("partial rejects an increase (that is an edit, not a cancellation)", as
   await seedOrder("ORD-INC", { status: "assigned" });
   await seedItem("ORD-INC", "P1", 2, 20000);
   await assertRejects(() => applyApprovalTransaction(owner("ORD-INC", "r1", { kind: "partial", remainingItems: [{ productId: "P1", quantity: 5 }] })), "invalid-argument");
+});
+
+// --- P0-07 deposit charge-reversal (in the same transaction) ---
+
+await it("full cancel reverses the whole outstanding deposit charge, deterministic id", async () => {
+  await seedOrder("ORD-DR1", { status: "assigned" });
+  await seedItem("ORD-DR1", "P1", 2, 20000);
+  await seedDeposit("DEP-DR1", "ORD-DR1", "jug", 2, 60000, "charged");
+  await applyApprovalTransaction(owner("ORD-DR1", "r1", { kind: "full" }));
+  const revs = await reversalsFor("ORD-DR1");
+  assert.strictEqual(revs.length, 1);
+  assert.strictEqual(revs[0].id, depositReversalId("ORD-DR1-cx-r1", "jug"));
+  assert.strictEqual(revs[0].qty, 2);
+  assert.strictEqual(revs[0].amount, 60000);
+  assert.strictEqual(revs[0].cancellationCaseId, "ORD-DR1-cx-r1");
+});
+
+await it("full cancel only reverses what is still charged after a prior return", async () => {
+  await seedOrder("ORD-DR2", { status: "assigned" });
+  await seedItem("ORD-DR2", "P1", 2, 20000);
+  await seedDeposit("DEP-DR2c", "ORD-DR2", "jug", 2, 60000, "charged");
+  await seedDeposit("DEP-DR2r", "ORD-DR2", "jug", 1, 30000, "credited"); // one already returned
+  await applyApprovalTransaction(owner("ORD-DR2", "r1", { kind: "full" }));
+  const revs = await reversalsFor("ORD-DR2");
+  assert.strictEqual(revs.length, 1);
+  assert.strictEqual(revs[0].qty, 1);       // only the outstanding one
+  assert.strictEqual(revs[0].amount, 30000);
+});
+
+await it("full cancel with nothing outstanding writes no reversal", async () => {
+  await seedOrder("ORD-DR3", { status: "assigned" });
+  await seedItem("ORD-DR3", "P1", 1, 20000);
+  await seedDeposit("DEP-DR3c", "ORD-DR3", "jug", 1, 30000, "charged");
+  await seedDeposit("DEP-DR3r", "ORD-DR3", "jug", 1, 30000, "refunded"); // already fully returned
+  await applyApprovalTransaction(owner("ORD-DR3", "r1", { kind: "full" }));
+  assert.strictEqual((await reversalsFor("ORD-DR3")).length, 0);
+});
+
+await it("partial cancel reverses only the removed line's deposit", async () => {
+  await seedProductTyped("P1", 20000, 30000, "jug");
+  await seedOrder("ORD-DR4", { status: "assigned", subtotal: 100000, depositTotal: 150000, amountPaid: 0, balanceDue: 250000 });
+  await seedItem("ORD-DR4", "P1", 5, 20000);
+  await seedDeposit("DEP-DR4", "ORD-DR4", "jug", 5, 150000, "charged");
+  await applyApprovalTransaction(owner("ORD-DR4", "r1", { kind: "partial", remainingItems: [{ productId: "P1", quantity: 3 }] }));
+  const revs = await reversalsFor("ORD-DR4");
+  assert.strictEqual(revs.length, 1);
+  assert.strictEqual(revs[0].qty, 2);       // removed 2 of 5
+  assert.strictEqual(revs[0].amount, 60000); // 2 x 30000
+});
+
+await it("partial reversal is capped at the outstanding charge (already-returned containers)", async () => {
+  await seedProductTyped("P1", 20000, 30000, "jug");
+  await seedOrder("ORD-DR5", { status: "assigned", subtotal: 100000, depositTotal: 150000, amountPaid: 0, balanceDue: 250000 });
+  await seedItem("ORD-DR5", "P1", 5, 20000);
+  await seedDeposit("DEP-DR5c", "ORD-DR5", "jug", 5, 150000, "charged");
+  await seedDeposit("DEP-DR5r", "ORD-DR5", "jug", 4, 120000, "credited"); // only 1 still held
+  await applyApprovalTransaction(owner("ORD-DR5", "r1", { kind: "partial", remainingItems: [{ productId: "P1", quantity: 3 }] }));
+  const revs = await reversalsFor("ORD-DR5");
+  assert.strictEqual(revs.length, 1);
+  assert.strictEqual(revs[0].qty, 1);       // want to reverse 2, but only 1 outstanding
+  assert.strictEqual(revs[0].amount, 30000);
+});
+
+await it("net holding after a full-cancel reversal is zero (no double reversal on the ledger)", async () => {
+  await seedOrder("ORD-DR6", { status: "assigned" });
+  await seedItem("ORD-DR6", "P1", 3, 20000);
+  await seedDeposit("DEP-DR6", "ORD-DR6", "jug", 3, 90000, "charged");
+  await applyApprovalTransaction(owner("ORD-DR6", "r1", { kind: "full" }));
+  const all = await db.collection("depositEvents").where("orderId", "==", "ORD-DR6").get();
+  let netQty = 0;
+  all.forEach((d) => {
+    const e = d.data();
+    if (e.eventType === "charged") netQty += Number(e.qty || 0);
+    else if (["refunded", "credited", "forfeited", "charge_reversed"].includes(e.eventType)) netQty -= Number(e.qty || 0);
+  });
+  assert.strictEqual(netQty, 0);
 });
 
 // --- Refund lifecycle ---

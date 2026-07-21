@@ -264,7 +264,7 @@ async function loadDeposits() {
         if (eventDate && (!bucket.oldestChargedDate || eventDate < bucket.oldestChargedDate)) {
           bucket.oldestChargedDate = eventDate;
         }
-      } else if (["refunded", "credited", "forfeited"].includes(event.eventType)) {
+      } else if (["refunded", "credited", "forfeited", "charge_reversed"].includes(event.eventType)) {
         bucket.qty -= qty;
         bucket.amount -= amount;
       }

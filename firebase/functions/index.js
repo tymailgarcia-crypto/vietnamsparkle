@@ -175,6 +175,19 @@ function depositChargeId(orderId, containerType) {
   return `${orderId}-charge-${slug}`;
 }
 
+// Deterministic deposit-REVERSAL id (P0-07): one per (cancellation case,
+// container type). Keyed by caseId, not orderId, because one order can hold
+// several cases over time (consecutive partial cancels), each reversing a
+// different slice — and a re-run of the same case overwrites instead of
+// appending. `charge_reversed` is a distinct event type from `refunded`: it
+// means the deposit charge was undone because the order was cancelled, NOT that
+// a physical container came back, so the "containers held" nets subtract it but
+// the returns view (physicalReturnsFromDepositEvents) does not count it.
+function depositReversalId(caseId, containerType) {
+  const slug = String(containerType || "other").replace(/[^A-Za-z0-9_-]+/g, "_");
+  return `${caseId}-chargerev-${slug}`;
+}
+
 // The whole of approval in ONE transaction: status precondition, customer
 // linkage (denormalized profile + gated identity keys), deposit charges, and
 // the order's approval transition. Firestore rolls the whole thing back on any
@@ -1278,8 +1291,34 @@ async function applyApprovalTransaction(input) {
     const productIds = Array.from(new Set(currentItems.map((i) => String(i.productId)).filter(Boolean)));
     const prodSnaps = await Promise.all(productIds.map((id) => tx.get(db().doc(`products/${id}`))));
     const depositByProduct = {};
+    const containerTypeByProduct = {};
     prodSnaps.forEach((ps) => {
-      if (ps.exists) depositByProduct[ps.id] = Number((ps.data() || {}).defaultDepositAmount || 0);
+      if (ps.exists) {
+        depositByProduct[ps.id] = Number((ps.data() || {}).defaultDepositAmount || 0);
+        containerTypeByProduct[ps.id] = (ps.data() || {}).containerType || null;
+      }
+    });
+
+    // P0-07: outstanding deposit charge per container type, so cancellation can
+    // reverse it in this same transaction (was a separate client write —
+    // emitDepositReversalsFor — that could fail after the status flip). Nets the
+    // order's depositEvents; charge_reversed is in the subtract set so a second
+    // cancel on the same order never re-reverses what a prior one already did.
+    const depSnap = await tx.get(db().collection("depositEvents").where("orderId", "==", orderId));
+    const depositNetByType = {};
+    depSnap.forEach((d) => {
+      const e = d.data() || {};
+      const type = e.containerType || "other";
+      const q = Number(e.qty || 0);
+      const a = Number(e.amount || 0);
+      if (!depositNetByType[type]) depositNetByType[type] = { qty: 0, amount: 0 };
+      if (e.eventType === "charged") {
+        depositNetByType[type].qty += q;
+        depositNetByType[type].amount += a;
+      } else if (["refunded", "credited", "forfeited", "charge_reversed"].includes(e.eventType)) {
+        depositNetByType[type].qty -= q;
+        depositNetByType[type].amount -= a;
+      }
     });
 
     // ---- COMPUTE ----
@@ -1391,6 +1430,56 @@ async function applyApprovalTransaction(input) {
         updatedAt: nowIso
       });
     }
+
+    // P0-07: reverse the deposit charge for the cancelled portion in THIS
+    // transaction (replaces the separate client emitDepositReversalsFor). A full
+    // cancel reverses everything still charged; a partial reverses only the
+    // removed lines, capped at the outstanding charge per type so a container
+    // already returned is never reversed twice. Deterministic id per (case,
+    // type) → idempotent.
+    const reversalByType = {};
+    if (kind === "full") {
+      Object.entries(depositNetByType).forEach(([type, net]) => {
+        const q = Math.max(0, net.qty);
+        const amt = Math.max(0, net.amount);
+        if (q > 0 || amt > 0.01) reversalByType[type] = { qty: q, amount: amt };
+      });
+    } else {
+      const removed = {};
+      lineDeltas.forEach((ld) => {
+        const type = containerTypeByProduct[String(ld.productId)] || "other";
+        const removedQty = Math.abs(Number(ld.delta || 0));
+        const dep = Number(ld.depositPerUnit || 0);
+        if (removedQty <= 0 || dep <= 0) return;
+        if (!removed[type]) removed[type] = { qty: 0, amount: 0 };
+        removed[type].qty += removedQty;
+        removed[type].amount += removedQty * dep;
+      });
+      Object.entries(removed).forEach(([type, r]) => {
+        const outstanding = depositNetByType[type] || { qty: 0, amount: 0 };
+        const q = Math.max(0, Math.min(r.qty, Math.max(0, outstanding.qty)));
+        const amt = Math.max(0, Math.min(r.amount, Math.max(0, outstanding.amount)));
+        if (q > 0 || amt > 0.01) reversalByType[type] = { qty: q, amount: amt };
+      });
+    }
+    Object.entries(reversalByType).forEach(([type, r]) => {
+      tx.set(db().doc(`depositEvents/${depositReversalId(caseId, type)}`), {
+        orderId,
+        customerId: order.customerId || null,
+        authUid: order.authUid || null,
+        containerType: type,
+        qty: r.qty,
+        amount: r.amount,
+        eventType: "charge_reversed",
+        eventDate: nowIso.slice(0, 10),
+        linkedDocumentId: null,
+        cancellationCaseId: caseId,
+        notes: kind === "full"
+          ? "Order cancelled — deposit charge reversed"
+          : "Partial cancellation — deposit charge reversed",
+        createdAtServer: FieldValue.serverTimestamp()
+      });
+    });
 
     tx.set(caseRef, {
       orderId,
@@ -1781,7 +1870,8 @@ if (process.env.NODE_ENV === "test" || process.env.FUNCTIONS_EMULATOR === "true"
     reconcileCaseRefund,
     recordOrderRefundImpl,
     attachRefundEvidenceImpl,
-    resolveLegacyCancellationImpl
+    resolveLegacyCancellationImpl,
+    depositReversalId
   });
   // P0-02: transactional dedup core behind submitPublicOrder.
   exports._orderSubmissionTestApi = () => ({

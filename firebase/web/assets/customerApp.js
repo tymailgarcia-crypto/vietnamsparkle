@@ -538,7 +538,7 @@ async function loadCustomerInsights(customer, orders) {
     let oldestContainerDate = null;
     depositsSnap.docs.forEach((item) => {
       const event = item.data();
-      const direction = event.eventType === "charged" ? 1 : ["refunded", "credited", "forfeited"].includes(event.eventType) ? -1 : 0;
+      const direction = event.eventType === "charged" ? 1 : ["refunded", "credited", "forfeited", "charge_reversed"].includes(event.eventType) ? -1 : 0;
       containers += direction * Number(event.qty || 0);
       if (direction > 0 && event.eventDate && (!oldestContainerDate || event.eventDate < oldestContainerDate)) oldestContainerDate = event.eventDate;
     });
