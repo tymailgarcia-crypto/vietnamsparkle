@@ -221,6 +221,31 @@ export async function uploadPaymentProof({ orderId, paymentId, file }) {
   return { documentId, downloadUrl, storagePath: path };
 }
 
+// P0-07: uploads refund evidence (bank-transfer screenshot or a photographed /
+// scanned signed cash acknowledgment) to the create-only refund-proofs/ prefix,
+// then returns the metadata attachRefundEvidence records immutably on the case.
+// Accepts an image (compressed like other proofs) OR a PDF (bank receipt),
+// matching storage.rules; a PDF is uploaded as-is because preparedImage would
+// corrupt it. The object path `refund-proofs/<orderId>/<refundId>.<ext>` is
+// create-only, so a finalized proof can never be overwritten.
+export async function uploadRefundProof({ orderId, refundId, file }) {
+  const isImage = String(file.type || "").startsWith("image/");
+  const uploadFile = isImage ? await preparedImage(file) : file;
+  const order = safeSegment(orderId, "unknown-order");
+  const rid = safeSegment(refundId, "unknown-refund");
+  const path = `refund-proofs/${order}/${rid}.${extensionFor(uploadFile)}`;
+  const fileRef = storageRef(storage, path);
+  const snap = await uploadBytes(fileRef, uploadFile, { contentType: uploadFile.type || "application/octet-stream" });
+  const downloadUrl = await getDownloadURL(fileRef);
+  const meta = (snap && snap.metadata) || {};
+  return {
+    storagePath: path,
+    downloadUrl,
+    generation: meta.generation != null ? String(meta.generation) : null,
+    md5Hash: meta.md5Hash != null ? String(meta.md5Hash) : null
+  };
+}
+
 // Uploads the photo of containers collected at delivery. Reuses the
 // payment-proofs/ prefix on purpose: storage.rules already scopes that path to
 // the owner with the same 10 MB image guard, so container proof needs no new
@@ -284,9 +309,13 @@ export const MAX_PROOF_BYTES = 10 * 1024 * 1024;
 export const MAX_INVOICE_BYTES = 5 * 1024 * 1024;
 export const MAX_SOURCE_IMAGE_BYTES = 30 * 1024 * 1024;
 
-export function validateProofFile(file) {
+export function validateProofFile(file, { allowPdf = false } = {}) {
   if (!file) return "No file selected.";
-  if (!/^image\//.test(file.type || "")) return "Choose a photo — that file is not an image.";
-  if (file.size > MAX_SOURCE_IMAGE_BYTES) return `Photo is ${(file.size / 1024 / 1024).toFixed(1)} MB. Maximum source size is 30 MB.`;
+  const isImage = /^image\//.test(file.type || "");
+  const isPdf = (file.type || "") === "application/pdf";
+  if (!isImage && !(allowPdf && isPdf)) {
+    return allowPdf ? "Choose an image or a PDF." : "Choose a photo — that file is not an image.";
+  }
+  if (file.size > MAX_SOURCE_IMAGE_BYTES) return `File is ${(file.size / 1024 / 1024).toFixed(1)} MB. Maximum source size is 30 MB.`;
   return null;
 }

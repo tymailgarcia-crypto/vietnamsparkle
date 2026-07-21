@@ -154,6 +154,57 @@ await it("anonymous CANNOT read a product photo via the SDK path", async () => {
   await assertFails(getBytes(at(anon, "product-images/P-TEST/photo-1.jpg")));
 });
 
+console.log("\nrefund-proofs/ (P0-07)");
+
+// Bank-transfer screenshots / photographed signed cash acknowledgments for a
+// cancellation refund. Create-only + immutable + owner-only; image or PDF.
+const TXT_META = { contentType: "text/plain" };
+
+await it("owner CAN upload a refund proof image", async () => {
+  await assertSucceeds(uploadBytes(at(owner, "refund-proofs/ORD-1/RF-1.jpg"), jpg(), JPG_META));
+});
+
+await it("owner CAN upload a refund proof PDF (bank receipt)", async () => {
+  await assertSucceeds(uploadBytes(at(owner, "refund-proofs/ORD-1/RF-2.pdf"), pdf(), PDF_META));
+});
+
+await it("owner CANNOT upload a non-image/non-PDF refund proof", async () => {
+  await assertFails(uploadBytes(at(owner, "refund-proofs/ORD-1/RF-3.txt"), pdf(), TXT_META));
+});
+
+await it("owner CANNOT upload a refund proof over 10 MB", async () => {
+  await assertFails(uploadBytes(at(owner, "refund-proofs/ORD-1/huge.jpg"), jpg(10 * 1024 * 1024 + 1), JPG_META));
+});
+
+await it("a finalized refund proof is IMMUTABLE — it cannot be overwritten", async () => {
+  // First write succeeds (resource == null); a second write to the same path
+  // finds resource != null and there is no update/write branch → denied. An
+  // audit trail of a refund must not be editable.
+  await assertSucceeds(uploadBytes(at(owner, "refund-proofs/ORD-1/RF-immutable.jpg"), jpg(), JPG_META));
+  await assertFails(uploadBytes(at(owner, "refund-proofs/ORD-1/RF-immutable.jpg"), jpg(64), JPG_META));
+});
+
+await it("owner CANNOT delete a refund proof", async () => {
+  await assertFails(deleteObject(at(owner, "refund-proofs/ORD-1/RF-1.jpg")));
+});
+
+await it("customer CANNOT upload a refund proof", async () => {
+  await assertFails(uploadBytes(at(customer, "refund-proofs/ORD-1/forged.jpg"), jpg(), JPG_META));
+});
+
+await it("driver CANNOT upload a refund proof", async () => {
+  await assertFails(uploadBytes(at(driver, "refund-proofs/ORD-1/nope.jpg"), jpg(), JPG_META));
+});
+
+await it("customer CANNOT read a refund proof via the SDK path", async () => {
+  await assertFails(getBytes(at(customer, "refund-proofs/ORD-1/RF-1.jpg")));
+});
+
+await it("anonymous CANNOT read or write a refund proof", async () => {
+  await assertFails(getBytes(at(anon, "refund-proofs/ORD-1/RF-1.jpg")));
+  await assertFails(uploadBytes(at(anon, "refund-proofs/ORD-1/anon.jpg"), jpg(), JPG_META));
+});
+
 console.log("\ndefault deny");
 
 await it("owner CANNOT write outside the three known prefixes", async () => {

@@ -187,7 +187,7 @@ Evidence/commit/deploy:
 
 ### P0-07 — Route every approved cancellation and refund through one atomic case workflow
 
-**Status:** [~] increment A shipped + deployed 2026-07-21 (routing + atomic deposit reversal); increment B pending (evidence UI, refunds queue, Storage tests, rule tightening)
+**Status:** [~] increments A + B-part-1 shipped 2026-07-21 (routing + deposit reversal + refund-evidence UI + Storage tests); remaining: refunds-due queue + scoped rule tightening (B-part-2)
 **Owner:** Claude
 **Likely files:** `firebase/web/assets/adminApp.js`, `orderApp.js`, `firebase/functions/index.js`, cancellation tests, refund-proof tests/UI
 
@@ -198,10 +198,10 @@ Acceptance:
 - [x] Old direct approved-order cancellation paths are removed or disabled. (The client `cancelOrder`/`approveCancellationRequest` in BOTH `adminApp.js` and `orderApp.js` now call `submitOrderCancellation`; the direct status-flip + separate `emitDepositReversalsFor` were removed. The rule-layer block of a direct client cancel is deferred to increment B — noted below.)
 - [x] One callable atomically creates/resolves the cancellation case, changes the order, and creates required ledger reversals. (`applyApprovalTransaction` now emits `charge_reversed` deposit events in the SAME transaction — full: all outstanding; partial: the removed lines, capped at outstanding — deterministic id `${caseId}-chargerev-${type}`.)
 - [x] Paid and partially paid orders compute refund liability from immutable payments. (`computeRefundRequired` from the summed `payments`; already built in the server slice, now reached via the routed buttons.)
-- [ ] The owner can attach refund evidence from the UI. **Increment B** (the `attachRefundEvidence` callable + Storage rules exist; no button yet).
-- [ ] A central owner queue shows `refundRemaining > 0` and missing evidence. **Increment B.**
+- [x] The owner can attach refund evidence from the UI. (order.html refund panel: each recorded refund missing proof gets an image/PDF upload → `uploadRefundProof` (create-only `refund-proofs/`) → `attachRefundEvidence`; proof status is read from the case's `refundEvidence[]`, and the case flips to `evidenceStatus: complete` once every refund is covered.)
+- [ ] A central owner queue shows `refundRemaining > 0` and missing evidence. **Increment B part 2.**
 - [x] Duplicate requests/refund IDs are idempotent. (Case id `${orderId}-cx-${clientRequestId}`; refund payment id `${caseId}-refund-${refundId}`; deposit reversal id per case — all deterministic. Covered by the emulator suite.)
-- [ ] Focused Storage tests cover `/refund-proofs` authorization, file type, size, and immutability. **Increment B.**
+- [x] Focused Storage tests cover `/refund-proofs` authorization, file type, size, and immutability. (`storage.rules.test.mjs` +10 refund-proofs cases: owner image/PDF ok, non-image/PDF denied, >10MB denied, **immutable — overwrite denied**, delete denied, customer/driver/anon denied, SDK read denied.)
 
 Evidence/commit/deploy:
 

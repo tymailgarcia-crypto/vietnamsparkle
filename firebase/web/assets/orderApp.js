@@ -38,7 +38,7 @@ import {
   withSubmitLock
 } from "./shared.js";
 import { attachQrToPreview, buildEmailShare, buildWhatsAppShare, generateInvoicePdf, invoiceContext, renderInvoiceHtml } from "./invoice.js";
-import { uploadContainerReturnProof, uploadPaymentProof, validateProofFile } from "./storageUploads.js";
+import { uploadContainerReturnProof, uploadPaymentProof, uploadRefundProof, validateProofFile } from "./storageUploads.js";
 import { mapsApiKey } from "./firebaseWebConfig.js";
 import { createEditOrderAddressController } from "./editOrderAddress.js";
 
@@ -48,6 +48,7 @@ const orderId = new URLSearchParams(location.search).get("id") || "";
 const mergeCustomersFn = httpsCallable(functions, "mergeCustomers");
 const approveOrderFn = httpsCallable(functions, "approveOrder");
 const recordOrderRefundFn = httpsCallable(functions, "recordOrderRefund");
+const attachRefundEvidenceFn = httpsCallable(functions, "attachRefundEvidence");
 const resolveOrderCancellationFn = httpsCallable(functions, "resolveOrderCancellation");
 const submitOrderCancellationFn = httpsCallable(functions, "submitOrderCancellation");
 let currentInvoiceContext = null;
@@ -360,7 +361,48 @@ function renderCancellationPanel() {
     .join("");
 
   body.querySelectorAll("form[data-refund-case]").forEach((form) => form.addEventListener("submit", handleRecordRefund));
+  body.querySelectorAll("form[data-attach-evidence]").forEach((form) => form.addEventListener("submit", handleAttachEvidence));
   body.querySelectorAll("[data-resolve-case]").forEach((btn) => btn.addEventListener("click", handleResolveCase));
+}
+
+async function handleAttachEvidence(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const refundId = form.dataset.attachEvidence;
+  const method = form.dataset.method || "";
+  const file = form.elements.proof?.files?.[0];
+  if (!file) {
+    setCancellationStatus("Choose a proof file first.", true);
+    return;
+  }
+  const problem = validateProofFile(file, { allowPdf: true });
+  if (problem) {
+    setCancellationStatus(problem, true);
+    return;
+  }
+  // Each refundId belongs to exactly one case — resolve it from the refund payment.
+  const pay = (state.payments || []).find((p) => String(p.refundId || "") === String(refundId) && p.cancellationCaseId);
+  if (!pay) {
+    setCancellationStatus("Could not resolve the cancellation case for this refund.", true);
+    return;
+  }
+  // Bank/QR/wallet refunds are electronic; a cash refund's proof is a signed slip.
+  const proofKind = method === "refund_cash" ? "cash" : "electronic";
+  const submitBtn = form.querySelector("button[type=submit]");
+  await runActionControl(submitBtn, "Uploading proof…", async () => {
+    const uploaded = await uploadRefundProof({ orderId: state.order.id, refundId, file });
+    await attachRefundEvidenceFn({
+      caseId: pay.cancellationCaseId,
+      refundId,
+      storagePath: uploaded.storagePath,
+      downloadUrl: uploaded.downloadUrl,
+      generation: uploaded.generation,
+      md5Hash: uploaded.md5Hash,
+      proofKind
+    });
+    await loadOrderRecord();
+    setCancellationStatus("Refund proof attached.");
+  });
 }
 
 function renderCancellationCase(c, refunds) {
@@ -371,9 +413,26 @@ function renderCancellationCase(c, refunds) {
     ? `<div class="muted" style="margin-top:6px">Removed: ${deltas.map((d) => `${Math.abs(Number(d.delta))}× ${escapeHtml(d.name || d.productId || "item")}`).join(", ")}</div>`
     : "";
 
+  // P0-07: evidence lives on the CASE (refundEvidence[], keyed by refundId), not
+  // on the immutable payment. Proof status + the attach control come from there.
+  const coveredRefundIds = new Set(
+    (Array.isArray(c.refundEvidence) ? c.refundEvidence : []).map((e) => e && e.refundId)
+  );
   const refundRows = [...refunds]
     .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")))
-    .map((p) => `<div class="muted">${escapeHtml(formatCurrency(Math.abs(Number(p.amount || 0))))} · ${escapeHtml(humanize(p.method))}${p.reference ? ` · ${escapeHtml(p.reference)}` : ""} · ${escapeHtml(p.paymentDate || dateValue(p.createdAt))} · ${p.proofDocumentId ? "proof ✓" : "proof missing"}</div>`)
+    .map((p) => {
+      const rid = String(p.refundId || "");
+      const covered = rid && coveredRefundIds.has(rid);
+      const line = `<div class="muted">${escapeHtml(formatCurrency(Math.abs(Number(p.amount || 0))))} · ${escapeHtml(humanize(p.method))}${p.reference ? ` · ${escapeHtml(p.reference)}` : ""} · ${escapeHtml(p.paymentDate || dateValue(p.createdAt))} · ${covered ? "proof ✓" : "proof missing"}</div>`;
+      // Only an approved case with a real refundId can take evidence.
+      const attach = (!covered && rid && c.decisionStatus === "approved")
+        ? `<form class="attach-evidence-form" data-attach-evidence="${escapeHtml(rid)}" data-method="${escapeHtml(String(p.method || ""))}" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:2px 0 8px">
+             <input type="file" name="proof" accept="image/*,application/pdf" required style="max-width:200px">
+             <button class="ghost" type="submit">Attach proof</button>
+           </form>`
+        : "";
+      return line + attach;
+    })
     .join("");
   const refundList = refundRows ? `<div class="stack" style="margin-top:8px">${refundRows}</div>` : "";
 
