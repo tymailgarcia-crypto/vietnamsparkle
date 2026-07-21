@@ -1,6 +1,59 @@
-# Handoff — as of 2026-07-20
+# Handoff — as of 2026-07-21
+
+## Read this first: current state (2026-07-21)
+
+The tree-reconciliation the July-20 briefing below asked for is **DONE**: commit
+`088d653` synced HEAD to production (all 42 hosted files byte-verified, full
+rules gate green) and was pushed. Then a run of SHIP-READINESS P0 blockers
+shipped. **All of the following are deployed, live, and verified — but committed
+locally only. `main` is 6 commits ahead of `origin/main`; nothing is pushed and
+there is no release tag.** Push/tag only when Ty asks.
+
+Commits since the sync (newest first), each deployed + gated:
+- `1fe4ff0` P0-07 inc. B part 1 — refund-evidence attach UI + `/refund-proofs` Storage tests.
+- `6ed3726` P0-07 inc. A — cancellation routes through the atomic case workflow; **new `charge_reversed` deposit event type** (reverses the deposit charge inside the cancellation transaction; 8 client "containers held" nets + `summarizeHeldContainers` learned it; `physicalReturnsFromDepositEvents` deliberately excludes it).
+- `bb799e1` P0-06 — order approval is one server transaction (`approveOrder` callable / `approveOrderImpl`); **the account-takeover gate `canLinkAuthUidToCustomer` MOVED from `adminApp.js` to `functions/index.js`** — `rules-tests/authuid-linking.test.mjs` now pins the server copy. CLAUDE.md's hard-constraint pointer was updated to match.
+- `6c89b03` P0-05 — truthful customer open orders/balance/credit/returns.
+- `473c8ea` P0-03 + P0-04 — server-enforced delivery date/area; uid-anchored customer identity.
+- `8da405e` P0-02 — idempotent public order submission (committed by Ty).
+
+**Where P0-07 stands: 6 of 7 acceptance items done.** Remaining = **increment B
+part 2**, the clean next task:
+1. **Refunds-due / proof-missing owner queue** (acceptance item 5) — a read-only
+   owner view listing `orderCancellations` where `refundStatus` in
+   `['pending','partial']` OR `evidenceStatus == 'missing'`. Likely a new section
+   on `reports.html`/`reportsApp.js` (owner-only reconciliation viewer) or a new
+   page. No new callable/rules needed — it just reads the case ledger.
+2. **Scoped `firestore.rules` tightening** — block a *direct client* write that
+   sets an approved order's `status` to `cancelled` (owner cancels now go through
+   the `submitOrderCancellation` Admin-SDK callable), while KEEPING the customer
+   unpaid `pending_approval → cancelled` transition (firestore.rules ~L121).
+   Crown-jewel file: read ROADMAP "Audit follow-ups → Critical", run the FULL
+   `rules-tests/` gate before and after, read stderr. The current client no longer
+   does a direct cancel, so this is defence-in-depth, not a live hole.
+
+After P0-07: **P0-08** (revalidate container holdings at delivery-commit time) is
+next in SHIP-READINESS.md. Trust SHIP-READINESS.md for per-P0 status/evidence and
+ROADMAP.md "Shipped 2026-07-21" for the how/why.
+
+Housekeeping: `firebase/scratch-authusers.json` is an empty stray (emulator
+export) — delete or ignore, do not commit. The `.manual-deploy-*` dirs and the
+PNG-cutline personal tools stay out of git as always.
+
+Verification bar used all session: pure/emulator tests green + the account-takeover
+gate (authuid-linking / email-propagation-takeover / customers / payments) re-run
+green with only the documented-benign L187/L249 stderr, before every money/rules/
+identity deploy. Nothing was browser-QA'd with a real owner/customer login (no
+session available) — that's the standing open item on every P0 above.
+
+---
 
 ## Claude: read this July 20 ship-readiness briefing first
+
+**(Superseded on status by the 2026-07-21 section above — the reconciliation it
+asks for is done and the P0s it lists as pending have shipped. Its operational
+decisions below still stand: Firebase ownership, no-paid-recovery, App Check
+pending on Ty, Maps-key restriction pending.)**
 
 The app is **NO-GO for public launch or handover**. The authoritative current documents are [SHIP-READINESS.md](SHIP-READINESS.md), [HANDOVER.md](HANDOVER.md), and [RELEASE-RECONCILIATION.md](RELEASE-RECONCILIATION.md). The documentation checkpoint immediately before this handoff was commit `1e232cc` (`Clarify future business operator handover`). It changed only those three documents. Nothing was deployed, pushed, or tagged.
 
