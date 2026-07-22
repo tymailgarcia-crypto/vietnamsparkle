@@ -22,7 +22,7 @@ Verified from the repository and local tools:
 - Project IAM has one `roles/owner` member: `user:tymailgarcia@gmail.com`. There is no backup project owner or administrator recorded in IAM.
 - Cloud Billing is enabled and linked to `billingAccounts/01D262-5F45BB-369158`. Its IAM policy has one `roles/billing.admin` member: `user:tymailgarcia@gmail.com`; no backup billing administrator was found. A linked billing account means no-cost quotas are allowances, not a hard spending cap.
 - Ty remains the sole Firebase project owner, Cloud Billing administrator, deployment operator, and technical incident owner. He does not have or want a separate backup administrator/recovery account at launch. Loss of access to `tymailgarcia@gmail.com` could therefore block project administration, billing response, deployment, and technical recovery; this is an explicitly accepted launch risk, not access redundancy.
-- Ty's buddy will be the future business/customer operator and will launch the app for his customers. The buddy's identity, contact route, and exact in-app permissions are deliberately pending. This operational role is not a transfer of Firebase ownership or technical control, and no Firebase or Google Cloud access binding has been added or implied.
+- **Matthias Campbell** (Ty's buddy) will be the future business/customer operator and will launch the app for his customers. Identity confirmed by Ty 2026-07-22; his contact route and exact in-app permissions are still pending and will be provided by Ty. This operational role is not a transfer of Firebase ownership or technical control, and no Firebase or Google Cloud access binding has been added or implied.
 - The `(default)` Firestore database is Firestore Native, Standard edition, in `asia-east2`. Delete protection was enabled and verified on 2026-07-20; point-in-time recovery remains disabled and version retention is one hour (`3600s`).
 - Firestore has no backup schedule and no backups in `asia-east2`. Under Ty's no-monthly-cost launch decision, paid PITR, scheduled backups, and managed restore are deliberately deferred.
 - Nine Cloud Functions are ACTIVE on Node.js 22. `reconcileOnPaymentWrite` is in `asia-east2`; the other eight are in `us-central1`.
@@ -41,7 +41,7 @@ Authenticated verification status:
 - [ ] Maps key HTTP-referrer restrictions for the production Hosting domain.
 - [ ] Firebase App Check registration and verified-traffic metrics. Do not enforce App Check before valid production traffic appears.
 - [ ] Billing budget alerts, quota alerts, and their recipients.
-- [ ] Future business/customer operator identity, contact route, and exact in-app permissions. These details are deferred until they are needed; do not infer Firebase access.
+- [~] Future business/customer operator identity, contact route, and exact in-app permissions. Identity recorded 2026-07-22 (**Matthias Campbell**); contact route and permissions still deferred until needed. Do not infer Firebase access.
 - [ ] Custom-domain owner/registrar/DNS instructions if a custom domain is added later.
 
 ## 2. Access and project selection
@@ -228,18 +228,20 @@ firebase functions:log --project vietnamsparkle-36dfe
 
 Complete before launch. Do not put passwords, recovery codes, or private credentials in this table.
 
-Operational clarification recorded 2026-07-20 12:55 UTC: Ty retains Firebase, billing, deployment, and technical control. Ty's buddy will be the future business/customer operator and will launch the app for his customers. The buddy's identity, contact route, and exact in-app permissions are pending. This is not a Firebase ownership transfer, and no access binding was changed.
+Operational clarification recorded 2026-07-20 12:55 UTC: Ty retains Firebase, billing, deployment, and technical control. Ty's buddy will be the future business/customer operator and will launch the app for his customers. This is not a Firebase ownership transfer, and no access binding was changed.
+
+Operator identity recorded 2026-07-22: the future business/customer operator is **Matthias Campbell** (confirmed by Ty). His contact route and exact in-app permissions remain pending and will be provided by Ty before customer launch; no Firebase or Google Cloud access is implied by naming him.
 
 The responsibility boundary is settled even though the future operator's details are not: the buddy owns business go-live, day-to-day customer operations, and customer communication after handover; Ty owns technical release approval, deployment, rollback, Firebase administration, billing, and technical incident response.
 
 | Responsibility | Primary | Backup | Contact route | Confirmed |
 |---|---|---|---|---|
-| Business launch and daily customer operations | Future business/customer operator (Ty's buddy; identity pending) | None recorded | Pending | Role confirmed; details deferred |
+| Business launch and daily customer operations | Matthias Campbell (Ty's buddy; future business/customer operator) | None recorded | Pending | Role confirmed; details deferred |
 | Firebase project administration | `tymailgarcia@gmail.com` (`roles/owner`, verified) | None | `tymailgarcia@gmail.com` | Verified; no backup administrator |
 | Billing administration | `tymailgarcia@gmail.com` (`roles/billing.admin`, verified) | None | `tymailgarcia@gmail.com` | Verified; no backup administrator |
 | Technical release, deployment, and rollback | Ty | None | `tymailgarcia@gmail.com` | Confirmed |
 | Technical incident response | Ty | None | `tymailgarcia@gmail.com` | Confirmed |
-| Customer communication | Future business/customer operator (Ty's buddy; identity pending) | None recorded | Pending | Role confirmed; details deferred |
+| Customer communication | Matthias Campbell (Ty's buddy; future business/customer operator) | None recorded | Pending | Role confirmed; details deferred |
 
 Escalation order:
 
@@ -260,5 +262,5 @@ Escalation order:
 - [ ] Release and previous-good tags/Hosting versions recorded.
 - [ ] Monitoring and budget alert recipients tested.
 - [x] Handover responsibility boundary documented: the buddy will operate the business/customer side; Ty retains Firebase, billing, deployment, rollback, and technical control.
-- [ ] Future business/customer operator identity, contact route, and exact in-app permissions recorded before customer launch. No Firebase access is implied or required by this placeholder.
+- [~] Future business/customer operator identity, contact route, and exact in-app permissions recorded before customer launch. Identity recorded 2026-07-22 (**Matthias Campbell**); contact route and permissions still pending. No Firebase access is implied or required by this placeholder.
 - [ ] Customer and owner authenticated QA signed off in `SHIP-READINESS.md`.
