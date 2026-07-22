@@ -39,7 +39,7 @@ Authenticated verification status:
 - [x] Scheduled-backup and existing-backup state recorded: neither exists.
 - [x] Free database delete protection enabled; paid PITR/backups left disabled by decision.
 - [ ] Maps key HTTP-referrer restrictions for the production Hosting domain.
-- [ ] Firebase App Check registration and verified-traffic metrics. Do not enforce App Check before valid production traffic appears.
+- [~] Firebase App Check registration and verified-traffic metrics. Web app registered 2026-07-22 with the reCAPTCHA Enterprise site key; the verified-traffic metrics soak is still pending and `enforceAppCheck` stays OFF until it passes. Do not enforce App Check before valid production traffic appears.
 - [ ] Billing budget alerts, quota alerts, and their recipients.
 - [~] Future business/customer operator identity, contact route, and exact in-app permissions. Identity recorded 2026-07-22 (**Matthias Campbell**); contact route and permissions still deferred until needed. Do not infer Firebase access.
 - [ ] Custom-domain owner/registrar/DNS instructions if a custom domain is added later.
