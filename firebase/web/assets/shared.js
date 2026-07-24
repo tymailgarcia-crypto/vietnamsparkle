@@ -292,6 +292,108 @@ export function phoneEntryErrorMessage(value) {
   return "Enter a valid phone number. Choose the country code, then enter at least 5 digits.";
 }
 
+// Plain-language, actionable text for the failures a CUSTOMER can hit.
+// Firebase drops raw codes ("auth/popup-blocked", "permission-denied",
+// "functions/unavailable") and terse SDK text ("Missing or insufficient
+// permissions.") straight into error.message, and every customer error site
+// used to show `error.message || String(error)`. A shopper who hits one of
+// those mid-order has no idea what went wrong or what to do next, and an order
+// abandoned at that wall is a lost sale. Keyed by Firebase error CODE so it is
+// stable across SDK wording changes; our own callables author customer-ready
+// messages for the validation codes, so those pass through unchanged.
+const CUSTOMER_ERROR_BY_CODE = {
+  // Google / email sign-in (Firebase Auth codes keep their "auth/" namespace).
+  "auth/popup-closed-by-user": "Sign-in was cancelled. Tap the button again when you're ready.",
+  "auth/cancelled-popup-request": "Sign-in was cancelled. Tap the button again when you're ready.",
+  "auth/user-cancelled": "Sign-in was cancelled. Tap the button again when you're ready.",
+  "auth/popup-blocked": "Your browser blocked the sign-in pop-up. Allow pop-ups for this site, or use the email sign-in link instead.",
+  "auth/network-request-failed": "You appear to be offline. Check your internet connection and try again.",
+  "auth/too-many-requests": "Too many attempts just now. Please wait a minute, then try again.",
+  "auth/invalid-email": "That doesn't look like a valid email address. Check it and try again.",
+  "auth/missing-email": "Enter your email address first, then request the sign-in link.",
+  "auth/user-disabled": "This account can't sign in. Please contact us for help.",
+  "auth/expired-action-code": "This sign-in link has expired or was already used. Request a fresh email link.",
+  "auth/invalid-action-code": "This sign-in link has expired or was already used. Request a fresh email link.",
+  "auth/account-exists-with-different-credential": "You already have an account that uses a different sign-in method. Use that method to sign in.",
+  "auth/operation-not-allowed": "Sign-in is temporarily unavailable. Please try again in a moment.",
+  "auth/internal-error": "Sign-in didn't complete. Please try again in a moment.",
+  // Cloud Functions / Firestore infrastructure — transient, worth a retry.
+  // Function codes arrive as "functions/unavailable"; the bare code is matched
+  // too, so Firestore's "unavailable" lands on the same line.
+  "unavailable": "We couldn't reach our server — you may be offline. Check your connection and try again.",
+  "deadline-exceeded": "That took too long, usually a weak connection. Please try again.",
+  "internal": "Something went wrong on our side. Please try again in a moment.",
+  "cancelled": "That request was interrupted. Please try again.",
+  "unknown": "Something went wrong. Please try again in a moment.",
+  "resource-exhausted": "We're a bit busy right now. Please wait a moment and try again.",
+  "aborted": "That didn't go through — please try again.",
+  // Stale/absent auth on a Firestore read or callable.
+  "permission-denied": "We couldn't load that — your sign-in may have expired. Refresh the page or sign in again.",
+  "unauthenticated": "You're signed out. Please sign in again to continue.",
+};
+
+// Firebase codes where OUR OWN callable authored the message for the customer
+// (see the submitPublicOrder validation throws in functions/index.js). Their
+// text is more specific than any generic line, so show it verbatim.
+const CUSTOMER_AUTHORED_SERVER_CODES = new Set([
+  "invalid-argument",
+  "failed-precondition",
+  "not-found",
+  "already-exists",
+  "out-of-range",
+]);
+
+function normalizeCustomerErrorCode(rawCode) {
+  const code = typeof rawCode === "string" ? rawCode.trim() : "";
+  if (!code) return { full: "", bare: "" };
+  // Auth codes are only meaningful with their namespace ("auth/popup-blocked");
+  // Functions codes ("functions/unavailable") also match on the bare tail so
+  // they share Firestore's lines.
+  if (code.startsWith("auth/")) return { full: code, bare: code };
+  const slash = code.indexOf("/");
+  return { full: code, bare: slash >= 0 ? code.slice(slash + 1) : code };
+}
+
+function cleanCustomerErrorMessage(error) {
+  let message = "";
+  if (error && typeof error.message === "string") message = error.message;
+  else if (typeof error === "string") message = error;
+  message = message.trim();
+  if (!message) return "";
+  // Unwrap the Firebase JS shell: "Firebase: <text> (auth/popup-blocked)." → "<text>".
+  message = message
+    .replace(/^Firebase:\s*/i, "")
+    .replace(/\s*\([a-z0-9-]+\/[a-z0-9-]+\)\.?\s*$/i, "")
+    .trim();
+  return message;
+}
+
+// A message we are confident is customer-safe: not a leftover raw Firebase
+// string. Used only for plain Errors our own client code threw.
+function looksLikeRawFirebaseText(message) {
+  return /firebase|auth\/|permission|insufficient|internal error/i.test(message);
+}
+
+// error → a sentence the customer can act on. `fallback` should name what was
+// being attempted and the next step ("Your order didn't go through. Check your
+// connection and tap Place order again.") so an unmapped error still helps.
+export function humanizeCustomerError(error, { fallback = "Something went wrong. Please try again." } = {}) {
+  const { full, bare } = normalizeCustomerErrorCode(error && error.code);
+  if (full && CUSTOMER_ERROR_BY_CODE[full]) return CUSTOMER_ERROR_BY_CODE[full];
+  if (bare && CUSTOMER_ERROR_BY_CODE[bare]) return CUSTOMER_ERROR_BY_CODE[bare];
+
+  const message = cleanCustomerErrorMessage(error);
+
+  // Our callables author customer-ready validation text — pass it through.
+  if (bare && CUSTOMER_AUTHORED_SERVER_CODES.has(bare) && message) return message;
+
+  // A plain Error (no Firebase code) came from our own client code, so its
+  // message is already meant for the customer — unless it wraps a raw SDK string.
+  if (!full && message && !looksLikeRawFirebaseText(message)) return message;
+
+  return fallback;
+}
+
 export function buildCustomerId(phone) {
   const normalized = normalizePhoneE164VN(phone) || normalizePhone(phone);
   if (!normalized) return "";

@@ -23,7 +23,7 @@ import {
   where,
   writeBatch
 } from "./firebaseClient.js";
-import { buildCustomerId, formatCurrency, mergeThresholds, normalizePhoneWithCountry, openOrdersFrom, ORDER_DRAFT_STORAGE_KEY, parseStoredOrderDraft, phoneEntryErrorMessage, productImageUrl, setupPhoneCountryPicker, splitPhoneWithCountry, summarizeAccountBalance, summarizeHeldContainers, THRESHOLD_DEFAULTS, withSubmitLock } from "./shared.js";
+import { buildCustomerId, formatCurrency, humanizeCustomerError, mergeThresholds, normalizePhoneWithCountry, openOrdersFrom, ORDER_DRAFT_STORAGE_KEY, parseStoredOrderDraft, phoneEntryErrorMessage, productImageUrl, setupPhoneCountryPicker, splitPhoneWithCountry, summarizeAccountBalance, summarizeHeldContainers, THRESHOLD_DEFAULTS, withSubmitLock } from "./shared.js";
 import { mapsApiKey } from "./firebaseWebConfig.js";
 
 let accountMapsPromise = null;
@@ -664,7 +664,9 @@ async function togglePickupRequest(event) {
       };
       statusNode.textContent = requesting ? "Saved — the driver will know." : "Request cancelled.";
     } catch (error) {
-      statusNode.textContent = `Could not save: ${error.message || error}`;
+      statusNode.textContent = humanizeCustomerError(error, {
+        fallback: "We couldn't save your pickup request. Please try again.",
+      });
     }
   });
   // AFTER the lock: withSubmitLock restores the button's pre-click label in
@@ -924,7 +926,9 @@ async function promoteAddress(text) {
     await writeAddresses(text, nextAdditional);
     setStatus(status, "Default address updated.");
   } catch (error) {
-    setStatus(status, error.message || String(error), true);
+    setStatus(status, humanizeCustomerError(error, {
+      fallback: "We couldn't update your default address. Please try again.",
+    }), true);
   }
 }
 
@@ -944,7 +948,9 @@ async function removeAddress(text) {
     }
     setStatus(status, "Address removed.");
   } catch (error) {
-    setStatus(status, error.message || String(error), true);
+    setStatus(status, humanizeCustomerError(error, {
+      fallback: "We couldn't remove that address. Please try again.",
+    }), true);
   }
 }
 
@@ -1102,7 +1108,9 @@ async function findPinFor(value) {
     wrap.scrollIntoView({ behavior: "smooth", block: "nearest" });
   } catch (error) {
     resetPendingAddressConfirmation();
-    setAddressEditorStatus(error.message || String(error), true);
+    setAddressEditorStatus(humanizeCustomerError(error, {
+      fallback: "We couldn't open the map just now. Enter your address and search again.",
+    }), true);
   } finally {
     if (button) button.disabled = false;
   }
@@ -1160,7 +1168,9 @@ async function handleAddressFormSubmit(event) {
     setAddressEditorStatus(isEdit ? "Address updated." : "Confirmed address added.");
     el("address-editor-dialog")?.close();
   } catch (error) {
-    setAddressEditorStatus(error.message || String(error), true);
+    setAddressEditorStatus(humanizeCustomerError(error, {
+      fallback: "We couldn't save that address. Please try again.",
+    }), true);
   }
 }
 
@@ -1333,7 +1343,9 @@ async function handleCustomerCancel(orderId) {
     });
     await refreshAccount();
   } catch (error) {
-    setStatus(el("account-status"), error.message || String(error), true);
+    setStatus(el("account-status"), humanizeCustomerError(error, {
+      fallback: "We couldn't cancel that order. Please refresh and try again.",
+    }), true);
   }
 }
 
@@ -1480,10 +1492,14 @@ async function refreshAccount() {
     step = "load-account-data";
     await loadAccountData();
   } catch (error) {
+    // The step + raw error stay in the console for support; the customer sees a
+    // plain line (the "step" is jargon and the raw message may be a Firebase code).
     console.error(`Account refresh failed at step "${step}":`, error);
     setStatus(
       el("hero-auth-status"),
-      `Signed in as ${state.user.email || state.user.uid}. Could not load account details (${step}): ${error.message || error}`,
+      `You're signed in, but we couldn't load your account details just now. ${humanizeCustomerError(error, {
+        fallback: "Please refresh the page or try again in a moment.",
+      })}`,
       true
     );
   }
@@ -1499,7 +1515,9 @@ async function handleGoogleSignIn() {
       setStatus(statusNode, "");
     } catch (error) {
       console.error("Google sign-in failed:", error);
-      setStatus(statusNode, error.message || String(error), true);
+      setStatus(statusNode, humanizeCustomerError(error, {
+        fallback: "Sign-in didn't complete. Please try again, or use the email sign-in link.",
+      }), true);
     }
   }, { busyLabel: "Signing in..." });
 }
@@ -1543,7 +1561,9 @@ async function handleSendMagicLink(event) {
         `Link sent to ${email}. Open the email on this device and tap it to sign in.`
       );
     } catch (error) {
-      setStatus(el("signin-status"), error.message || String(error), true);
+      setStatus(el("signin-status"), humanizeCustomerError(error, {
+        fallback: "We couldn't send the sign-in link. Check your email address and try again.",
+      }), true);
     }
   }, { busyLabel: "Sending..." });
 }
@@ -1630,7 +1650,9 @@ async function tryCompleteEmailLinkSignIn() {
       // Storage failure just means no bounce-back; the account page is fine.
     }
   } catch (error) {
-    setStatus(el("signin-status"), `Could not complete sign-in: ${error.message || error}`, true);
+    setStatus(el("signin-status"), humanizeCustomerError(error, {
+      fallback: "We couldn't finish signing you in. Request a fresh email link and try again.",
+    }), true);
     window.history.replaceState({}, document.title, window.location.pathname);
   }
   return true;
@@ -1660,7 +1682,9 @@ async function handleSaveProfile(event) {
       setStatus(el("profile-status"), "Saved.");
       await refreshAccount();
     } catch (error) {
-      setStatus(el("profile-status"), error.message || String(error), true);
+      setStatus(el("profile-status"), humanizeCustomerError(error, {
+        fallback: "We couldn't save your profile. Please try again.",
+      }), true);
     }
   });
 }

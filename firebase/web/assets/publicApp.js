@@ -27,6 +27,7 @@ import {
   deliveryDateProblem,
   escapeHtml,
   formatCurrency,
+  humanizeCustomerError,
   isBrokenDepositBalance,
   isInsideDeliveryArea,
   normalizePhoneWithCountry,
@@ -360,7 +361,11 @@ async function toggleEmptiesPickup(event) {
     // Put the checkbox back: leaving it ticked would promise a collection that
     // was never recorded, and the driver would arrive not knowing to ask.
     toggle.checked = !requesting;
-    if (status) status.textContent = `Could not save: ${error.message || error}`;
+    if (status) {
+      status.textContent = humanizeCustomerError(error, {
+        fallback: "We couldn't save your pickup request. Please try again.",
+      });
+    }
   } finally {
     toggle.disabled = false;
   }
@@ -1014,7 +1019,9 @@ async function verifyAddressOnMap() {
     });
     wrap.scrollIntoView({ behavior: "smooth", block: "nearest" });
   } catch (error) {
-    clearDeliveryLocation(error.message || String(error));
+    clearDeliveryLocation(humanizeCustomerError(error, {
+      fallback: "We couldn't open the map just now. Enter your address and tap Find on Google Maps again.",
+    }));
   } finally {
     button.disabled = false;
     button.textContent = "Find on Google Maps";
@@ -1279,7 +1286,11 @@ async function applyReorderFromQuery() {
     await applyReorderById(reorderId);
   } catch (error) {
     const feedback = document.getElementById("public-feedback");
-    if (feedback) feedback.textContent = `Could not load reorder: ${error.message || error}`;
+    if (feedback) {
+      feedback.textContent = humanizeCustomerError(error, {
+        fallback: "We couldn't reload that order. Please try again.",
+      });
+    }
   }
 }
 
@@ -1461,7 +1472,10 @@ async function openReorderDialog() {
     renderReorderDialogList();
     updateReorderDialogLoadMore();
   } catch (error) {
-    setReorderDialogStatus(`Could not load past orders: ${error.message || error}`, true);
+    setReorderDialogStatus(
+      humanizeCustomerError(error, { fallback: "We couldn't load your past orders. Please try again." }),
+      true
+    );
   }
 }
 
@@ -1517,7 +1531,10 @@ async function handleReorderPick(orderId) {
       setReorderDialogStatus("Could not load that past order. It may have been removed.", true);
     }
   } catch (error) {
-    setReorderDialogStatus(`Could not reorder: ${error.message || error}`, true);
+    setReorderDialogStatus(
+      humanizeCustomerError(error, { fallback: "We couldn't add that order to your cart. Please try again." }),
+      true
+    );
   }
 }
 
@@ -1530,7 +1547,10 @@ async function loadMorePastOrders() {
     renderReorderDialogList();
     updateReorderDialogLoadMore();
   } catch (error) {
-    setReorderDialogStatus(`Could not load more: ${error.message || error}`, true);
+    setReorderDialogStatus(
+      humanizeCustomerError(error, { fallback: "We couldn't load more orders. Please try again." }),
+      true
+    );
   }
 }
 
@@ -1968,7 +1988,11 @@ async function maybeSaveIdentityToProfile(submitted) {
       closeDialog();
     } catch (error) {
       console.warn("Could not save profile:", error);
-      if (status) status.textContent = `Could not save: ${error.message || error}`;
+      if (status) {
+        status.textContent = humanizeCustomerError(error, {
+          fallback: "We couldn't save your details. Please try again.",
+        });
+      }
       if (confirmBtn) {
         confirmBtn.disabled = false;
         confirmBtn.textContent = "Save";
@@ -2039,7 +2063,9 @@ async function updateAccountFromPersonalDetails() {
     state.customer = { ...(state.customer || {}), id: ref.id, ...payload };
     status.textContent = "Your contact details were saved.";
   } catch (error) {
-    status.textContent = `Could not save your contact details: ${error.message || error}`;
+    status.textContent = humanizeCustomerError(error, {
+      fallback: "We couldn't save your contact details. Please try again.",
+    });
     status.classList.add("is-blocking");
   } finally {
     button.disabled = false;
@@ -2178,7 +2204,11 @@ async function handleDialogGoogleSignIn() {
     if (status) status.textContent = "Signed in — you can place your order now.";
     closeSignInDialog();
   } catch (error) {
-    if (status) status.textContent = error && error.message ? error.message : String(error);
+    if (status) {
+      status.textContent = humanizeCustomerError(error, {
+        fallback: "Sign-in didn't complete. Please try again, or use the email sign-in link.",
+      });
+    }
     if (btn) btn.disabled = false;
   }
 }
@@ -2196,7 +2226,11 @@ async function handleHeroGoogleSignIn() {
     if (!result && statusNode) statusNode.textContent = "Google sign-in cancelled.";
     if (statusNode) statusNode.textContent = "";
   } catch (error) {
-    if (statusNode) statusNode.textContent = error.message || String(error);
+    if (statusNode) {
+      statusNode.textContent = humanizeCustomerError(error, {
+        fallback: "Sign-in didn't complete. Please try again, or use the email sign-in link.",
+      });
+    }
   } finally {
     btn.disabled = false;
     btn.textContent = originalLabel;
@@ -2337,7 +2371,9 @@ loadProducts()
     await applyReorderFromQuery();
   })
   .catch((error) => {
-    document.getElementById("public-feedback").textContent = error && error.message ? error.message : String(error);
+    document.getElementById("public-feedback").textContent = humanizeCustomerError(error, {
+      fallback: "We couldn't load the products just now. Please refresh the page.",
+    });
   })
   .finally(() => {
     productsResolved = true;
