@@ -112,6 +112,7 @@ function renderOrder(order, items, payments, deposits) {
     ${order.notes ? `<div class="order-record-notes"><span>Your order note</span><p>${escapeHtml(order.notes)}</p></div>` : ""}
     ${status === "cancelled" && order.cancellationReason ? `<div class="order-record-notes"><span>Cancellation</span><p>${escapeHtml(order.cancellationReason)}</p></div>` : ""}
     ${status === "pending_approval" ? `<div class="button-row top-gap"><button class="ghost" id="cancel-unapproved-order" type="button">Cancel this order</button></div>` : ""}
+    ${status === "new" || status === "assigned" ? `<p class="muted top-gap" style="margin-bottom:0;font-size:13px">Confirmed and on our delivery list — message us if you need to change or cancel it.</p>` : ""}
   `;
 
   el("order-item-rows").innerHTML = items.length
