@@ -158,7 +158,7 @@
         <form id="profile-form" class="form-grid" style="margin-top:0">
           <label>
             Name
-            <input id="profile-name" required minlength="2" maxlength="199" type="text" placeholder="Tran Minh">
+            <input id="profile-name" required minlength="2" maxlength="199" type="text" autocomplete="name" placeholder="Tran Minh">
           </label>
           <label>
             Phone
@@ -173,7 +173,7 @@
                   <span class="phone-country-options" role="listbox"></span>
                 </span>
               </span>
-              <input id="profile-phone" minlength="6" maxlength="39" type="tel" pattern="(?=.*\d)[-+0-9 ()]{6,40}" title="Use digits only. Spaces, +, brackets and dashes are okay." placeholder="901 234 501" style="min-width:0;flex:1 1 auto">
+              <input id="profile-phone" minlength="6" maxlength="39" type="tel" inputmode="tel" autocomplete="tel-national" pattern="(?=.*\d)[-+0-9 ()]{6,40}" title="Use digits only. Spaces, +, brackets and dashes are okay." placeholder="901 234 501" style="min-width:0;flex:1 1 auto">
             </span>
           </label>
           <label class="span-2">
@@ -201,7 +201,7 @@
           </form>
           <form id="add-address-form" class="address-add-form">
             <label>Delivery address
-              <input id="new-address-input" type="text" placeholder="Street, ward, landmark" minlength="5" maxlength="499" autocomplete="street-address" aria-autocomplete="list" aria-controls="account-address-autocomplete-list" aria-expanded="false" required>
+              <input id="new-address-input" type="text" placeholder="Street, ward, landmark" minlength="5" maxlength="499" autocomplete="street-address" role="combobox" aria-autocomplete="list" aria-controls="account-address-autocomplete-list" aria-expanded="false" required>
             </label>
             <div id="account-address-autocomplete-list" role="listbox" aria-label="Google Maps address suggestions" hidden></div>
             <div class="account-address-actions">

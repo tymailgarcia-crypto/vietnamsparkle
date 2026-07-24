@@ -143,7 +143,7 @@
         <form id="public-order-form" class="form-grid pair-mobile">
           <label class="contact-identity-field">
             Customer name
-            <input id="form-customer-name" name="customerName" required minlength="2" maxlength="199" type="text" placeholder="Tran Minh">
+            <input id="form-customer-name" name="customerName" required minlength="2" maxlength="199" type="text" autocomplete="name" placeholder="Tran Minh">
           </label>
           <label class="contact-identity-field">
             Phone
@@ -158,7 +158,7 @@
                   <span class="phone-country-options" role="listbox"></span>
                 </span>
               </span>
-              <input id="form-phone" name="phone" required minlength="6" maxlength="39" type="tel" pattern="(?=.*\d)[-+0-9 ()]{6,40}" title="Use digits only. Spaces, +, brackets and dashes are okay." placeholder="905 123 456" style="min-width:0;flex:1 1 auto">
+              <input id="form-phone" name="phone" required minlength="6" maxlength="39" type="tel" inputmode="tel" autocomplete="tel-national" pattern="(?=.*\d)[-+0-9 ()]{6,40}" title="Use digits only. Spaces, +, brackets and dashes are okay." placeholder="905 123 456" style="min-width:0;flex:1 1 auto">
             </span>
           </label>
           <p id="update-account-status" class="muted personal-details-status span-2" role="status" aria-live="polite"></p>
@@ -172,7 +172,7 @@
           <div id="delivery-address-editor" class="span-2 delivery-address-editor">
             <label>
               <span id="delivery-address-editor-label">Enter delivery address</span>
-              <input id="form-address" name="address" required minlength="5" maxlength="499" type="text" placeholder="12 Nguyen Hue, Da Nang">
+              <input id="form-address" name="address" required minlength="5" maxlength="499" type="text" autocomplete="street-address" role="combobox" aria-autocomplete="list" aria-expanded="false" placeholder="12 Nguyen Hue, Da Nang">
             </label>
             <span class="address-verify-actions">
               <button id="address-verify-button" class="ghost" type="button">Find on Google Maps</button>
