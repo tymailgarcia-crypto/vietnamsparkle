@@ -42,3 +42,12 @@ firebase/emulator-data/
 .DS_Store
 Thumbs.db
 desktop.ini
+*.lnk
+
+# Manual pre-deploy snapshots — throwaway copies of the web tree taken before an
+# isolated hosting release. Machine-local, bulky, and never belong in history.
+.manual-deploy-*/
+
+# Unrelated local tooling that lives in this folder but isn't part of the app.
+PNG Cutline Tool/
+rembg-to-cutline-svg.bat
