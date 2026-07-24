@@ -18,10 +18,17 @@ import { createRequire } from "node:module";
 
 process.env.NODE_ENV = "test"; // exposes _recordPaymentTestApi in index.js
 
-import { collectedPaymentProblem as clientProblem } from "../web/assets/shared.js";
+import {
+  collectedPaymentProblem as clientProblem,
+  paymentEvidenceProblem as clientEvidence,
+  refundEvidenceProblem as clientRefundEvidence
+} from "../web/assets/shared.js";
 
 const require = createRequire(import.meta.url);
-const serverProblem = require("./index.js")._recordPaymentTestApi().collectedPaymentProblem;
+const _api = require("./index.js")._recordPaymentTestApi();
+const serverProblem = _api.collectedPaymentProblem;
+const serverEvidence = _api.paymentEvidenceProblem;
+const serverRefundEvidence = _api.refundEvidenceProblem;
 
 let passed = 0;
 let failed = 0;
@@ -81,6 +88,76 @@ it("positive whole VND is accepted; overpayment is NOT this helper's job", () =>
   assert.strictEqual(clientProblem(100000, 100000), null);
   assert.strictEqual(clientProblem(1000000, 100000), null, "over the balance still passes here — the transaction's acknowledged-credit gate owns that");
   assert.strictEqual(clientProblem(1, 100000), null);
+});
+
+// --- Evidence-per-method: parity ------------------------------------------
+
+it("payment evidence: client and server agree across every sample", () => {
+  const methods = ["cash", "transfer", "bank_qr", "other", "", "deferred", undefined];
+  const references = ["", "   ", "ABC123", null, undefined];
+  const proofs = [true, false, undefined];
+  const amounts = [0, -1, 1, 100000, NaN, "1000", null];
+  for (const method of methods) {
+    for (const reference of references) {
+      for (const hasProof of proofs) {
+        for (const amount of amounts) {
+          const args = { method, reference, hasProof, amount };
+          assert.strictEqual(
+            clientEvidence(args),
+            serverEvidence(args),
+            `drift at ${JSON.stringify(args)}`
+          );
+        }
+      }
+    }
+  }
+});
+
+it("refund evidence: client and server agree across every sample", () => {
+  const methods = ["refund_bank", "refund_qr", "refund_wallet", "refund_cash", "", "other", undefined];
+  const references = ["", "  ", "TXN-9", null, undefined];
+  for (const method of methods) {
+    for (const reference of references) {
+      const args = { method, reference };
+      assert.strictEqual(
+        clientRefundEvidence(args),
+        serverRefundEvidence(args),
+        `drift at ${JSON.stringify(args)}`
+      );
+    }
+  }
+});
+
+// --- Evidence-per-method: behavior ----------------------------------------
+
+it("cash and 'other' never need payment evidence", () => {
+  assert.strictEqual(clientEvidence({ method: "cash", amount: 100000 }), null);
+  assert.strictEqual(clientEvidence({ method: "other", amount: 100000 }), null);
+});
+
+it("transfer/QR need a reference OR a photo when money moved", () => {
+  assert.ok(clientEvidence({ method: "transfer", amount: 100000 }), "no ref, no photo → blocked");
+  assert.ok(clientEvidence({ method: "bank_qr", amount: 100000 }), "no ref, no photo → blocked");
+  assert.strictEqual(clientEvidence({ method: "transfer", amount: 100000, reference: "TXN1" }), null, "reference satisfies it");
+  assert.strictEqual(clientEvidence({ method: "transfer", amount: 100000, hasProof: true }), null, "a photo satisfies it");
+  assert.strictEqual(clientEvidence({ method: "bank_qr", amount: 100000, reference: "  x  " }), null, "a non-blank reference satisfies it");
+});
+
+it("a blank/whitespace reference does not satisfy the transfer rule", () => {
+  assert.ok(clientEvidence({ method: "transfer", amount: 100000, reference: "   " }));
+});
+
+it("a zero (prepaid) collected amount needs no evidence, whatever the method", () => {
+  assert.strictEqual(clientEvidence({ method: "transfer", amount: 0 }), null);
+  assert.strictEqual(clientEvidence({ method: "bank_qr", amount: 0, reference: "" }), null);
+});
+
+it("electronic refunds need a reference; cash refunds do not", () => {
+  assert.ok(clientRefundEvidence({ method: "refund_bank" }), "bank refund with no reference → blocked");
+  assert.ok(clientRefundEvidence({ method: "refund_qr", reference: "" }));
+  assert.ok(clientRefundEvidence({ method: "refund_wallet" }));
+  assert.strictEqual(clientRefundEvidence({ method: "refund_bank", reference: "TXN-42" }), null);
+  assert.strictEqual(clientRefundEvidence({ method: "refund_cash" }), null, "cash refund is exempt");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

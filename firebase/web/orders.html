@@ -6,6 +6,48 @@
     <title>Orders · Vietnam Sparkle</title>
     <link rel="stylesheet" href="./assets/styles.css">
     <style>
+      /* Contact menu + important-note, mirrored from the dashboard card. Markup
+         is shared via shared.js; this styles the Orders-page copy. */
+      #order-cards .customer-contact { position: relative; }
+      #order-cards .customer-contact summary {
+        display: flex; width: 44px; min-height: 44px; align-items: center; justify-content: center;
+        padding: 6px; border: 1px solid #a9c9f5; border-radius: 10px; background: #f3f8ff;
+        color: var(--brand); font-size: 13px; font-weight: 700; cursor: pointer; list-style: none;
+      }
+      #order-cards .customer-contact summary::-webkit-details-marker { display: none; }
+      #order-cards .customer-contact summary svg,
+      #order-cards .customer-contact-menu svg { width: 19px; height: 19px; flex: 0 0 19px; fill: currentColor; }
+      #order-cards .customer-contact-menu {
+        position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 20; display: flex; gap: 4px;
+        padding: 6px; border: 1px solid #a9c9f5; border-radius: 12px; background: #fff;
+        box-shadow: 0 8px 22px rgba(20, 38, 49, 0.18);
+      }
+      #order-cards .customer-contact-menu a {
+        display: flex; width: 44px; height: 44px; align-items: center; justify-content: center;
+        padding: 0; border-radius: 8px; color: #123b72; font-size: 13px; font-weight: 700; text-decoration: none;
+      }
+      #order-cards .customer-contact-menu a:hover { background: #eef5ff; }
+      #order-cards .customer-contact-menu .contact-whatsapp { color: #128c4b; }
+      #order-cards .customer-contact-menu .contact-zalo { color: #0868d7; }
+      #order-cards .contact-zalo .zalo-letter { fill: none; stroke: #fff; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
+      .important-label {
+        display: inline-flex; align-items: center; gap: 3px; padding: 2px 6px; border-radius: 999px;
+        background: #f6d778; color: #674700; font-size: 11px; font-weight: 800;
+      }
+      [data-important-order].is-important { border-color: #d99a12; background: #fff3c7; color: #674700; font-weight: 800; }
+      #order-cards .order-important-note {
+        padding: 8px 10px; border: 1px solid rgba(217, 154, 18, 0.35); border-radius: 9px;
+        background: #fff8df; color: #5c470d; font-size: 13px; line-height: 1.35; overflow-wrap: anywhere;
+      }
+      #importance-dialog { width: min(460px, calc(100vw - 24px)); }
+      #importance-dialog form { min-width: 0; }
+      #importance-note { min-height: 110px; resize: vertical; }
+      .importance-dialog-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      @media (max-width: 560px) {
+        .importance-dialog-actions { display: grid; grid-template-columns: 1fr 1fr; }
+        .importance-dialog-actions button { min-height: 44px; }
+        .importance-dialog-actions .importance-cancel { grid-column: 1 / -1; }
+      }
       .orders-date-range {
         display: grid;
         grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -230,6 +272,27 @@
             <a class="button-link secondary" id="orders-map-directions" href="#" target="_blank" rel="noopener" hidden>Directions</a>
             <button type="button" id="orders-map-close">Close</button>
           </div>
+        </dialog>
+
+        <dialog id="importance-dialog" class="edit-dialog">
+          <form id="importance-form" class="stack">
+            <div>
+              <h3 style="margin:0">Important order</h3>
+              <p class="muted" id="importance-order-label" style="margin:4px 0 0"></p>
+            </div>
+            <input id="importance-order-id" type="hidden">
+            <label>
+              Note <span aria-hidden="true">*</span>
+              <textarea id="importance-note" required maxlength="300" placeholder="Why does this order need special attention?"></textarea>
+            </label>
+            <p class="muted" style="margin:0">A note is required so everyone knows what needs attention.</p>
+            <p id="importance-status" class="muted" role="status" aria-live="polite" style="margin:0"></p>
+            <div class="importance-dialog-actions">
+              <button class="primary" type="submit">Save important</button>
+              <button class="secondary hidden" id="importance-clear-button" type="button">Remove label</button>
+              <button class="ghost importance-cancel" id="importance-cancel-button" type="button">Cancel</button>
+            </div>
+          </form>
         </dialog>
       </div>
     </main>

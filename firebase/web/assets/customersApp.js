@@ -5,27 +5,34 @@ import {
   doc,
   getDocs,
   onAuthStateChanged,
+  query,
   serverTimestamp,
   setDoc,
-  signOut
+  signOut,
+  where,
+  writeBatch
 } from "./firebaseClient.js";
-import { buildDuplicateGroups, normalizePhoneE164VN, requireRole, withSubmitLock } from "./shared.js";
+import { buildDuplicateGroups, buildOrderId, computeDepositBreakdown, normalizePhoneE164VN, normalizePhoneWithCountry, paymentStatusFor, requireRole, setDeliveryWindow, setupPhoneCountryPicker, todayKey, withSubmitLock } from "./shared.js";
 import { mapsApiKey } from "./firebaseWebConfig.js";
+import { createEditOrderAddressController } from "./editOrderAddress.js";
 
 let customersMapsPromise = null;
-let newCustomerAddressMap = null;
-let newCustomerAddressMarker = null;
-let pendingNewCustomerLocation = null;
-let confirmedNewCustomerLocation = null;
+let newCustomerPhonePicker = null;
 
 const state = {
   customers: [],
+  products: [],
   insights: {},
   search: "",
   attention: "",
   sort: "name-asc",
   view: localStorage.getItem("customers-view") || "cards"
 };
+
+// The in-progress order attached to the Add customer / New order dialog. Cleared
+// each time the dialog opens. `mode` is "order" when opened via New order (an
+// order is required) or "customer" via Add customer (the order is optional).
+const orderDraft = { items: [], mode: "customer" };
 
 function el(id) {
   return document.getElementById(id);
@@ -51,83 +58,26 @@ function loadCustomersMaps() {
   return customersMapsPromise;
 }
 
-function setNewCustomerAddressStatus(message, isError = false) {
-  const node = el("new-customer-address-status");
-  node.textContent = message || "";
-  node.style.color = isError ? "var(--danger, #b3261e)" : "var(--muted)";
-}
+// Reuse the same Google Places autocomplete + draggable-pin controller the
+// edit-order address flow uses, so Add customer gets the type-ahead address
+// suggestions the order form and My account already have. The controller reads
+// its elements by id; getElement maps its `edit-address*` ids onto this form's
+// `new-customer-address*` ids, so the shared module needs no changes.
+const NEW_CUSTOMER_ADDRESS_IDS = {
+  "edit-address": "new-customer-address",
+  "edit-address-verify": "new-customer-address-verify",
+  "edit-address-confirm": "new-customer-address-confirm",
+  "edit-address-reset-pin": "new-customer-address-reset-pin",
+  "edit-address-map-wrap": "new-customer-address-map-wrap",
+  "edit-address-map": "new-customer-address-map",
+  "edit-address-autocomplete-list": "new-customer-address-autocomplete-list",
+  "edit-address-status": "new-customer-address-status"
+};
 
-function clearNewCustomerLocation() {
-  pendingNewCustomerLocation = null;
-  confirmedNewCustomerLocation = null;
-  el("new-customer-address-map-wrap")?.setAttribute("hidden", "");
-  setNewCustomerAddressStatus("Confirm the delivery pin before saving.");
-}
-
-async function findNewCustomerAddress() {
-  const address = el("new-customer-address").value.trim();
-  if (address.length < 5) {
-    setNewCustomerAddressStatus("Enter a fuller delivery address first.", true);
-    return;
-  }
-  const button = el("new-customer-address-verify");
-  button.disabled = true;
-  setNewCustomerAddressStatus("Searching Google Maps...");
-  confirmedNewCustomerLocation = null;
-  try {
-    await loadCustomersMaps();
-    const geocoder = new google.maps.Geocoder();
-    const match = await new Promise((resolve, reject) => {
-      geocoder.geocode({
-        address,
-        region: "vn",
-        componentRestrictions: { country: "vn" },
-        bounds: new google.maps.LatLngBounds({ lat: 15.90, lng: 108.05 }, { lat: 16.20, lng: 108.35 })
-      }, (results, status) => {
-        if (status === "OK" && results?.[0]) resolve(results[0]);
-        else reject(new Error("We couldn't find that address. Add a district or nearby landmark and try again."));
-      });
-    });
-    const position = match.geometry.location;
-    const wrap = el("new-customer-address-map-wrap");
-    wrap.hidden = false;
-    newCustomerAddressMap = newCustomerAddressMap || new google.maps.Map(el("new-customer-address-map"), {
-      center: position,
-      zoom: 17,
-      streetViewControl: false,
-      mapTypeControl: false,
-      fullscreenControl: false
-    });
-    newCustomerAddressMap.setCenter(position);
-    google.maps.event.trigger(newCustomerAddressMap, "resize");
-    if (newCustomerAddressMarker) newCustomerAddressMarker.setMap(null);
-    newCustomerAddressMarker = new google.maps.Marker({ map: newCustomerAddressMap, position, draggable: true });
-    const capture = (pin) => {
-      pendingNewCustomerLocation = {
-        lat: pin.lat(),
-        lng: pin.lng(),
-        formattedAddress: match.formatted_address || address,
-        geocodedAt: new Date().toISOString()
-      };
-      confirmedNewCustomerLocation = null;
-      setNewCustomerAddressStatus("Check the pin, drag it to the exact entrance if needed, then use this location.");
-    };
-    capture(position);
-    newCustomerAddressMarker.addListener("dragend", () => capture(newCustomerAddressMarker.getPosition()));
-  } catch (error) {
-    pendingNewCustomerLocation = null;
-    el("new-customer-address-map-wrap")?.setAttribute("hidden", "");
-    setNewCustomerAddressStatus(error.message || String(error), true);
-  } finally {
-    button.disabled = false;
-  }
-}
-
-function confirmNewCustomerAddress() {
-  if (!pendingNewCustomerLocation) return;
-  confirmedNewCustomerLocation = { ...pendingNewCustomerLocation };
-  setNewCustomerAddressStatus("✓ Delivery location confirmed on Google Maps.");
-}
+const newCustomerAddress = createEditOrderAddressController({
+  loadMaps: loadCustomersMaps,
+  getElement: (id) => el(NEW_CUSTOMER_ADDRESS_IDS[id] || id)
+});
 
 function phoneDialHref(phone) {
   const digits = String(phone || "").replace(/[^0-9+]/g, "");
@@ -148,10 +98,14 @@ function escapeHtml(value) {
     .replace(/"/g, "&quot;");
 }
 
+function formatCurrency(amount) {
+  return new Intl.NumberFormat("en-US").format(Number(amount || 0)) + " VND";
+}
+
 function matchesSearch(customer) {
   if (!state.search) return true;
   const q = state.search.toLowerCase();
-  return [customer.name, customer.billingName, customer.phone, customer.secondaryPhone, customer.email, customer.address, customer.area]
+  return [customer.name, customer.billingName, customer.phone, customer.secondaryPhone, customer.email, customer.address]
     .some((field) => String(field || "").toLowerCase().includes(q));
 }
 
@@ -379,7 +333,8 @@ setView(state.view);
 
 function checkForDuplicatePhone() {
   const rawPhone = el("new-customer-phone").value;
-  const e164 = normalizePhoneE164VN(rawPhone);
+  const countryCode = el("new-customer-phone-country")?.value || "+84";
+  const e164 = normalizePhoneWithCountry(rawPhone, countryCode);
   const banner = el("new-customer-dedupe-banner");
   if (!e164) {
     banner.style.display = "none";
@@ -397,19 +352,122 @@ function checkForDuplicatePhone() {
   const links = matches.map((m) =>
     `<a href="./customer.html?id=${encodeURIComponent(m.id)}">${escapeHtml(m.name || "Unknown")}</a>`
   ).join(", ");
-  banner.innerHTML = `A customer with this phone may already exist: ${links}. You can still save if these are different people sharing a phone.`;
+  banner.innerHTML = `A customer with this phone may already exist: ${links}. Choose what to do:`
+    + `<div class="button-row" style="margin-top:8px;gap:16px;flex-wrap:wrap">`
+    + `<label class="button-row" style="gap:6px;cursor:pointer"><input type="radio" name="add-customer-dedupe-choice" value="existing" checked><span>Use this existing customer</span></label>`
+    + `<label class="button-row" style="gap:6px;cursor:pointer"><input type="radio" name="add-customer-dedupe-choice" value="new"><span>Create a separate new record</span></label>`
+    + `</div>`;
 }
 
-function openAddCustomerDialog() {
+// --- Order draft (product picker shared by the Add customer / New order dialog) ---
+
+function computeOrderDraftTotals() {
+  return orderDraft.items.reduce((acc, item) => {
+    const qty = Number(item.quantity || 0);
+    acc.subtotal += qty * Number(item.unitPrice || 0);
+    acc.depositTotal += qty * Number(item.defaultDepositAmount || 0);
+    return acc;
+  }, { subtotal: 0, depositTotal: 0 });
+}
+
+function renderOrderDraftTotals() {
+  const totals = computeOrderDraftTotals();
+  const due = totals.subtotal + totals.depositTotal;
+  el("add-customer-totals").innerHTML = `
+    <div class="card"><span class="muted">Subtotal</span><strong>${formatCurrency(totals.subtotal)}</strong></div>
+    <div class="card"><span class="muted">Deposit</span><strong>${formatCurrency(totals.depositTotal)}</strong></div>
+    <div class="card"><span class="muted">Total due</span><strong>${formatCurrency(due)}</strong></div>
+  `;
+}
+
+function renderOrderDraftItems() {
+  const container = el("add-customer-items");
+  if (!orderDraft.items.length) {
+    const hint = orderDraft.mode === "order" ? " — at least one is needed" : " (optional)";
+    container.innerHTML = `<p class="muted">No items yet. Add a product below${hint}.</p>`;
+    return;
+  }
+  container.innerHTML = orderDraft.items.map((item, idx) => `
+    <div class="card">
+      <div class="order-top">
+        <div>
+          <strong>${escapeHtml(item.productName)}</strong>
+          <div class="muted">${formatCurrency(item.unitPrice)} each · deposit ${formatCurrency(item.defaultDepositAmount || 0)}</div>
+        </div>
+        <div class="button-row" style="gap:6px">
+          <button class="ghost" type="button" data-od-minus="${idx}">-</button>
+          <span class="qty-value">${item.quantity}</span>
+          <button class="ghost" type="button" data-od-plus="${idx}">+</button>
+          <button class="ghost" type="button" data-od-remove="${idx}">Remove</button>
+        </div>
+      </div>
+    </div>
+  `).join("");
+  container.querySelectorAll("[data-od-minus]").forEach((btn) => btn.addEventListener("click", () => changeOrderDraftQty(Number(btn.dataset.odMinus), -1)));
+  container.querySelectorAll("[data-od-plus]").forEach((btn) => btn.addEventListener("click", () => changeOrderDraftQty(Number(btn.dataset.odPlus), 1)));
+  container.querySelectorAll("[data-od-remove]").forEach((btn) => btn.addEventListener("click", () => removeOrderDraftItem(Number(btn.dataset.odRemove))));
+}
+
+function changeOrderDraftQty(idx, delta) {
+  const next = Math.max(0, Number(orderDraft.items[idx].quantity || 0) + delta);
+  if (next === 0) orderDraft.items.splice(idx, 1);
+  else orderDraft.items[idx].quantity = next;
+  renderOrderDraftItems();
+  renderOrderDraftTotals();
+}
+
+function removeOrderDraftItem(idx) {
+  orderDraft.items.splice(idx, 1);
+  renderOrderDraftItems();
+  renderOrderDraftTotals();
+}
+
+function addOrderDraftItem() {
+  const select = el("add-customer-add-select");
+  const productId = select.value;
+  if (!productId) return;
+  const product = state.products.find((p) => p.id === productId);
+  if (!product) return;
+  const existing = orderDraft.items.find((i) => i.productId === productId);
+  if (existing) existing.quantity += 1;
+  else orderDraft.items.push({
+    productId: product.id,
+    productName: product.productName,
+    quantity: 1,
+    unitPrice: Number(product.unitPrice || 0),
+    defaultDepositAmount: Number(product.defaultDepositAmount || 0)
+  });
+  select.value = "";
+  renderOrderDraftItems();
+  renderOrderDraftTotals();
+}
+
+function openAddCustomerDialog(mode = "customer") {
   const dialog = el("add-customer-dialog");
   if (!dialog || typeof dialog.showModal !== "function") return;
   el("add-customer-form").reset();
+  // form.reset() restores the hidden country <input> to +84 but not the picker's
+  // visible label/state, so set it back explicitly.
+  newCustomerPhonePicker?.setValue("+84");
   el("new-customer-dedupe-banner").style.display = "none";
   el("new-customer-dedupe-banner").innerHTML = "";
   const statusNode = el("add-customer-status");
   statusNode.textContent = "";
   statusNode.style.color = "";
-  clearNewCustomerLocation();
+  newCustomerAddress.reset();
+
+  orderDraft.mode = mode === "order" ? "order" : "customer";
+  orderDraft.items = [];
+  el("add-customer-title").textContent = orderDraft.mode === "order" ? "New order" : "Add a new customer";
+  el("add-customer-submit").textContent = orderDraft.mode === "order" ? "Create order" : "Save customer";
+  el("add-customer-order-heading").textContent = orderDraft.mode === "order" ? "Order" : "Order (optional)";
+  el("add-customer-date").value = todayKey();
+  setDeliveryWindow(el("add-customer-window"), "");
+  el("add-customer-add-select").innerHTML = '<option value="">Choose a product to add...</option>'
+    + state.products.map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.productName)} — ${formatCurrency(p.unitPrice)}</option>`).join("");
+  renderOrderDraftItems();
+  renderOrderDraftTotals();
+
   dialog.showModal();
 }
 
@@ -417,48 +475,151 @@ async function handleSaveNewCustomer(event) {
   event.preventDefault();
   const statusNode = el("add-customer-status");
   const rawPhone = el("new-customer-phone").value.trim();
-  const e164 = normalizePhoneE164VN(rawPhone);
+  const countryCode = el("new-customer-phone-country")?.value || "+84";
+  const e164 = normalizePhoneWithCountry(rawPhone, countryCode);
   if (!e164) {
-    statusNode.textContent = "Enter a valid phone. Include country code for numbers outside Vietnam.";
+    statusNode.textContent = "Enter a valid phone. Pick the country code, then enter the number.";
     statusNode.style.color = "var(--danger, #b3261e)";
     return;
   }
-  if (!confirmedNewCustomerLocation) {
+  const address = el("new-customer-address").value.trim();
+  const confirmedLocation = newCustomerAddress.confirmedFor(address);
+  if (!confirmedLocation) {
     statusNode.textContent = "Confirm the delivery address on Google Maps before saving.";
     statusNode.style.color = "var(--danger, #b3261e)";
     el("new-customer-address-verify").focus();
     return;
   }
+
+  const hasOrder = orderDraft.items.length > 0;
+  if (orderDraft.mode === "order" && !hasOrder) {
+    statusNode.textContent = "Add at least one product for the order.";
+    statusNode.style.color = "var(--danger, #b3261e)";
+    return;
+  }
+
+  // Duplicate phone: warn + let the owner choose (radios rendered in the dedupe
+  // banner). Default is to reuse the existing customer without overwriting it.
   const digits = e164.replace(/\D+/g, "");
-  const customerId = `CUS-${digits}`;
+  const matches = state.customers.filter((c) => normalizePhoneE164VN(c.phone) === e164);
+  const dedupeChoice = document.querySelector('input[name="add-customer-dedupe-choice"]:checked')?.value;
+  const existingCustomer = (matches.length && dedupeChoice !== "new") ? matches[0] : null;
+
+  // Target id: the existing record when reusing; otherwise CUS-<digits>, suffixed
+  // when that id is already taken (a deliberate separate person on one phone).
+  let customerId;
+  if (existingCustomer) customerId = existingCustomer.id;
+  else if (matches.some((c) => c.id === `CUS-${digits}`)) customerId = `CUS-${digits}-${Date.now().toString(36)}`;
+  else customerId = `CUS-${digits}`;
+
+  const formName = el("new-customer-name").value.trim();
+  const formEmail = el("new-customer-email").value.trim() || null;
+  const notes = el("new-customer-notes").value.trim() || null;
+
   await withSubmitLock(event, async () => {
     try {
-      statusNode.textContent = "Saving...";
+      statusNode.textContent = hasOrder ? "Creating order..." : "Saving...";
       statusNode.style.color = "";
-      await setDoc(doc(db, "customers", customerId), {
-        name: el("new-customer-name").value.trim(),
-        // E.164 only (Ty, 2026-07-16) — wa.me links break on local formats.
-        phone: e164,
-        email: el("new-customer-email").value.trim() || null,
-        area: el("new-customer-area").value.trim() || null,
-        address: el("new-customer-address").value.trim(),
-        addressLocations: [{
-          address: el("new-customer-address").value.trim(),
-          ...confirmedNewCustomerLocation
-        }],
-        location: { ...confirmedNewCustomerLocation },
-        notes: el("new-customer-notes").value.trim() || null,
-        billingName: null,
-        taxId: null,
-        secondaryPhone: null,
-        addressHistory: null,
-        lastSourceChannel: "owner_added",
-        lastOrderAt: null,
-        orderCount: 0,
-        authUid: null,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp()
-      }, { merge: true });
+      const nowIso = new Date().toISOString();
+      const batch = writeBatch(db);
+
+      // Create the customer only when we are not reusing an existing record —
+      // never overwrite a customer the owner chose to keep.
+      if (!existingCustomer) {
+        batch.set(doc(db, "customers", customerId), {
+          name: formName,
+          // E.164 only (Ty, 2026-07-16) — wa.me links break on local formats.
+          phone: e164,
+          email: formEmail,
+          area: null,
+          address,
+          addressLocations: [{ address, ...confirmedLocation }],
+          location: { ...confirmedLocation },
+          notes,
+          billingName: null,
+          taxId: null,
+          secondaryPhone: null,
+          addressHistory: null,
+          lastSourceChannel: "owner_added",
+          lastOrderAt: null,
+          orderCount: 0,
+          authUid: null,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp()
+        }, { merge: true });
+      }
+
+      if (hasOrder) {
+        const totals = computeOrderDraftTotals();
+        const orderId = buildOrderId("ORD");
+        const deliveryDate = el("add-customer-date").value || todayKey();
+        const orderName = existingCustomer ? (existingCustomer.name || formName) : formName;
+        const orderPhone = existingCustomer ? (existingCustomer.phone || e164) : e164;
+        const orderEmail = existingCustomer ? (existingCustomer.email || null) : formEmail;
+        const orderAuthUid = existingCustomer ? (existingCustomer.authUid || null) : null;
+        const balanceDue = totals.subtotal + totals.depositTotal;
+
+        batch.set(doc(db, "orders", orderId), {
+          createdAt: nowIso,
+          sourceChannel: "owner_manual",
+          customerId,
+          authUid: orderAuthUid,
+          customerName: orderName,
+          phone: orderPhone,
+          email: orderEmail,
+          address,
+          deliveryLocation: {
+            lat: confirmedLocation.lat,
+            lng: confirmedLocation.lng,
+            formattedAddress: confirmedLocation.formattedAddress || null,
+            geocodedAt: nowIso,
+            sourceCustomerId: customerId
+          },
+          deliveryDate,
+          deliveryWindow: el("add-customer-window").value.trim(),
+          assignedDriverId: null,
+          status: "new",
+          subtotal: totals.subtotal,
+          depositTotal: totals.depositTotal,
+          amountPaid: 0,
+          balanceDue,
+          paymentStatus: paymentStatusFor(0, balanceDue),
+          notes,
+          updatedAt: nowIso
+        });
+
+        orderDraft.items.forEach((item) => {
+          const qty = Number(item.quantity);
+          const unitPrice = Number(item.unitPrice);
+          batch.set(doc(db, "orderItems", buildOrderId("ITEM")), {
+            orderId,
+            authUid: orderAuthUid,
+            productId: item.productId,
+            productName: item.productName,
+            quantity: qty,
+            unitPrice,
+            lineTotal: qty * unitPrice
+          });
+        });
+
+        const productsById = Object.fromEntries(state.products.map((p) => [p.id, p]));
+        computeDepositBreakdown(orderDraft.items, productsById).forEach((entry) => {
+          batch.set(doc(db, "depositEvents", buildOrderId("DEP")), {
+            orderId,
+            customerId,
+            authUid: orderAuthUid,
+            containerType: entry.containerType,
+            qty: entry.qty,
+            amount: entry.amount,
+            eventType: "charged",
+            eventDate: deliveryDate,
+            linkedDocumentId: null,
+            notes: "Auto-charged on owner order create"
+          });
+        });
+      }
+
+      await batch.commit();
       el("add-customer-dialog").close();
       location.href = `./customer.html?id=${encodeURIComponent(customerId)}`;
     } catch (error) {
@@ -468,15 +629,18 @@ async function handleSaveNewCustomer(event) {
   });
 }
 
-el("add-customer-button").addEventListener("click", openAddCustomerDialog);
+newCustomerPhonePicker = setupPhoneCountryPicker(el("new-customer-phone-country-picker"));
+el("add-customer-button").addEventListener("click", () => openAddCustomerDialog("customer"));
+el("new-order-button").addEventListener("click", () => openAddCustomerDialog("order"));
 el("add-customer-cancel-button").addEventListener("click", () => {
   el("add-customer-dialog").close();
 });
 el("add-customer-form").addEventListener("submit", handleSaveNewCustomer);
+el("add-customer-add-button").addEventListener("click", addOrderDraftItem);
 el("new-customer-phone").addEventListener("input", checkForDuplicatePhone);
-el("new-customer-address").addEventListener("input", clearNewCustomerLocation);
-el("new-customer-address-verify").addEventListener("click", findNewCustomerAddress);
-el("new-customer-address-confirm").addEventListener("click", confirmNewCustomerAddress);
+// The address input, "Find on Google Maps", "Use this location" and "Reset pin"
+// are wired by newCustomerAddress (createEditOrderAddressController) above,
+// which also drives the type-ahead Google Places suggestions.
 
 onAuthStateChanged(auth, async (user) => {
   const authView = el("auth-view");
@@ -491,4 +655,16 @@ onAuthStateChanged(auth, async (user) => {
   appView.classList.remove("hidden");
   el("auth-email").textContent = user.email || user.uid;
   await loadCustomers();
+  // Products drive the New order product picker. Non-fatal: if it fails the
+  // dialog still creates a customer, just with an empty product list.
+  await loadProducts();
 });
+
+async function loadProducts() {
+  try {
+    const snap = await getDocs(query(collection(db, "products"), where("active", "==", true)));
+    state.products = snap.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() }));
+  } catch (error) {
+    state.products = [];
+  }
+}

@@ -519,10 +519,10 @@ export function productImageUrl(productOrName) {
 // value as a temporary option so it survives an edit without disappearing.
 export const DELIVERY_WINDOW_OPTIONS = [
   { value: "", label: "Any time" },
-  { value: "Morning (08:00–12:00)", label: "Morning (08:00–12:00)" },
-  { value: "Early afternoon (13:00–15:00)", label: "Early afternoon (13:00–15:00)" },
-  { value: "Late afternoon (15:00–17:00)", label: "Late afternoon (15:00–17:00)" },
-  { value: "Evening (17:00–19:00)", label: "Evening (17:00–19:00)" }
+  { value: "Morning (10:00–13:00)", label: "Morning (10:00–13:00)" },
+  { value: "Afternoon (13:00–16:00)", label: "Afternoon (13:00–16:00)" },
+  { value: "Late afternoon (16:00–19:00)", label: "Late afternoon (16:00–19:00)" },
+  { value: "Evening (19:00–22:00)", label: "Evening (19:00–22:00)" }
 ];
 
 export function renderDeliveryWindowOptions(currentValue = "") {
@@ -540,6 +540,57 @@ export function setDeliveryWindow(selectEl, value) {
   if (!selectEl) return;
   selectEl.innerHTML = renderDeliveryWindowOptions(value || "");
   selectEl.value = value || "";
+}
+
+// --- Shared order-card bits (dashboard + Orders page) -----------------------
+//
+// The contact menu and important-note flag render identically on the admin
+// today board and the Orders page, so they live here as one copy. The pages
+// supply their own CSS (scoped to #today-board / #order-cards) but target the
+// same markup, so the two can't drift apart in structure or behaviour.
+
+function contactIcon(kind) {
+  if (kind === "phone") return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.6 10.8c1.7 3.3 3.3 4.9 6.6 6.6l2.2-2.2c.3-.3.7-.4 1.1-.3 1.2.4 2.5.6 3.8.6.6 0 1 .4 1 1v3.8c0 .6-.4 1-1 1C10.6 21.3 2.7 13.4 2.7 3.7c0-.6.4-1 1-1h3.8c.6 0 1 .4 1 1 0 1.3.2 2.6.6 3.8.1.4 0 .8-.3 1.1l-2.2 2.2Z"/></svg>`;
+  if (kind === "whatsapp") return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 3.5A11.8 11.8 0 0 0 12.1 0C5.6 0 .3 5.3.3 11.8c0 2.1.5 4.1 1.6 5.9L.2 24l6.5-1.7c1.7.9 3.6 1.4 5.5 1.4 6.5 0 11.8-5.3 11.8-11.8 0-3.2-1.2-6.1-3.5-8.4Zm-8.4 18.2c-1.7 0-3.4-.5-4.9-1.3l-.4-.2-3.8 1 1-3.7-.2-.4a9.7 9.7 0 1 1 8.3 4.6Zm5.3-7.3c-.3-.1-1.7-.8-2-.9-.3-.1-.5-.1-.7.1-.2.3-.8.9-1 1.1-.2.2-.4.2-.7.1-1.7-.8-2.8-1.5-3.9-3.4-.3-.5.3-.5.8-1.6.1-.2 0-.4 0-.6l-.9-2c-.2-.6-.5-.5-.7-.5h-.6c-.2 0-.6.1-.9.4-.3.3-1.2 1.2-1.2 2.9s1.2 3.3 1.4 3.6c.2.2 2.4 3.7 5.9 5.2 2.2.9 3.1 1 4.2.8.7-.1 1.7-.7 1.9-1.3.2-.6.2-1.2.2-1.3-.1-.1-.3-.2-.6-.3Z"/></svg>`;
+  if (kind === "chat") return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 3h16a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H9l-5 4v-4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm3 6h10V7H7v2Zm0 4h7v-2H7v2Z"/></svg>`;
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 2h14a3 3 0 0 1 3 3v10a3 3 0 0 1-3 3h-6l-4.8 4v-4H5a3 3 0 0 1-3-3V5a3 3 0 0 1 3-3Z"/><path class="zalo-letter" d="M7 7h7l-7 6h7"/></svg>`;
+}
+
+// A pop-over with WhatsApp / Zalo / Phone actions for the order's customer,
+// built from the order's stored phone (no settings dependency). Returns "" when
+// there is no phone to contact.
+export function renderOrderContactMenu(order) {
+  const raw = String(order.phone || "").trim();
+  const digits = raw.replace(/\D/g, "");
+  if (!digits) return "";
+  const callHref = `tel:${raw.startsWith("+") ? "+" : ""}${digits}`;
+  const customer = String(order.customerName || "customer").trim() || "customer";
+  const messageDigits = digits.startsWith("0") ? `84${digits.slice(1)}` : digits;
+  const message = `Hi ${customer}, this is Vietnam Sparkle about order ${order.id}.`;
+  return `
+    <details class="customer-contact">
+      <summary aria-label="Contact ${escapeHtml(customer)}${raw ? ` at ${escapeHtml(raw)}` : ""}" title="Contact customer">${contactIcon("chat")}</summary>
+      <div class="customer-contact-menu">
+        <a class="contact-whatsapp" href="https://wa.me/${messageDigits}?text=${encodeURIComponent(message)}" target="_blank" rel="noopener" aria-label="WhatsApp ${escapeHtml(customer)}" title="WhatsApp">${contactIcon("whatsapp")}</a>
+        <a class="contact-zalo" href="https://zalo.me/${messageDigits}" target="_blank" rel="noopener" aria-label="Zalo ${escapeHtml(customer)}" title="Zalo">${contactIcon("zalo")}</a>
+        <a href="${escapeHtml(callHref)}" aria-label="Call ${escapeHtml(customer)}" title="Phone">${contactIcon("phone")}</a>
+      </div>
+    </details>`;
+}
+
+// The ☆/★ button that opens the important-note dialog (marks or edits).
+export function renderImportanceButton(order) {
+  const active = order.important === true;
+  const label = active ? "Edit important note" : "Mark important";
+  return `<button class="ghost ${active ? "is-important" : ""}" type="button" data-important-order="${escapeHtml(order.id)}" aria-label="${label}">${active ? "&#9733; Important" : "&#9734; Important"}</button>`;
+}
+
+// The highlighted note banner shown on an important order's card. "" when the
+// order isn't flagged.
+export function renderImportantNote(order, className = "important-note") {
+  if (order.important !== true) return "";
+  const note = String(order.importantNote == null ? "" : order.importantNote).trim();
+  return `<div class="${className}"><span class="important-label">Important</span>${note ? ` ${escapeHtml(note)}` : ""}</div>`;
 }
 
 // Configurable thresholds. Sensible defaults live here so pages work even
@@ -689,6 +740,35 @@ export function containerReturnProofType({ hasPhoto = false, note = "" } = {}) {
 // `forfeited` all take both back — a written-off container is no longer held
 // any more than a returned one is.
 //
+// The "held since" date for a currently-outstanding deposit balance, computed
+// FIFO: returns are assumed to clear the OLDEST containers first, so the units
+// still on hand are the most recently charged ones, and the clock RESETS as old
+// stock goes back. Anchoring the ageing clock instead to the oldest charge ever
+// (what the raw oldestChargedDate holds) over-ages a customer who returned an
+// old container and was charged a new one — it shows "held 140 days / forfeit
+// risk" for a crate they have actually held two days, and can falsely tip the
+// balance into the forfeit band. `charges` is [{ date, qty }] oldest-or-any
+// order; `removedQty` is the total returned/credited/refunded/forfeited/
+// charge_reversed quantity. Returns the charge date of the oldest still-held
+// unit, or null when nothing dated is still held (e.g. a broken below-zero
+// balance — handled elsewhere by isBrokenDepositBalance).
+export function heldSinceFromCharges(charges = [], removedQty = 0) {
+  const ordered = charges
+    .filter((c) => Number(c && c.qty) > 0)
+    .slice()
+    .sort((a, b) => String(a.date || "9999-12-31").localeCompare(String(b.date || "9999-12-31")));
+  let skip = Math.max(0, Number(removedQty) || 0);
+  for (const charge of ordered) {
+    const qty = Number(charge.qty) || 0;
+    if (skip >= qty) {
+      skip -= qty;
+      continue;
+    }
+    return charge.date || null;
+  }
+  return null;
+}
+
 // This is deliberately the SAME arithmetic as the owner's
 // loadHeldContainersForCustomer (adminApp/orderApp), because the customer and
 // the owner disagreeing about how many crates are on the doorstep is the whole
@@ -706,7 +786,7 @@ export function summarizeHeldContainers(depositEvents = []) {
   const bump = (rawType, deltaQty, deltaAmount, chargedDate) => {
     const type = String(rawType || "other");
     if (!byType[type]) {
-      byType[type] = { type, qty: 0, deposit: 0, oldestChargedDate: null, chargedQty: 0, chargedAmount: 0 };
+      byType[type] = { type, qty: 0, deposit: 0, oldestChargedDate: null, chargedQty: 0, chargedAmount: 0, charges: [], removedQty: 0 };
     }
     byType[type].qty += deltaQty;
     byType[type].deposit += deltaAmount;
@@ -722,11 +802,13 @@ export function summarizeHeldContainers(depositEvents = []) {
       const row = byType[String(event.containerType || "other")];
       row.chargedQty += qty;
       row.chargedAmount += amount;
+      row.charges.push({ date: event.eventDate || null, qty });
     } else if (event.eventType === "credited" || event.eventType === "refunded" || event.eventType === "forfeited" || event.eventType === "charge_reversed") {
       // charge_reversed (P0-07): the deposit charge was undone because the order
       // was cancelled — it reduces what the customer holds, same as a return,
       // but it is NOT a physical return (see physicalReturnsFromDepositEvents).
       bump(event.containerType, -qty, -amount, null);
+      byType[String(event.containerType || "other")].removedQty += qty;
     }
   });
   // A type that nets to a clean zero is settled and uninteresting. Sub-1 money
@@ -734,9 +816,79 @@ export function summarizeHeldContainers(depositEvents = []) {
   return Object.values(byType)
     .map((row) => ({
       ...row,
-      depositPerUnit: row.chargedQty > 0 ? row.chargedAmount / row.chargedQty : 0
+      depositPerUnit: row.chargedQty > 0 ? row.chargedAmount / row.chargedQty : 0,
+      heldSince: heldSinceFromCharges(row.charges, row.removedQty)
     }))
     .filter((row) => row.qty !== 0 || Math.abs(row.deposit) >= 1);
+}
+
+// Every image attachment in the app used to carry capture="environment", which
+// on many mobile browsers does not HINT the camera — it FORCES it and removes
+// the photo library entirely. A driver recording a transfer screenshot or a
+// receipt already saved on the phone was stuck with no way to reach it. The fix:
+// the file input carries NO capture (so it opens the normal chooser — camera OR
+// library — and is the "choose from library" path Ty asked to preserve), and
+// each input is paired with an explicit "Take photo" button that sets capture
+// only for the single shot it opens, then restores the library default. Wired by
+// a data attribute so one call covers every dialog on a page; idempotent, and if
+// the script never runs the bare input still works as a library picker.
+// See ROADMAP "Offer camera and photo-library actions for every image attachment".
+export function initPhotoSourceInputs(root = document) {
+  const buttons = (root || document).querySelectorAll("[data-proof-camera-for]");
+  buttons.forEach((btn) => {
+    if (btn.dataset.proofWired === "1") return;
+    const input = document.getElementById(btn.dataset.proofCameraFor);
+    if (!input) return;
+    btn.dataset.proofWired = "1";
+    input.removeAttribute("capture");
+    btn.addEventListener("click", (event) => {
+      event.preventDefault();
+      input.setAttribute("capture", "environment");
+      input.click();
+      // Restore the library default once the picker has read the attribute, so
+      // tapping the input itself afterwards still offers the library, not the
+      // camera. The page regains focus when the picker closes.
+      const restore = () => {
+        input.removeAttribute("capture");
+        window.removeEventListener("focus", restore);
+      };
+      window.addEventListener("focus", restore, { once: true });
+    });
+  });
+}
+
+// Compare a past order's line items against the current catalog so a reordering
+// customer is told what changed before they submit, rather than being surprised:
+//  - `dropped`: products retired since that order (active:false → absent from the
+//    catalog). They are left out of the rebuilt cart, so the customer must add a
+//    replacement or they would submit a smaller order than they meant to.
+//  - `priceChanges`: products whose unit price moved. The rebuilt cart is priced
+//    at TODAY's rate (that is what the totals use), so "the usual" can cost more
+//    or less than last time.
+// Deposit is deliberately NOT compared: orderItems do not store the deposit
+// (it is resolved from the catalog at read time), and the totals panel already
+// shows today's deposit. Pure — the caller owns the wording and the rendering.
+export function summarizeReorderChanges(pastItems = [], catalog = []) {
+  const byId = new Map((catalog || []).filter((p) => p && p.id).map((p) => [p.id, p]));
+  const quantities = {};
+  const dropped = [];
+  const priceChanges = [];
+  (pastItems || []).forEach((item) => {
+    const productId = item && item.productId;
+    if (!productId) return;
+    const product = byId.get(productId);
+    if (!product) {
+      dropped.push(item.productName || productId);
+      return;
+    }
+    quantities[productId] = Number(item.quantity || 0);
+    const was = Number(item.unitPrice);
+    const now = Number(product.unitPrice || 0);
+    if (Number.isFinite(was) && was > 0 && now > 0 && now !== was) {
+      priceChanges.push({ name: product.productName || item.productName || productId, was, now });
+    }
+  });
+  return { quantities, dropped, priceChanges };
 }
 
 export function computeOrderTotals(selectedProducts) {
@@ -841,6 +993,42 @@ export function collectedPaymentProblem(amount, balanceRemaining) {
     return 'Nothing was collected — choose "Not collected" instead, so the order gets a follow-up date rather than a silent zero payment.';
   }
   return null;
+}
+
+// Money integrity — what evidence a collected payment must carry, or null when
+// it is sufficient. Bank transfer and QR are electronic and CAN be checked
+// later, so a collected transfer/QR needs at least one verifiable trace: a
+// reference number OR a proof photo. Cash and "other" are inherently
+// unverifiable, so evidence stays optional there. Nothing collected (a fully
+// prepaid delivery records a 0 payment) needs no evidence. One rule for every
+// payment-entry surface — both delivery dialogs + the receivables dialog — so
+// the bar cannot drift between screens. MIRRORED in functions/index.js
+// (CommonJS can't import this ESM module); paymentEntry.parity.test.mjs fails
+// when the two drift.
+const PAYMENT_METHODS_REQUIRING_EVIDENCE = ["transfer", "bank_qr"];
+export function paymentEvidenceProblem({ method, reference, hasProof, amount } = {}) {
+  if (!(Number(amount) > 0)) return null;
+  const m = String(method || "").trim();
+  if (!PAYMENT_METHODS_REQUIRING_EVIDENCE.includes(m)) return null;
+  const hasReference = String(reference || "").trim().length > 0;
+  if (hasReference || hasProof === true) return null;
+  const label = m === "bank_qr" ? "QR payment" : "bank transfer";
+  return `Add a reference number or a photo for this ${label}, so it can be checked later. Cash doesn't need one.`;
+}
+
+// Same idea for a cancellation refund, but the trace demanded at record time is
+// a REFERENCE (the transfer id or a note): the photo proof for a refund is
+// attached separately through attachRefundEvidence + the reports.html
+// Proof-missing queue, so it is not required here. Electronic refund methods
+// (bank / QR / wallet) require the reference; a cash refund does not. MIRRORED
+// in functions/index.js.
+const REFUND_METHODS_REQUIRING_REFERENCE = ["refund_bank", "refund_qr", "refund_wallet"];
+export function refundEvidenceProblem({ method, reference } = {}) {
+  const m = String(method || "").trim();
+  if (!REFUND_METHODS_REQUIRING_REFERENCE.includes(m)) return null;
+  if (String(reference || "").trim().length > 0) return null;
+  const label = m === "refund_qr" ? "QR refund" : (m === "refund_wallet" ? "wallet refund" : "bank refund");
+  return `Add a reference for this ${label} (the transfer id or a note), so it can be matched later. You can still attach the photo proof after.`;
 }
 
 // Redirect signed-in users to /account.html when they don't have the role

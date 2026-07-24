@@ -114,6 +114,7 @@ async function signInWithGoogleForEnvironment() {
 
 export {
   addDoc,
+  app,
   auth,
   collection,
   createUserWithEmailAndPassword,

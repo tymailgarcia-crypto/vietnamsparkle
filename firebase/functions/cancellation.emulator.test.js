@@ -271,7 +271,7 @@ await it("recordOrderRefund writes an immutable negative payment and settles the
   await applyApprovalTransaction(owner("ORD-RF", "r1", { kind: "full" }));
   const caseId = "ORD-RF-cx-r1";
 
-  const r1 = await recordOrderRefundImpl("owner-uid", { caseId, refundId: "ref1", amount: 100000, method: "refund_bank" });
+  const r1 = await recordOrderRefundImpl("owner-uid", { caseId, refundId: "ref1", amount: 100000, method: "refund_bank", reference: "TXN-REF1" });
   assert.strictEqual(r1.status, "recorded");
   assert.strictEqual(r1.remaining, 60000);
   assert.strictEqual(r1.refundStatus, "partial");
@@ -286,15 +286,29 @@ await it("recordOrderRefund writes an immutable negative payment and settles the
 
 await it("over-refund is rejected", async () => {
   const caseId = "ORD-RF-cx-r1"; // fully refunded above
-  await assertRejects(() => recordOrderRefundImpl("owner-uid", { caseId, refundId: "ref3", amount: 1, method: "refund_bank" }), "failed-precondition");
+  await assertRejects(() => recordOrderRefundImpl("owner-uid", { caseId, refundId: "ref3", amount: 1, method: "refund_bank", reference: "TXN-REF3" }), "failed-precondition");
 });
 
 await it("duplicate refundId is idempotent (no second payment)", async () => {
   const caseId = "ORD-RF-cx-r1";
-  const dup = await recordOrderRefundImpl("owner-uid", { caseId, refundId: "ref1", amount: 100000, method: "refund_bank" });
+  const dup = await recordOrderRefundImpl("owner-uid", { caseId, refundId: "ref1", amount: 100000, method: "refund_bank", reference: "TXN-REF1" });
   assert.strictEqual(dup.status, "already_recorded");
   const pays = await db.collection("payments").where("cancellationCaseId", "==", caseId).get();
   assert.strictEqual(pays.size, 2); // ref1 + ref2 only
+});
+
+await it("evidence gate: an electronic refund with no reference is rejected; cash is exempt", async () => {
+  await seedOrder("ORD-RFE", { status: "assigned", amountPaid: 100000, balanceDue: 0, paymentStatus: "paid" });
+  await seedItem("ORD-RFE", "P1", 5, 20000);
+  await seedPayment("PAY-RFE", "ORD-RFE", 100000);
+  await applyApprovalTransaction(owner("ORD-RFE", "r1", { kind: "full" }));
+  const caseId = "ORD-RFE-cx-r1";
+  // assertRejects here checks the code and returns nothing (per this file's helper).
+  await assertRejects(() => recordOrderRefundImpl("owner-uid", { caseId, refundId: "ref1", amount: 50000, method: "refund_bank" }), "invalid-argument");
+  assert.strictEqual((await db.doc(`payments/${caseId}-refund-ref1`).get()).exists, false, "no refund payment written");
+  // A cash refund of the same amount needs no reference and goes through.
+  const ok = await recordOrderRefundImpl("owner-uid", { caseId, refundId: "ref2", amount: 50000, method: "refund_cash" });
+  assert.strictEqual(ok.status, "recorded");
 });
 
 // --- reconcileCaseRefund (the trigger/nightly backstop) ---
@@ -348,7 +362,7 @@ await it("attaching evidence to the only refund flips evidenceStatus to complete
   await seedPayment("PAY-EV", "ORD-EV", 100000);
   await applyApprovalTransaction(owner("ORD-EV", "r1", { kind: "full" }));
   const caseId = "ORD-EV-cx-r1";
-  await recordOrderRefundImpl("owner-uid", { caseId, refundId: "ref1", amount: 100000, method: "refund_bank" });
+  await recordOrderRefundImpl("owner-uid", { caseId, refundId: "ref1", amount: 100000, method: "refund_bank", reference: "TXN-REF1" });
   assert.strictEqual((await db.doc(`orderCancellations/${caseId}`).get()).data().evidenceStatus, "missing");
   const res = await attachRefundEvidenceImpl("owner-uid", {
     caseId, refundId: "ref1", storagePath: "refund-proofs/ORD-EV/ref1", proofKind: "electronic", generation: "g1", md5Hash: "h1"
@@ -365,7 +379,7 @@ await it("evidence covering one of two refunds stays missing until both are cove
   await seedPayment("PAY-EV2", "ORD-EV2", 100000);
   await applyApprovalTransaction(owner("ORD-EV2", "r1", { kind: "full" }));
   const caseId = "ORD-EV2-cx-r1";
-  await recordOrderRefundImpl("owner-uid", { caseId, refundId: "ref-a", amount: 60000, method: "refund_bank" });
+  await recordOrderRefundImpl("owner-uid", { caseId, refundId: "ref-a", amount: 60000, method: "refund_bank", reference: "TXN-REFA" });
   await recordOrderRefundImpl("owner-uid", { caseId, refundId: "ref-b", amount: 40000, method: "refund_cash" });
   const r1 = await attachRefundEvidenceImpl("owner-uid", { caseId, refundId: "ref-a", storagePath: "refund-proofs/ORD-EV2/a", proofKind: "electronic" });
   assert.strictEqual(r1.evidenceStatus, "missing");

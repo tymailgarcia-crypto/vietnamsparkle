@@ -31,3 +31,16 @@ export const appCheckProviderType = "enterprise";
 export const mapsApiKey = "AIzaSyBFC6PjvDPPg-cQ72t8ZGNE3UAZu6XEObo";
 // Rough map centre used before any pins load. Da Nang city centre.
 export const mapsDefaultCenter = { lat: 16.0544, lng: 108.2022 };
+
+// Firebase Cloud Messaging (web push) VAPID key for owner phone alerts.
+// Empty string keeps push OFF everywhere — the "Enable phone alerts" button on
+// the dashboard shows a "needs setup" state and no token is ever requested, so
+// the app behaves exactly as before. Mirrors the App Check staged rollout above.
+// To activate:
+//   1. Firebase console → Project settings (gear) → Cloud Messaging tab → under
+//      "Web Push certificates" click Generate key pair.
+//   2. Paste the generated "Key pair" value (a long Base64 string) here.
+//   3. Deploy hosting. Then, on the phone that should receive alerts, open the
+//      dashboard, Add to Home Screen, and tap "Enable phone alerts" once.
+// This is the PUBLIC VAPID key — safe to ship in the bundle, like the keys above.
+export const webPushVapidKey = "BI9aay3VYCcCIycWtfKyPK2auX2A9yhkCeRxM2hfZCKgwNjr50jEtznKqQFM6dm7ud5ohea0Ng2es_Glo1e_DGk";

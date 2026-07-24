@@ -42,6 +42,7 @@ const { onDocumentWritten } = require("firebase-functions/firestore");
 const { logger, setGlobalOptions } = require("firebase-functions");
 const { getApp, initializeApp } = require("firebase-admin/app");
 const { getFirestore, FieldValue, FieldPath } = require("firebase-admin/firestore");
+const { getMessaging } = require("firebase-admin/messaging");
 const {
   vnd,
   computeRefundRequired,
@@ -67,6 +68,86 @@ function db() {
   }
   return _db;
 }
+
+// --- Owner phone alerts (FCM web push) --------------------------------------
+//
+// Pushes a notification to every device the owner registered from the dashboard
+// (pushTokens/{token}, owner-only rule). Sends DATA-ONLY messages: the service
+// worker (web/firebase-messaging-sw.js) reads payload.data and builds the
+// notification itself, so display is identical foreground/background and there
+// is no double-notify. NEVER throw out of here — an alert failing must never
+// break the order/refund/reconciliation path that triggered it, so every call
+// site wraps this and it also swallows its own errors.
+//
+// Prunes tokens FCM reports as dead (uninstalled app, revoked permission) so the
+// collection doesn't accumulate addresses that will never deliver again.
+async function sendOwnerPush({ title, body, url, tag, kind }) {
+  try {
+    const snap = await db().collection("pushTokens").get();
+    let docs = snap.docs.filter((d) => typeof d.get("token") === "string" && d.get("token"));
+    // Per-phone opt-out: each device may store prefs.{newOrder,money,refund}.
+    // Unset means "on" (opt-out model), so an older token with no prefs still
+    // gets everything. `kind` unset (e.g. the test button) skips filtering and
+    // always sends.
+    if (kind) {
+      docs = docs.filter((d) => {
+        const prefs = d.get("prefs");
+        return !prefs || prefs[kind] !== false;
+      });
+    }
+    if (!docs.length) return { sent: 0, pruned: 0 };
+    const tokens = docs.map((d) => d.get("token"));
+    const link = String(url || "/admin.html");
+    const resp = await getMessaging().sendEachForMulticast({
+      tokens,
+      data: {
+        title: String(title || "Vietnam Sparkle"),
+        body: String(body || ""),
+        url: link,
+        tag: String(tag || "")
+      },
+      webpush: {
+        headers: { Urgency: "high" },
+        fcmOptions: { link }
+      }
+    });
+    const dead = [];
+    resp.responses.forEach((r, i) => {
+      const code = r.success ? null : (r.error && r.error.code);
+      if (code === "messaging/registration-token-not-registered"
+        || code === "messaging/invalid-registration-token"
+        || code === "messaging/invalid-argument") {
+        dead.push(docs[i].ref);
+      }
+    });
+    await Promise.all(dead.map((ref) => ref.delete().catch(() => {})));
+    return { sent: resp.successCount, failed: resp.failureCount, pruned: dead.length };
+  } catch (err) {
+    logger.error("sendOwnerPush failed", { error: String((err && err.message) || err) });
+    return { sent: 0, error: true };
+  }
+}
+
+function formatVnd(n) {
+  const v = Math.round(Number(n) || 0);
+  return v.toLocaleString("en-US") + "₫";
+}
+
+// Owner-only "prove the phone alerts work" button on the dashboard. Fires the
+// exact same push path a real order would, so a successful test means real
+// alerts will land too. Returns the delivery counts so the page can tell the
+// owner whether any device actually received it (0 sent = no registered phone,
+// or every token is dead). Defined here, next to sendOwnerPush, on purpose.
+exports.sendTestPush = onCall(async (request) => {
+  requireOwner(request);
+  const result = await sendOwnerPush({
+    title: "Test alert ✅",
+    body: "If you can see this on your phone, order and money alerts will reach you too.",
+    url: "/admin.html",
+    tag: "test-alert"
+  });
+  return result || { sent: 0 };
+});
 
 // --- Helpers (mirror shared.js so client and server generate matching ids) ---
 
@@ -634,7 +715,19 @@ exports.submitPublicOrder = onCall(async (request) => {
     }
   }));
 
-  return createOrderUnderSubmissionKey({ authUid, submissionKey, orderId, orderDoc, itemDocs });
+  const result = await createOrderUnderSubmissionKey({ authUid, submissionKey, orderId, orderDoc, itemDocs });
+  // Owner phone alert — fire only for a genuinely new order, never on a
+  // double-tap retry (createOrderUnderSubmissionKey dedups and flags duplicate).
+  if (!result.duplicate) {
+    await sendOwnerPush({
+      title: "New order to approve",
+      body: `${name} · ${formatVnd(balanceDue)} · ${deliveryDate}`,
+      url: "/admin.html",
+      tag: `order-${result.orderId || orderId}`,
+      kind: "newOrder"
+    });
+  }
+  return result;
 });
 
 // P0-06: owner approves an order. Everything approval touches — the status
@@ -695,6 +788,35 @@ function collectedPaymentProblem(amount, balanceRemaining) {
     return 'Nothing was collected — choose "Not collected" instead, so the order gets a follow-up date rather than a silent zero payment.';
   }
   return null;
+}
+
+// MIRROR of paymentEvidenceProblem in web/assets/shared.js. Bank transfer / QR
+// need a reference OR a proof photo; cash + "other" optional; a 0 payment (fully
+// prepaid delivery) needs nothing. Keep in sync — paymentEntry.parity.test.mjs
+// fails on drift.
+const PAYMENT_METHODS_REQUIRING_EVIDENCE = ["transfer", "bank_qr"];
+function paymentEvidenceProblem(opts) {
+  const o = opts || {};
+  if (!(Number(o.amount) > 0)) return null;
+  const m = String(o.method || "").trim();
+  if (!PAYMENT_METHODS_REQUIRING_EVIDENCE.includes(m)) return null;
+  const hasReference = String(o.reference || "").trim().length > 0;
+  if (hasReference || o.hasProof === true) return null;
+  const label = m === "bank_qr" ? "QR payment" : "bank transfer";
+  return `Add a reference number or a photo for this ${label}, so it can be checked later. Cash doesn't need one.`;
+}
+
+// MIRROR of refundEvidenceProblem in web/assets/shared.js. Electronic refund
+// methods (bank / QR / wallet) require a reference at record time; cash does
+// not. Refund photo proof arrives separately via attachRefundEvidence.
+const REFUND_METHODS_REQUIRING_REFERENCE = ["refund_bank", "refund_qr", "refund_wallet"];
+function refundEvidenceProblem(opts) {
+  const o = opts || {};
+  const m = String(o.method || "").trim();
+  if (!REFUND_METHODS_REQUIRING_REFERENCE.includes(m)) return null;
+  if (String(o.reference || "").trim().length > 0) return null;
+  const label = m === "refund_qr" ? "QR refund" : (m === "refund_wallet" ? "wallet refund" : "bank refund");
+  return `Add a reference for this ${label} (the transfer id or a note), so it can be matched later. You can still attach the photo proof after.`;
 }
 
 // Re-aggregate a customer's held containers from /depositEvents INSIDE a
@@ -776,6 +898,17 @@ async function commitDeliveryImpl(ownerUid, data) {
   const returnProofNote = input.returnProofNote || null;
   const proofDocumentId = input.proofDocumentId || null;
   const proofUrl = input.proofUrl || null;
+  if (collected) {
+    // Same evidence bar as receivables: a collected transfer/QR at the door
+    // needs a reference or a photo. Prepaid (cashAmount 0) is exempt.
+    const evidenceProblem = paymentEvidenceProblem({
+      method: payment.method || "cash",
+      reference: payment.reference,
+      hasProof: !!proofDocumentId,
+      amount: cashAmount
+    });
+    if (evidenceProblem) throw new HttpsError("invalid-argument", evidenceProblem);
+  }
 
   const now = new Date().toISOString();
   const today = businessTodayKey();
@@ -1103,6 +1236,16 @@ async function recordPaymentImpl(ownerUid, data) {
     : null;
   const proofDocumentId = input.proofDocumentId || null;
   const proofUrl = input.proofUrl || null;
+  if (collected) {
+    // Electronic payments must carry a checkable trace (reference or photo).
+    const evidenceProblem = paymentEvidenceProblem({
+      method: payment.method || "cash",
+      reference: payment.reference,
+      hasProof: !!proofDocumentId,
+      amount
+    });
+    if (evidenceProblem) throw new HttpsError("invalid-argument", evidenceProblem);
+  }
 
   const now = new Date().toISOString();
   const today = businessTodayKey();
@@ -1749,6 +1892,13 @@ exports.reconcileOnPaymentWrite = onDocumentWritten(
             orderId,
             paymentId: event.params.paymentId
           });
+          await sendOwnerPush({
+            title: "Payment math auto-corrected",
+            body: `Order ${orderId} drifted and was reconciled — tap to review.`,
+            url: "/reports.html",
+            tag: `recon-${orderId}`,
+            kind: "money"
+          });
         }
       } catch (err) {
         logger.error("reconcileOnPaymentWrite order failed", {
@@ -2118,10 +2268,20 @@ exports.submitOrderCancellation = onCall(async (request) => {
     remainingItems = Array.isArray(data.remainingItems) ? data.remainingItems : null;
     if (!remainingItems) throw new HttpsError("invalid-argument", "remainingItems is required for a partial cancellation.");
   }
-  return applyApprovalTransaction({
+  const res = await applyApprovalTransaction({
     orderId, caseId, kind, reason, remainingItems,
     requestedBy: uid, requestedByRole: "owner", requestedAt: new Date().toISOString(), decidedBy: uid
   });
+  if (res && res.refundRequired > 0) {
+    await sendOwnerPush({
+      title: "Refund now owed",
+      body: `${formatVnd(res.refundRequired)} to refund on a cancelled order — tap to handle.`,
+      url: `/order.html?id=${orderId}`,
+      tag: `refund-${res.caseId || caseId}`,
+      kind: "refund"
+    });
+  }
+  return res;
 });
 
 // Owner approves (runs the atomic mutation) or dismisses a cancellation request.
@@ -2187,6 +2347,15 @@ exports.resolveOrderCancellation = onCall(async (request) => {
       updatedAt: nowIso
     }, { merge: true });
   }
+  if (res && res.refundRequired > 0) {
+    await sendOwnerPush({
+      title: "Refund now owed",
+      body: `${formatVnd(res.refundRequired)} to refund on a cancelled order — tap to handle.`,
+      url: c.orderId ? `/order.html?id=${c.orderId}` : "/reports.html",
+      tag: `refund-${res.caseId || caseId}`,
+      kind: "refund"
+    });
+  }
   return res;
 });
 
@@ -2205,6 +2374,10 @@ async function recordOrderRefundImpl(uid, data) {
   if (!/^[A-Za-z0-9_-]{4,120}$/.test(refundId)) throw new HttpsError("invalid-argument", "refundId must be a stable 4–120 char token.");
   if (!(amount > 0)) throw new HttpsError("invalid-argument", "Refund amount must be a positive integer.");
   if (!ALLOWED.includes(method)) throw new HttpsError("invalid-argument", "Invalid refund method.");
+  // Electronic refunds must record a reference so the money-out can be matched
+  // to the transfer later (the photo proof still comes via attachRefundEvidence).
+  const refundProblem = refundEvidenceProblem({ method, reference });
+  if (refundProblem) throw new HttpsError("invalid-argument", refundProblem);
 
   return db().runTransaction(async (tx) => {
     const caseRef = db().doc(`orderCancellations/${caseId}`);
@@ -2486,6 +2659,8 @@ if (process.env.NODE_ENV === "test" || process.env.FUNCTIONS_EMULATOR === "true"
   // client-mirror validation helper for the parity test.
   exports._recordPaymentTestApi = () => ({
     recordPaymentImpl,
-    collectedPaymentProblem
+    collectedPaymentProblem,
+    paymentEvidenceProblem,
+    refundEvidenceProblem
   });
 }

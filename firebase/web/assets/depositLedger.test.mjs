@@ -13,6 +13,7 @@ import {
   containerReturnProofProblem,
   containerReturnProofType,
   describeDepositBalanceProblem,
+  heldSinceFromCharges,
   isBrokenDepositBalance,
   RETURN_NOTE_MIN_LENGTH,
   summarizeHeldContainers
@@ -204,6 +205,66 @@ it("summarize: a missing container type is bucketed, not dropped", () => {
 it("summarize: no events is simply nothing held", () => {
   assert.deepStrictEqual(summarizeHeldContainers([]), []);
   assert.deepStrictEqual(summarizeHeldContainers(), []);
+});
+
+// heldSinceFromCharges — the reset-aware ageing clock. FIFO: returns clear the
+// oldest containers first, so the units still on hand are the newest charged,
+// and the "held since" date walks forward as old stock goes back. This is what
+// stops a customer being told they have held a two-day-old jug for months.
+it("heldSince: with nothing returned it is the oldest charge", () => {
+  assert.strictEqual(heldSinceFromCharges([{ date: "2026-07-01", qty: 3 }], 0), "2026-07-01");
+});
+
+it("heldSince: input order does not matter — it sorts by date", () => {
+  const since = heldSinceFromCharges([{ date: "2026-07-20", qty: 1 }, { date: "2026-03-02", qty: 1 }], 0);
+  assert.strictEqual(since, "2026-03-02");
+});
+
+it("heldSince: a return of old stock resets the clock to the newer charge", () => {
+  // Charged in March, returned it, charged again in July: FIFO skips the one
+  // returned March unit, so the held unit is the July one.
+  const since = heldSinceFromCharges([{ date: "2026-03-02", qty: 1 }, { date: "2026-07-20", qty: 1 }], 1);
+  assert.strictEqual(since, "2026-07-20");
+});
+
+it("heldSince: a partial return within one batch keeps that batch's date", () => {
+  // Returned 1 of 3 charged the same day — the remaining 2 are still that batch.
+  assert.strictEqual(heldSinceFromCharges([{ date: "2026-03-02", qty: 3 }], 1), "2026-03-02");
+});
+
+it("heldSince: with everything returned there is nothing to age", () => {
+  assert.strictEqual(heldSinceFromCharges([{ date: "2026-03-02", qty: 2 }], 2), null);
+});
+
+it("heldSince: a still-held but dateless charge yields no age, it does not throw", () => {
+  assert.strictEqual(heldSinceFromCharges([{ date: null, qty: 1 }], 0), null);
+  assert.strictEqual(heldSinceFromCharges(), null);
+});
+
+it("summarize: heldSince resets after a return + re-charge, oldestChargedDate does not", () => {
+  // The headline bug. The deposits page and the customer nudge age from
+  // heldSince (the current holding); oldestChargedDate stays the literal oldest
+  // charge for the "held since / oldest charged" info line, so the two must
+  // stay distinct on the same row.
+  const rows = summarizeHeldContainers([
+    chargeOf("glass_crate", 1, 200000, "2026-03-02"),
+    creditOf("glass_crate", 1, 200000),
+    chargeOf("glass_crate", 1, 200000, "2026-07-20")
+  ]);
+  const row = rowFor(rows, "glass_crate");
+  assert.strictEqual(row.qty, 1);
+  assert.strictEqual(row.heldSince, "2026-07-20", "the held unit is the July one");
+  assert.strictEqual(row.oldestChargedDate, "2026-03-02", "the literal oldest charge is unchanged");
+});
+
+it("summarize: heldSince equals the oldest charge when nothing has been returned", () => {
+  const rows = summarizeHeldContainers([
+    chargeOf("19l_jug", 2, 200000, "2026-06-01"),
+    chargeOf("19l_jug", 1, 100000, "2026-06-20")
+  ]);
+  const row = rowFor(rows, "19l_jug");
+  assert.strictEqual(row.heldSince, "2026-06-01");
+  assert.strictEqual(row.oldestChargedDate, "2026-06-01");
 });
 
 // Proof that containers came back. Both delivery dialogs gate the save on this,

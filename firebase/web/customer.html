@@ -156,8 +156,21 @@
           </label>
           <label class="span-2">
             Address
-            <input id="new-order-address" required minlength="5" maxlength="499" type="text">
+            <input id="new-order-address" required minlength="5" maxlength="499" type="text" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="new-order-address-autocomplete-list" placeholder="Start typing — pick a Google suggestion">
           </label>
+          <div id="new-order-address-autocomplete-list" class="span-2 edit-address-autocomplete" role="listbox" aria-label="Address suggestions" hidden></div>
+          <div class="span-2 button-row">
+            <button id="new-order-address-verify" class="ghost" type="button">Find on Google Maps</button>
+            <span class="muted" id="new-order-address-status">Confirm the delivery pin before saving.</span>
+          </div>
+          <div id="new-order-address-map-wrap" class="span-2 address-map-wrap" hidden>
+            <div id="new-order-address-map" class="address-confirm-map" aria-label="Map showing the delivery address"></div>
+            <div class="address-map-footer address-map-actions">
+              <p class="muted address-map-help">Pick a suggestion or drag the pin to the exact entrance, then confirm it.</p>
+              <button id="new-order-address-reset-pin" class="ghost" type="button">Reset pin</button>
+              <button id="new-order-address-confirm" class="secondary" type="button">Use this location</button>
+            </div>
+          </div>
           <label class="span-2">
             Notes
             <textarea id="new-order-notes" rows="3" maxlength="1999"></textarea>

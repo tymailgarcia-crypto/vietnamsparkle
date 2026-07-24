@@ -1089,6 +1089,33 @@ textarea:focus {
   content: " -";
 }
 
+#enable-phone-alerts.is-on {
+  background: #e7f6ec;
+  border-color: #34a853;
+  color: #1e7e34;
+}
+
+.alert-prefs {
+  display: grid;
+  gap: 10px;
+}
+
+.alert-pref-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  cursor: pointer;
+}
+
+.alert-pref-row input {
+  margin-top: 3px;
+  flex: 0 0 auto;
+}
+
+.alert-prefs.is-disabled {
+  opacity: 0.55;
+}
+
 .edit-dialog {
   border: none;
   border-radius: 16px;
@@ -1206,6 +1233,18 @@ textarea:focus {
   .form-grid,
   .stats-grid {
     grid-template-columns: 1fr;
+  }
+
+  .edit-dialog {
+    padding: 16px;
+    width: calc(100vw - 24px);
+    max-width: calc(100vw - 24px);
+  }
+
+  /* Inline min-width:min(560px,90vw) on these forms forces the dialog wider
+     than the screen once padding is added. Let the dialog govern the width. */
+  .edit-dialog form {
+    min-width: 0 !important;
   }
 
   .form-grid.pair-mobile {
@@ -3341,6 +3380,13 @@ button.success-locked:disabled {
 .order-review-edit::after { content: ""; position: absolute; inset: -6px; }
 .order-review-pin { margin-top: 2px; font-size: 13px; }
 .order-review-dialog-note { margin: 10px 0 0; }
+.order-review-dialog-status {
+  margin: 8px 0 0;
+  min-height: 18px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.order-review-dialog-status.is-error { color: var(--danger, #b3261e); font-weight: 600; }
 .order-review-dialog-actions {
   margin-top: 12px;
   justify-content: flex-end;
@@ -3378,3 +3424,23 @@ button.success-locked:disabled {
 }
 .order-review-dialog .order-total-cell:last-child { border-bottom: 0; }
 .order-review-dialog .order-total-cell strong { font-size: 16px; }
+
+/* Explicit "Take photo" affordance beside every proof-photo input. The input
+   itself (capture removed) is the choose-from-library path; this compact
+   secondary button opens the camera. Not the full-width brand button the base
+   rule would otherwise give a <button> sitting inside a grid <label>. */
+.proof-camera-btn {
+  width: auto;
+  justify-self: start;
+  margin-top: 2px;
+  padding: 9px 14px;
+  min-height: 44px;
+  background: rgba(15, 33, 57, 0.05);
+  color: var(--ink);
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.proof-camera-btn:hover { background: rgba(15, 33, 57, 0.09); }

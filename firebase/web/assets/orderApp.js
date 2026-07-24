@@ -27,11 +27,14 @@ import {
   containerReturnProofType,
   describeDepositBalanceProblem,
   formatCurrency,
+  initPhotoSourceInputs,
   isBrokenDepositBalance,
   localDateKey,
   mergeThresholds,
   normalizePhone,
+  paymentEvidenceProblem,
   paymentStatusFor,
+  refundEvidenceProblem,
   requireRole,
   setDeliveryWindow,
   todayKey,
@@ -233,16 +236,29 @@ async function renderOrder(order, customer, items, payments, deposits, returns, 
   renderAuditTimeline(order, payments, deposits, returns, corrections, documents);
   const metadata = [["Order ID", order.id], ["Customer ID", order.customerId], ["Source", humanize(order.sourceChannel)], ["Created", dateValue(order.createdAtServer || order.createdAt)], ["Updated", dateValue(order.updatedAt)], ["Assigned driver ID", order.assignedDriverId], ["Auth UID", order.authUid], ["Delivery location", order.deliveryLocation ? `${order.deliveryLocation.lat}, ${order.deliveryLocation.lng}` : null], ["Cancellation reason", order.cancellationReason]];
   el("order-metadata").innerHTML = metadata.filter(([, value]) => value !== null && value !== undefined && value !== "").map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("");
-  currentInvoiceContext = invoiceContext({ order, items, settings, payments, deposits });
-  const invoiceSlot = el("order-invoice-preview");
-  invoiceSlot.innerHTML = renderInvoiceHtml(currentInvoiceContext);
-  await attachQrToPreview(currentInvoiceContext, invoiceSlot);
-  el("order-invoice-download").disabled = false;
-  const emailHref = buildEmailShare(currentInvoiceContext);
-  el("order-invoice-email").classList.toggle("hidden", !emailHref);
-  const whatsappHref = buildWhatsAppShare(currentInvoiceContext);
-  el("order-invoice-whatsapp").classList.toggle("hidden", !whatsappHref);
-  if (whatsappHref) el("order-invoice-whatsapp").href = whatsappHref;
+  // The invoice is a finalized document, only meaningful once the order has
+  // been delivered and payment recorded. Before that, hide it entirely so the
+  // owner can't send a customer an invoice for an order that hasn't happened.
+  const invoiceReady = order.status === "delivered";
+  const invoiceSection = document.querySelector(".order-invoice-section");
+  if (invoiceSection) invoiceSection.hidden = !invoiceReady;
+  if (invoiceReady) {
+    currentInvoiceContext = invoiceContext({ order, items, settings, payments, deposits });
+    const invoiceSlot = el("order-invoice-preview");
+    invoiceSlot.innerHTML = renderInvoiceHtml(currentInvoiceContext);
+    await attachQrToPreview(currentInvoiceContext, invoiceSlot);
+    el("order-invoice-download").disabled = false;
+    const emailHref = buildEmailShare(currentInvoiceContext);
+    el("order-invoice-email").classList.toggle("hidden", !emailHref);
+    const whatsappHref = buildWhatsAppShare(currentInvoiceContext);
+    el("order-invoice-whatsapp").classList.toggle("hidden", !whatsappHref);
+    if (whatsappHref) el("order-invoice-whatsapp").href = whatsappHref;
+  } else {
+    currentInvoiceContext = null;
+    el("order-invoice-download").disabled = true;
+    el("order-invoice-email").classList.add("hidden");
+    el("order-invoice-whatsapp").classList.add("hidden");
+  }
   el("order-load-status").textContent = "";
 }
 
@@ -272,7 +288,6 @@ function renderOrderActions(order) {
   const actionsNode = el("order-actions");
   const cancellationNode = el("order-cancellation-request");
   const editButton = `<button class="ghost" type="button" data-order-action="edit">Edit details</button>`;
-  const invoiceButton = `<button class="ghost" type="button" data-order-action="invoice">Invoice</button>`;
   const cancelButton = `<button class="ghost" type="button" data-order-action="cancel">Cancel order</button>`;
   const callHref = phoneDialHref(order.phone || state.customer.phone);
   const callButton = callHref ? `<a class="button-link secondary" href="${escapeHtml(callHref)}">Call customer</a>` : "";
@@ -288,19 +303,19 @@ function renderOrderActions(order) {
 
   switch (order.status) {
     case "pending_approval":
-      actionsNode.innerHTML = `<button class="primary" type="button" data-order-action="approve">Approve</button>${editButton}${invoiceButton}${cancelButton}`;
+      actionsNode.innerHTML = `<button class="primary" type="button" data-order-action="approve">Approve</button>${editButton}${cancelButton}`;
       break;
     case "new":
-      actionsNode.innerHTML = `${driverOptions(order)}${editButton}${invoiceButton}${cancelButton}`;
+      actionsNode.innerHTML = `${driverOptions(order)}${editButton}${cancelButton}`;
       break;
     case "assigned":
-      actionsNode.innerHTML = `${driverOptions(order)}<button class="primary" type="button" data-order-action="out-for-delivery">Send out for delivery</button>${editButton}${invoiceButton}${cancelButton}`;
+      actionsNode.innerHTML = `${driverOptions(order)}<button class="primary" type="button" data-order-action="out-for-delivery">Send out for delivery</button>${editButton}${cancelButton}`;
       break;
     case "out_for_delivery":
-      actionsNode.innerHTML = `<button class="primary" type="button" data-order-action="deliver">Mark delivered &amp; record payment</button>${invoiceButton}${cancelButton}${callButton}`;
+      actionsNode.innerHTML = `<button class="primary" type="button" data-order-action="deliver">Mark delivered &amp; record payment</button>${cancelButton}${callButton}`;
       break;
     case "delivered":
-      actionsNode.innerHTML = `<span class="muted">Delivered</span>${invoiceButton}`;
+      actionsNode.innerHTML = `<span class="muted">Delivered — invoice is below.</span>`;
       break;
     case "cancelled":
       actionsNode.innerHTML = `<span class="muted">Cancelled${order.cancellationReason ? ` — ${escapeHtml(order.cancellationReason)}` : ""}</span>`;
@@ -479,6 +494,14 @@ async function handleRecordRefund(event) {
     setCancellationStatus("Enter a positive refund amount.", true);
     return;
   }
+  // Electronic refunds (bank/QR/wallet) need a reference so the money-out can be
+  // matched to the transfer later — the server re-checks this. The photo proof
+  // still comes separately via Attach evidence.
+  const refundProblem = refundEvidenceProblem({ method, reference });
+  if (refundProblem) {
+    setCancellationStatus(refundProblem, true);
+    return;
+  }
   const submitBtn = form.querySelector("button[type=submit]");
   await runActionControl(submitBtn, "Recording refund…", async () => {
     const refundId = (self.crypto && self.crypto.randomUUID)
@@ -519,10 +542,6 @@ async function runActionControl(control, busyMessage, action) {
 async function handleOrderAction(event) {
   const control = event.currentTarget;
   const action = control.dataset.orderAction;
-  if (action === "invoice") {
-    document.querySelector(".order-invoice-section")?.scrollIntoView({ behavior: "smooth", block: "start" });
-    return;
-  }
   if (action === "edit") {
     await openEditDialog(state.order);
     return;
@@ -1291,6 +1310,19 @@ async function saveDeliveryPayment(event) {
         return;
       }
     }
+    // A collected transfer/QR needs a reference or a photo (cash is exempt) —
+    // the server re-checks this; this is the friendlier local stop.
+    const evidenceProblem = paymentEvidenceProblem({
+      method: el("delivery-payment-method").value || "cash",
+      reference: el("delivery-payment-reference").value,
+      hasProof: !!proofFile,
+      amount
+    });
+    if (evidenceProblem) {
+      statusNode.textContent = evidenceProblem;
+      statusNode.style.color = "var(--danger, #b3261e)";
+      return;
+    }
     paymentSnapshot = {
       collected: true,
       amount,
@@ -1590,3 +1622,7 @@ onAuthStateChanged(auth, async (user) => {
   el("order-load-status").textContent = "Loading complete order record…";
   try { await loadOrderRecord(); } catch (error) { el("order-headline").textContent = "Order unavailable"; el("order-load-status").textContent = error.message || String(error); }
 });
+
+// Give the delivery dialog's proof inputs an explicit Take photo / library
+// choice. The modals are static in order.html, so one call at load covers them.
+initPhotoSourceInputs();

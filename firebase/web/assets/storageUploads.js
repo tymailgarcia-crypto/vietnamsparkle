@@ -44,9 +44,14 @@ function extensionFor(file) {
   return "bin";
 }
 
-const MAX_IMAGE_EDGE = 1600;
-const IMAGE_QUALITY = 0.82;
-const KEEP_SMALL_ORIGINAL_BYTES = 350 * 1024;
+// Two compression profiles. Product catalog photos feed the public storefront,
+// so they keep more detail (DEFAULT). Proof photos — payment screenshots,
+// container-return and refund shots — only need to be a legible record, so they
+// compress much harder (PROOF): 1280px still keeps a bank-reference number
+// readable, and WebP at 0.68 lands a typical phone photo around 100–200 KB,
+// roughly 2–3× smaller than the catalog setting.
+const DEFAULT_IMAGE_PROFILE = { maxEdge: 1600, quality: 0.82, keepSmallBytes: 350 * 1024 };
+const PROOF_IMAGE_PROFILE = { maxEdge: 1280, quality: 0.68, keepSmallBytes: 120 * 1024 };
 
 async function decodeImage(file) {
   if (typeof createImageBitmap === "function") {
@@ -80,9 +85,9 @@ function canvasBlob(canvas, type, quality) {
 // return, and product uploads all share the same storage-saving policy. Small
 // originals stay untouched, as does any original that is already smaller than
 // the encoded WebP. PDFs never pass through this function.
-export async function compressImageForUpload(file) {
+export async function compressImageForUpload(file, profile = DEFAULT_IMAGE_PROFILE) {
   if (!file || !/^image\//.test(file.type || "")) return file;
-  if (file.size <= KEEP_SMALL_ORIGINAL_BYTES) return file;
+  if (file.size <= profile.keepSmallBytes) return file;
 
   const image = await decodeImage(file);
   const sourceWidth = Number(image.width || image.naturalWidth || 0);
@@ -91,7 +96,7 @@ export async function compressImageForUpload(file) {
     image.close?.();
     throw new Error("This photo has no readable dimensions.");
   }
-  const scale = Math.min(1, MAX_IMAGE_EDGE / Math.max(sourceWidth, sourceHeight));
+  const scale = Math.min(1, profile.maxEdge / Math.max(sourceWidth, sourceHeight));
   const width = Math.max(1, Math.round(sourceWidth * scale));
   const height = Math.max(1, Math.round(sourceHeight * scale));
   const canvas = document.createElement("canvas");
@@ -104,7 +109,7 @@ export async function compressImageForUpload(file) {
   }
   context.drawImage(image, 0, 0, width, height);
   image.close?.();
-  const blob = await canvasBlob(canvas, "image/webp", IMAGE_QUALITY);
+  const blob = await canvasBlob(canvas, "image/webp", profile.quality);
   canvas.width = 1;
   canvas.height = 1;
   if (!blob) throw new Error("The browser could not compress this photo.");
@@ -117,8 +122,8 @@ export async function compressImageForUpload(file) {
   });
 }
 
-async function preparedImage(file) {
-  const compressed = await compressImageForUpload(file);
+async function preparedImage(file, profile = DEFAULT_IMAGE_PROFILE) {
+  const compressed = await compressImageForUpload(file, profile);
   if (compressed.size > MAX_PROOF_BYTES) {
     throw new Error(`Photo is still ${(compressed.size / 1024 / 1024).toFixed(1)} MB after compression. Choose a smaller photo.`);
   }
@@ -201,7 +206,7 @@ export async function ensureInvoicePdfUploaded(ctx) {
 // proofDocumentId in the same transaction — an upload that fails must not leave
 // a payment recorded without the proof the owner thought they attached.
 export async function uploadPaymentProof({ orderId, paymentId, file }) {
-  const uploadFile = await preparedImage(file);
+  const uploadFile = await preparedImage(file, PROOF_IMAGE_PROFILE);
   const order = safeSegment(orderId, "unknown-order");
   const payment = safeSegment(paymentId, "unknown-payment");
   const path = `payment-proofs/${order}/${payment}.${extensionFor(uploadFile)}`;
@@ -230,7 +235,7 @@ export async function uploadPaymentProof({ orderId, paymentId, file }) {
 // create-only, so a finalized proof can never be overwritten.
 export async function uploadRefundProof({ orderId, refundId, file }) {
   const isImage = String(file.type || "").startsWith("image/");
-  const uploadFile = isImage ? await preparedImage(file) : file;
+  const uploadFile = isImage ? await preparedImage(file, PROOF_IMAGE_PROFILE) : file;
   const order = safeSegment(orderId, "unknown-order");
   const rid = safeSegment(refundId, "unknown-refund");
   const path = `refund-proofs/${order}/${rid}.${extensionFor(uploadFile)}`;
@@ -255,7 +260,7 @@ export async function uploadRefundProof({ orderId, refundId, file }) {
 // depositEvent's linkedDocumentId in the same commit — a return credit must not
 // record without the proof the owner thought they attached.
 export async function uploadContainerReturnProof({ orderId, file }) {
-  const uploadFile = await preparedImage(file);
+  const uploadFile = await preparedImage(file, PROOF_IMAGE_PROFILE);
   const order = safeSegment(orderId, "unknown-order");
   const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
   const path = `payment-proofs/${order}/return-${stamp}.${extensionFor(uploadFile)}`;

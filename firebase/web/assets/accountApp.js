@@ -594,14 +594,18 @@ function renderContainerSummary(rows) {
   container.innerHTML = rows.map((row) => {
     const label = humanizeContainerType(row.type);
     const explanation = CONTAINER_EXPLANATIONS[row.type] || "";
-    const days = daysSince(row.oldestChargedDate);
+    // Age the CURRENT holding, not the oldest charge ever: heldSince resets when
+    // a customer returns old stock and is charged for new (see
+    // heldSinceFromCharges). Anchoring to oldestChargedDate told a customer they
+    // had held a two-day-old jug for months and nudged them to return it.
+    const days = daysSince(row.heldSince);
     const forfeitDays = mergeThresholds(state.settings?.thresholds).depositForfeitDays;
     const overForfeit = days != null && days >= forfeitDays;
     const dayLine = days == null
       ? ""
       : `<div class="${overForfeit ? "" : "muted"}" style="${overForfeit ? "color:rgb(122,32,22);font-weight:600" : ""}">${days} day${days === 1 ? "" : "s"} held${overForfeit ? " · consider returning soon" : ""}</div>`;
-    const sinceLine = row.oldestChargedDate
-      ? `<div class="muted">Oldest charged: ${escapeHtml(row.oldestChargedDate)}</div>`
+    const sinceLine = row.heldSince
+      ? `<div class="muted">Held since ${escapeHtml(row.heldSince)}</div>`
       : "";
     return `
       <div class="card">

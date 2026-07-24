@@ -84,8 +84,8 @@
             <div id="delivery-collected-fields" class="span-2 form-grid">
               <label>Amount collected<input id="delivery-payment-amount" type="number" min="0" step="1000"></label>
               <label>Method<select id="delivery-payment-method"><option value="cash">Cash</option><option value="transfer">Bank transfer</option><option value="bank_qr">QR code</option><option value="other">Other</option></select></label>
-              <label class="span-2">Reference (optional)<input id="delivery-payment-reference" type="text" maxlength="199" placeholder="Bank reference or note"></label>
-              <label class="span-2">Proof photo (optional)<input id="delivery-payment-proof" type="file" accept="image/*" capture="environment"><span class="muted">Transfer screenshot or signed receipt. Photos are compressed automatically; source max 30 MB.</span></label>
+              <label class="span-2">Reference (required for bank transfer / QR, unless you add a photo)<input id="delivery-payment-reference" type="text" maxlength="199" placeholder="Bank reference or note"></label>
+              <label class="span-2">Proof photo (required for bank transfer / QR, unless you add a reference)<input id="delivery-payment-proof" type="file" accept="image/*"><button type="button" class="proof-camera-btn" data-proof-camera-for="delivery-payment-proof">📷 Take photo</button><span class="muted">Take a photo, or choose an existing transfer screenshot or receipt from your library. Photos are compressed automatically; source max 30 MB.</span></label>
             </div>
 
             <div id="delivery-deferred-fields" class="span-2 form-grid hidden">
@@ -101,7 +101,7 @@
               <div id="delivery-return-proof-field" class="hidden" style="margin-top:10px">
                 <strong>Record what came back <span style="color:var(--danger,#b3261e)">*</span></strong>
                 <p class="muted" style="margin:4px 0 8px">A photo or a written account — one of the two before the order can close.</p>
-                <label>Photo of the returned containers<input id="delivery-return-proof" type="file" accept="image/*" capture="environment"><span class="muted">Compressed automatically; source max 30 MB.</span></label>
+                <label>Photo of the returned containers<input id="delivery-return-proof" type="file" accept="image/*"><button type="button" class="proof-camera-btn" data-proof-camera-for="delivery-return-proof">📷 Take photo</button><span class="muted">Take a photo or choose one from your library. Compressed automatically; source max 30 MB.</span></label>
                 <label style="margin-top:8px">Or write what was collected<textarea id="delivery-return-note" rows="2" placeholder="e.g. 3 crates collected from Ms Hoa at the shop — phone camera not working"></textarea><span class="muted">Say what actually came back, and from whom. Saved against this delivery under your name.</span></label>
               </div>
             </div>

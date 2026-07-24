@@ -32,12 +32,17 @@ import {
   describeDepositBalanceProblem,
   escapeHtml,
   formatCurrency,
+  initPhotoSourceInputs,
   isBrokenDepositBalance,
   localDateKey,
   mergeThresholds,
   normalizePhone,
+  paymentEvidenceProblem,
   paymentStatusFor,
   productImageUrl,
+  renderImportanceButton,
+  renderImportantNote,
+  renderOrderContactMenu as renderQuickCallAction,
   requireRole,
   setDeliveryWindow,
   THRESHOLD_DEFAULTS,
@@ -123,6 +128,11 @@ const state = {
   financeFrom: todayKey(),
   financeTo: todayKey()
 };
+
+// Set the very first time the board paints after sign-in so the default filter
+// (To approve when there is approval work, otherwise the standard board) is
+// chosen once and never overrides a filter the owner picked afterwards.
+let initialStatusFilterApplied = false;
 
 const STATUS_FILTERS = [
   { key: "to_approve", label: "To approve", match: (o) => o.status === "pending_approval" },
@@ -644,18 +654,6 @@ function renderDriverSelect(order) {
   `;
 }
 
-function renderImportanceButton(order) {
-  const active = order.important === true;
-  const label = active ? "Edit important note" : "Mark important";
-  return `<button class="ghost ${active ? "is-important" : ""}" type="button" data-important-order="${escapeHtml(order.id)}" aria-label="${label}">${active ? "&#9733; Important" : "&#9734; Important"}</button>`;
-}
-
-function renderImportantNote(order, className = "important-note") {
-  if (order.important !== true) return "";
-  const note = normalizeImportantNote(order.importantNote);
-  return `<div class="${className}"><span class="important-label">Important</span>${note ? ` ${escapeHtml(note)}` : ""}</div>`;
-}
-
 function renderStateActions(order) {
   const managementActions = `
     <span class="order-management-actions">
@@ -705,31 +703,6 @@ function phoneDialHref(phone) {
   const digits = raw.replace(/\D/g, "");
   if (!digits) return "";
   return `tel:${raw.startsWith("+") ? "+" : ""}${digits}`;
-}
-
-function renderQuickCallAction(order) {
-  const href = phoneDialHref(order.phone);
-  if (!href) return "";
-  const customer = String(order.customerName || "customer").trim() || "customer";
-  const phone = String(order.phone || "").trim();
-  const digits = phone.replace(/\D/g, "");
-  const messageDigits = digits.startsWith("0") ? `84${digits.slice(1)}` : digits;
-  const message = `Hi ${customer}, this is Vietnam Sparkle about order ${order.id}.`;
-  const icon = (kind) => {
-    if (kind === "phone") return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.6 10.8c1.7 3.3 3.3 4.9 6.6 6.6l2.2-2.2c.3-.3.7-.4 1.1-.3 1.2.4 2.5.6 3.8.6.6 0 1 .4 1 1v3.8c0 .6-.4 1-1 1C10.6 21.3 2.7 13.4 2.7 3.7c0-.6.4-1 1-1h3.8c.6 0 1 .4 1 1 0 1.3.2 2.6.6 3.8.1.4 0 .8-.3 1.1l-2.2 2.2Z"/></svg>`;
-    if (kind === "whatsapp") return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 3.5A11.8 11.8 0 0 0 12.1 0C5.6 0 .3 5.3.3 11.8c0 2.1.5 4.1 1.6 5.9L.2 24l6.5-1.7c1.7.9 3.6 1.4 5.5 1.4 6.5 0 11.8-5.3 11.8-11.8 0-3.2-1.2-6.1-3.5-8.4Zm-8.4 18.2c-1.7 0-3.4-.5-4.9-1.3l-.4-.2-3.8 1 1-3.7-.2-.4a9.7 9.7 0 1 1 8.3 4.6Zm5.3-7.3c-.3-.1-1.7-.8-2-.9-.3-.1-.5-.1-.7.1-.2.3-.8.9-1 1.1-.2.2-.4.2-.7.1-1.7-.8-2.8-1.5-3.9-3.4-.3-.5.3-.5.8-1.6.1-.2 0-.4 0-.6l-.9-2c-.2-.6-.5-.5-.7-.5h-.6c-.2 0-.6.1-.9.4-.3.3-1.2 1.2-1.2 2.9s1.2 3.3 1.4 3.6c.2.2 2.4 3.7 5.9 5.2 2.2.9 3.1 1 4.2.8.7-.1 1.7-.7 1.9-1.3.2-.6.2-1.2.2-1.3-.1-.1-.3-.2-.6-.3Z"/></svg>`;
-    if (kind === "chat") return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 3h16a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H9l-5 4v-4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm3 6h10V7H7v2Zm0 4h7v-2H7v2Z"/></svg>`;
-    return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 2h14a3 3 0 0 1 3 3v10a3 3 0 0 1-3 3h-6l-4.8 4v-4H5a3 3 0 0 1-3-3V5a3 3 0 0 1 3-3Z"/><path class="zalo-letter" d="M7 7h7l-7 6h7"/></svg>`;
-  };
-  return `
-    <details class="customer-contact">
-      <summary aria-label="Contact ${escapeHtml(customer)}${phone ? ` at ${escapeHtml(phone)}` : ""}" title="Contact customer">${icon("chat")}</summary>
-      <div class="customer-contact-menu">
-        <a class="contact-whatsapp" href="https://wa.me/${messageDigits}?text=${encodeURIComponent(message)}" target="_blank" rel="noopener" aria-label="WhatsApp ${escapeHtml(customer)}" title="WhatsApp">${icon("whatsapp")}</a>
-        <a class="contact-zalo" href="https://zalo.me/${messageDigits}" target="_blank" rel="noopener" aria-label="Zalo ${escapeHtml(customer)}" title="Zalo">${icon("zalo")}</a>
-        <a href="${escapeHtml(href)}" aria-label="Call ${escapeHtml(customer)}" title="Phone">${icon("phone")}</a>
-      </div>
-    </details>`;
 }
 
 document.addEventListener("click", (event) => {
@@ -1008,6 +981,18 @@ function renderOrderBoard() {
   const activeOrders = state.orders.filter((order) => OPEN_ORDER_STATUSES.includes(order.status));
   const count = document.getElementById("active-orders-count");
   if (count) count.textContent = String(activeOrders.length);
+
+  // Land the owner where the work is on the first paint after sign-in: if
+  // anything is waiting on approval, open straight to "To approve"; otherwise
+  // show the standard all-active board (already sorted oldest-first — by
+  // delivery date, then creation time — in filterOpenOrdersByTiming). Applied
+  // once so it never fights a filter the owner clicked afterwards.
+  if (!initialStatusFilterApplied) {
+    initialStatusFilterApplied = true;
+    state.statusFilter = activeOrders.some((o) => o.status === "pending_approval")
+      ? "to_approve"
+      : "all";
+  }
 
   const activeFilter = STATUS_FILTERS.find((f) => f.key === state.statusFilter) || STATUS_FILTERS[0];
   renderStatusFilter(activeOrders);
@@ -1788,6 +1773,21 @@ async function saveDeliveryPayment(event) {
         }
         return;
       }
+    }
+    // A collected transfer/QR needs a reference or a photo (cash is exempt) —
+    // the server re-checks this; this is the friendlier local stop.
+    const evidenceProblem = paymentEvidenceProblem({
+      method: document.getElementById("delivery-payment-method").value || "cash",
+      reference: document.getElementById("delivery-payment-reference").value,
+      hasProof: !!proofFile,
+      amount
+    });
+    if (evidenceProblem) {
+      if (statusNode) {
+        statusNode.textContent = evidenceProblem;
+        statusNode.style.color = "var(--danger, #b3261e)";
+      }
+      return;
     }
     paymentSnapshot = {
       collected: true,
@@ -2856,3 +2856,7 @@ onAuthStateChanged(auth, async (user) => {
   checkReconciliationHealth();
   checkRealtimeCorrections();
 });
+
+// Give the delivery dialog's proof inputs an explicit Take photo / library
+// choice. The modals are static in admin.html, so one call at load covers them.
+initPhotoSourceInputs();

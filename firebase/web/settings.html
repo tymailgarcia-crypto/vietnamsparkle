@@ -101,6 +101,24 @@
           </form>
         </section>
 
+        <section class="panel" id="phone-alerts-panel">
+          <h2>Phone alerts</h2>
+          <p class="muted">Get a pop-up on your phone for new orders and money alerts, even with the dashboard closed. Turn this on from each phone you want alerted — add this site to your Home Screen first (on iPhone this is required), then tap Enable.</p>
+          <div class="phone-alerts-control">
+            <div class="button-row" style="gap:8px;flex-wrap:wrap">
+              <button type="button" id="enable-phone-alerts" class="button-link secondary" aria-pressed="false">Enable phone alerts</button>
+              <button type="button" id="test-phone-alert" class="button-link secondary hidden">Send test alert</button>
+            </div>
+            <fieldset id="phone-alert-prefs" class="alert-prefs" style="margin:12px 0 0;border:1px solid var(--line);border-radius:12px;padding:12px">
+              <legend style="padding:0 6px;font-weight:700">What to alert me about</legend>
+              <label class="alert-pref-row"><input type="checkbox" data-alert-pref="newOrder" checked><span><strong>New orders</strong><small class="muted" style="display:block">A customer places an order that needs approval.</small></span></label>
+              <label class="alert-pref-row"><input type="checkbox" data-alert-pref="refund" checked><span><strong>Refunds owed</strong><small class="muted" style="display:block">A cancelled order needs money returned to a customer.</small></span></label>
+              <label class="alert-pref-row"><input type="checkbox" data-alert-pref="money" checked><span><strong>Payment corrections</strong><small class="muted" style="display:block">The system auto-fixes an order's payment math and flags it to review.</small></span></label>
+            </fieldset>
+            <p id="phone-alerts-status" class="muted" role="status" aria-live="polite" style="margin:8px 0 0"></p>
+          </div>
+        </section>
+
         <section class="panel">
           <h2>Thresholds</h2>
           <p class="muted">When receivables turn red, when a held deposit gets flagged for follow-up, how far ahead to default the next chase date. Sensible defaults are pre-filled; leave blank to reset a field.</p>
@@ -170,5 +188,6 @@
 
     <script type="module" src="./assets/settingsApp.js"></script>
     <script type="module" src="./assets/dockMenu.js"></script>
+    <script type="module" src="./assets/pushNotifications.js"></script>
   </body>
 </html>

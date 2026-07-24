@@ -149,7 +149,7 @@ async function seedOrder(over = {}) {
     const orderId = await seedOrder();
     const res = await recordPaymentImpl("owner-uid", {
       orderId, paymentId: `${orderId}-pay`,
-      payment: { collected: true, amount: 150000, method: "transfer" },
+      payment: { collected: true, amount: 150000, method: "transfer", reference: "QA-TXN-9" },
       acknowledgeCredit: 50000
     });
     assert.strictEqual(res.resultingCredit, 50000);
@@ -227,6 +227,45 @@ async function seedOrder(over = {}) {
       orderId: "WEB-RP-NONE", paymentId: "p",
       payment: { collected: true, amount: 1000, method: "cash" }
     }), "not-found");
+  });
+
+  await it("evidence gate: a transfer with no reference and no proof is rejected, nothing written", async () => {
+    const orderId = await seedOrder();
+    const err = await assertRejects(() => recordPaymentImpl("owner-uid", {
+      orderId, paymentId: `${orderId}-pay`,
+      payment: { collected: true, amount: 100000, method: "transfer" }
+    }), "invalid-argument");
+    assert.ok(/reference number or a photo/.test(err.message), err.message);
+    assert.strictEqual((await db.doc(`payments/${orderId}-pay`).get()).exists, false, "no payment written");
+  });
+
+  await it("evidence gate: a transfer with a reference goes through", async () => {
+    const orderId = await seedOrder();
+    const res = await recordPaymentImpl("owner-uid", {
+      orderId, paymentId: `${orderId}-pay`,
+      payment: { collected: true, amount: 100000, method: "transfer", reference: "TXN-7788" }
+    });
+    assert.strictEqual(res.balanceDue, 0);
+    assert.strictEqual((await db.doc(`payments/${orderId}-pay`).get()).data().reference, "TXN-7788");
+  });
+
+  await it("evidence gate: a transfer with a proofDocumentId (no reference) goes through", async () => {
+    const orderId = await seedOrder();
+    const res = await recordPaymentImpl("owner-uid", {
+      orderId, paymentId: `${orderId}-pay`,
+      payment: { collected: true, amount: 100000, method: "transfer" },
+      proofDocumentId: "doc-abc"
+    });
+    assert.strictEqual(res.balanceDue, 0);
+  });
+
+  await it("evidence gate: cash needs nothing", async () => {
+    const orderId = await seedOrder();
+    const res = await recordPaymentImpl("owner-uid", {
+      orderId, paymentId: `${orderId}-pay`,
+      payment: { collected: true, amount: 100000, method: "cash" }
+    });
+    assert.strictEqual(res.balanceDue, 0);
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);

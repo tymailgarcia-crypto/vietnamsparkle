@@ -64,7 +64,8 @@
                 <option value="order-count-desc">Most orders</option>
               </select>
               <button class="secondary" id="refresh-button" type="button">Refresh</button>
-              <button class="primary" id="add-customer-button" type="button">Add customer</button>
+              <button class="secondary" id="add-customer-button" type="button">Add customer</button>
+              <button class="primary" id="new-order-button" type="button">New order</button>
             </div>
           </div>
           <p class="muted" id="list-status" style="margin-top:12px"></p>
@@ -88,7 +89,7 @@
       </div>
       <dialog id="add-customer-dialog" class="edit-dialog">
         <form id="add-customer-form" class="form-grid" style="min-width:min(560px,90vw)">
-          <h3 class="span-2" style="margin:0">Add a new customer</h3>
+          <h3 class="span-2" style="margin:0" id="add-customer-title">Add a new customer</h3>
           <p class="muted span-2" style="margin:0">If a customer already exists with the same phone, you'll see a warning below with a link to their profile.</p>
           <label>
             Name
@@ -96,28 +97,38 @@
           </label>
           <label>
             Phone
-            <input id="new-customer-phone" required minlength="6" maxlength="39" type="tel" pattern="(?=.*\d)[+0-9 ()\-]{6,40}" autocomplete="off" placeholder="0901 234 501 or +1 ...">
+            <span class="phone-entry" style="display:flex;gap:8px;align-items:stretch">
+              <span id="new-customer-phone-country-picker" class="phone-country-picker">
+                <input id="new-customer-phone-country" type="hidden" value="+84" data-phone-country-value>
+                <button class="phone-country-trigger" type="button" aria-haspopup="listbox" aria-expanded="false" aria-label="Choose phone country">
+                  <span data-phone-country-display>🇻🇳 +84</span><span class="phone-country-chevron" aria-hidden="true">⌄</span>
+                </button>
+                <span class="phone-country-menu" hidden>
+                  <input class="phone-country-search" type="search" placeholder="Search country or +code" aria-label="Search phone countries" autocomplete="off">
+                  <span class="phone-country-options" role="listbox"></span>
+                </span>
+              </span>
+              <input id="new-customer-phone" required minlength="6" maxlength="39" type="tel" pattern="(?=.*\d)[-+0-9 ()]{6,40}" title="Use digits only. Spaces, +, brackets and dashes are okay." autocomplete="off" placeholder="901 234 501" style="min-width:0;flex:1 1 auto">
+            </span>
           </label>
           <label>
             Email
             <input id="new-customer-email" maxlength="199" type="email" autocomplete="off">
           </label>
-          <label>
-            Area
-            <input id="new-customer-area" maxlength="100" type="text" autocomplete="off" placeholder="Hai Chau / Son Tra / ...">
-          </label>
           <label class="span-2">
             Address
-            <input id="new-customer-address" required minlength="5" maxlength="499" type="text" autocomplete="off">
+            <input id="new-customer-address" required minlength="5" maxlength="499" type="text" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="new-customer-address-autocomplete-list" placeholder="Start typing — pick a Google suggestion">
           </label>
+          <div id="new-customer-address-autocomplete-list" class="span-2 edit-address-autocomplete" role="listbox" aria-label="Address suggestions" hidden></div>
           <div class="span-2 button-row">
             <button id="new-customer-address-verify" class="ghost" type="button">Find on Google Maps</button>
             <span class="muted" id="new-customer-address-status">Confirm the delivery pin before saving.</span>
           </div>
           <div id="new-customer-address-map-wrap" class="span-2 address-map-wrap" hidden>
             <div id="new-customer-address-map" class="address-confirm-map" aria-label="Map showing the new customer's delivery address"></div>
-            <div class="address-map-footer">
-              <p class="muted address-map-help">Drag the pin to the exact entrance, then confirm it.</p>
+            <div class="address-map-footer address-map-actions">
+              <p class="muted address-map-help">Pick a suggestion or drag the pin to the exact entrance, then confirm it.</p>
+              <button id="new-customer-address-reset-pin" class="ghost" type="button">Reset pin</button>
               <button id="new-customer-address-confirm" class="secondary" type="button">Use this location</button>
             </div>
           </div>
@@ -126,8 +137,23 @@
             <textarea id="new-customer-notes" rows="3" maxlength="1999" placeholder="Delivery preferences, allergies, past complaints..."></textarea>
           </label>
           <div class="span-2" id="new-customer-dedupe-banner" style="display:none"></div>
+
+          <div class="span-2" id="add-customer-order-section">
+            <h4 style="margin:8px 0 6px" id="add-customer-order-heading">Order</h4>
+            <p class="muted" id="add-customer-order-help" style="margin:0 0 8px">Add products to create an order now. Owner-created orders skip approval and land on the today board as "new".</p>
+            <div class="form-grid">
+              <label>Delivery date<input id="add-customer-date" type="date"></label>
+              <label>Delivery window<select id="add-customer-window"></select></label>
+            </div>
+            <div id="add-customer-items" class="stack" style="margin-top:8px"></div>
+            <div class="button-row" style="margin-top:8px">
+              <select id="add-customer-add-select"></select>
+              <button class="secondary" type="button" id="add-customer-add-button">Add product</button>
+            </div>
+            <div class="stats-grid" id="add-customer-totals" style="margin-top:12px"></div>
+          </div>
           <div class="span-2 button-row">
-            <button class="primary" type="submit">Save customer</button>
+            <button class="primary" type="submit" id="add-customer-submit">Save customer</button>
             <button class="ghost" type="button" id="add-customer-cancel-button">Discard</button>
             <span class="muted" id="add-customer-status"></span>
           </div>

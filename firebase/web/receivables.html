@@ -120,13 +120,14 @@
               </select>
             </label>
             <label class="span-2">
-              Reference (optional)
+              Reference (required for bank transfer / QR, unless you add a photo)
               <input id="record-payment-reference" type="text" maxlength="199" placeholder="Bank reference or note">
             </label>
             <label class="span-2">
-              Proof photo (optional)
-              <input id="record-payment-proof" type="file" accept="image/*" capture="environment">
-              <span class="muted" id="record-payment-proof-hint">Transfer screenshot or signed receipt. Photos are compressed automatically; source max 30 MB.</span>
+              Proof photo (required for bank transfer / QR, unless you add a reference)
+              <input id="record-payment-proof" type="file" accept="image/*">
+              <button type="button" class="proof-camera-btn" data-proof-camera-for="record-payment-proof">📷 Take photo</button>
+              <span class="muted" id="record-payment-proof-hint">Take a photo, or choose an existing transfer screenshot or receipt from your library. Photos are compressed automatically; source max 30 MB.</span>
             </label>
           </div>
 

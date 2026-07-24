@@ -9,7 +9,7 @@ import {
   setDoc,
   signOut
 } from "./firebaseClient.js";
-import { buildDepositEventId, describeDepositBalanceProblem, formatCurrency, isBrokenDepositBalance, mergeThresholds, requireRole, THRESHOLD_DEFAULTS, todayKey, withSubmitLock } from "./shared.js";
+import { buildDepositEventId, describeDepositBalanceProblem, formatCurrency, heldSinceFromCharges, isBrokenDepositBalance, mergeThresholds, requireRole, THRESHOLD_DEFAULTS, todayKey, withSubmitLock } from "./shared.js";
 
 const CONTAINER_LABELS = {
   glass_crate: "Glass crates",
@@ -249,7 +249,9 @@ async function loadDeposits() {
           amount: 0,
           totalChargedAmount: 0,
           totalChargedQty: 0,
-          oldestChargedDate: null
+          oldestChargedDate: null,
+          charges: [],
+          removedQty: 0
         };
       }
       const bucket = byPair[key];
@@ -261,12 +263,14 @@ async function loadDeposits() {
         bucket.amount += amount;
         bucket.totalChargedAmount += amount;
         bucket.totalChargedQty += qty;
+        bucket.charges.push({ date: eventDate, qty });
         if (eventDate && (!bucket.oldestChargedDate || eventDate < bucket.oldestChargedDate)) {
           bucket.oldestChargedDate = eventDate;
         }
       } else if (["refunded", "credited", "forfeited", "charge_reversed"].includes(event.eventType)) {
         bucket.qty -= qty;
         bucket.amount -= amount;
+        bucket.removedQty += qty;
       }
     });
 
@@ -295,7 +299,7 @@ async function loadDeposits() {
           containerType: row.containerType,
           qty: row.qty,
           amount: row.amount,
-          since: row.oldestChargedDate,
+          since: heldSinceFromCharges(row.charges, row.removedQty),
           depositPerUnit: row.totalChargedQty > 0 ? row.totalChargedAmount / row.totalChargedQty : 0,
           customerName: customer.name || "",
           phone: customer.phone || ""

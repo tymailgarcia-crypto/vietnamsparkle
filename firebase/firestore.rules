@@ -361,6 +361,25 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // FCM web-push registration tokens for owner phone alerts. The token string
+    // is the doc id, so re-enabling from the same device overwrites rather than
+    // piling up duplicates. Owner-only in every direction — only the owner
+    // receives operational push. The sendOwnerPush helper (functions/index.js)
+    // reads these via the Admin SDK (bypassing these rules) and prunes any token
+    // the FCM API reports as unregistered. Nothing sensitive is stored: an FCM
+    // token plus device metadata. ownerUid must equal the caller, so a token can
+    // only ever be filed under its own owner.
+    match /pushTokens/{token} {
+      allow read: if isOwner();
+      // .get() default, not bare access: a write that omits ownerUid must deny
+      // cleanly, not raise an evaluation error (the repeated bare-field gotcha —
+      // see HANDOFF.md). myUid() is always a non-empty string, so a missing
+      // ownerUid resolves to '' and fails the match without throwing.
+      allow create, update: if isOwner()
+        && request.resource.data.get('ownerUid', '') == myUid();
+      allow delete: if isOwner();
+    }
+
     match /inquiries/{inquiryId} {
       allow read, update, delete: if isOwner();
       // No live browser writes this collection: the public form now uses the

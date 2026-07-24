@@ -42,6 +42,7 @@ import {
   setDeliveryWindow,
   submissionFingerprint,
   summarizeHeldContainers,
+  summarizeReorderChanges,
   todayKeyInZone,
   withSubmitLock
 } from "./shared.js";
@@ -285,6 +286,7 @@ async function renderEmptiesPickup(user) {
   const card = document.getElementById("empties-pickup");
   const toggle = document.getElementById("empties-pickup-toggle");
   const summary = document.getElementById("empties-pickup-summary");
+  const details = document.getElementById("empties-pickup-details");
   const status = document.getElementById("empties-pickup-status");
   if (!card || !toggle || !summary) return;
   const requestId = ++emptiesPickupRequestId;
@@ -319,14 +321,15 @@ async function renderEmptiesPickup(user) {
   const totalDeposit = holding.reduce((sum, row) => sum + Number(row.deposit || 0), 0);
   const parts = holding.map((row) => `${Number(row.qty)} ${publicContainerLabel(row.type, row.qty)}`);
   const held = parts.length
-    ? `You're holding ${parts.join(" and ")}.`
-    : "Your empties are marked for collection.";
+    ? parts.join(" · ")
+    : "Collection requested";
   // "About", and only when there is something to estimate. This is the one line
   // that could be mistaken for a discount, so it stays conditional prose.
   const estimate = totalDeposit >= 1
-    ? ` That's about ${formatCurrency(totalDeposit)} in deposit. The driver counts what actually comes back at the door, and the credit follows that count — this figure is an estimate, not a promise.`
-    : "";
-  summary.innerHTML = `<strong>${escapeHtml(held)}</strong><span class="muted">${escapeHtml(estimate)}</span>`;
+    ? `About ${formatCurrency(totalDeposit)} is held as deposit. The driver counts what actually comes back, and your credit follows that count, so this is an estimate.`
+    : "The driver counts what actually comes back, and your deposit credit follows that count.";
+  summary.textContent = held;
+  if (details) details.textContent = estimate;
   toggle.checked = requested;
   if (status) status.textContent = "";
   card.classList.remove("hidden");
@@ -1247,33 +1250,31 @@ async function applyReorderById(reorderId) {
     if (feedback) feedback.textContent = "Could not load that past order to reorder. It may have been removed.";
     return false;
   }
-  state.quantities = {};
-  // A product retired since the past order (active:false, so absent from the
-  // catalog) must NOT silently vanish from the rebuilt cart — the customer
-  // would submit a smaller order than they meant to. Collect the dropped names
-  // and tell them, so they can pick a replacement.
-  const droppedNames = [];
-  items.forEach((item) => {
-    const productId = item.productId;
-    if (!productId) return;
-    const stillAvailable = state.products.some((p) => p.id === productId);
-    if (!stillAvailable) {
-      droppedNames.push(item.productName || productId);
-      return;
-    }
-    state.quantities[productId] = Number(item.quantity || 0);
-  });
+  // Rebuild the cart at today's catalog and tell the customer what changed since
+  // that order: products retired since (dropped — add a replacement) and unit
+  // prices that moved (the cart is priced at today's rate). Pure diff in
+  // shared.js so it can be tested without a browser; wording stays here.
+  const { quantities, dropped, priceChanges } = summarizeReorderChanges(items, state.products);
+  state.quantities = quantities;
   renderCatalog();
   renderTotals();
   if (feedback) {
-    if (droppedNames.length) {
-      const list = droppedNames.join(", ");
-      feedback.textContent = droppedNames.length === 1
+    const messages = [];
+    if (dropped.length) {
+      const list = dropped.join(", ");
+      messages.push(dropped.length === 1
         ? `${list} is no longer available, so it was left out of this reorder. Add a replacement before you submit.`
-        : `These items from that order are no longer available and were left out: ${list}. Add replacements before you submit.`;
-    } else {
-      feedback.textContent = "";
+        : `These items from that order are no longer available and were left out: ${list}. Add replacements before you submit.`);
     }
+    if (priceChanges.length) {
+      const list = priceChanges
+        .map((c) => `${c.name} is now ${formatCurrency(c.now)} (was ${formatCurrency(c.was)})`)
+        .join("; ");
+      messages.push(priceChanges.length === 1
+        ? `One price has changed since that order — ${list}. Your total uses today's prices.`
+        : `Some prices have changed since that order — ${list}. Your total uses today's prices.`);
+    }
+    feedback.textContent = messages.join(" ");
   }
   return true;
 }
@@ -1627,18 +1628,6 @@ function renderOrderReviewBody() {
     ? `<div class="muted order-review-pin">Pin: ${escapeHtml(pin.formattedAddress)}</div>`
     : "";
   const notes = String(form.notes?.value || "").trim();
-  const pickupCard = document.getElementById("empties-pickup");
-  const pickupVisible = pickupCard && !pickupCard.classList.contains("hidden");
-  const pickupChecked = pickupVisible && document.getElementById("empties-pickup-toggle")?.checked === true;
-  const pickupLine = pickupVisible
-    ? `<section class="order-review-section">
-        <div class="order-review-section-head"><h4>Empties pickup</h4>${editButton("pickup", "the empties pickup request")}</div>
-        <p>${pickupChecked
-          ? "Requested — have them ready. The driver counts what actually comes back at the door; the deposit credit follows that count."
-          : "Not requested for this delivery."}</p>
-      </section>`
-    : "";
-
   return `
     <section class="order-review-section">
       <div class="order-review-section-head"><h4>Items</h4>${editButton("items", "the items")}</div>
@@ -1666,7 +1655,6 @@ function renderOrderReviewBody() {
       <div class="order-review-section-head"><h4>Notes for the driver</h4>${editButton("notes", "the notes")}</div>
       <p>${notes ? escapeHtml(notes) : '<span class="muted">None</span>'}</p>
     </section>
-    ${pickupLine}
   `;
 }
 
@@ -1674,9 +1662,23 @@ function openOrderReviewDialog() {
   const dialog = document.getElementById("order-review-dialog");
   const body = document.getElementById("order-review-dialog-body");
   if (!dialog || !body) return;
+  // Keep the live pickup control (and its change listener) inside the review's
+  // scroll region. Hold the node while replacing the generated sections, then
+  // reattach that same node rather than cloning it.
+  const pickupCard = document.getElementById("empties-pickup");
   body.innerHTML = renderOrderReviewBody();
+  if (pickupCard) body.appendChild(pickupCard);
+  pickupCard?.querySelector("details")?.removeAttribute("open");
   const confirmBtn = document.getElementById("order-review-dialog-confirm");
-  if (confirmBtn) confirmBtn.disabled = false;
+  if (confirmBtn) {
+    confirmBtn.disabled = false;
+    confirmBtn.textContent = "Place order";
+  }
+  const status = document.getElementById("order-review-dialog-status");
+  if (status) {
+    status.textContent = "";
+    status.classList.remove("is-error");
+  }
   if (typeof dialog.showModal === "function") dialog.showModal();
   else dialog.setAttribute("open", "");
 }
@@ -1719,8 +1721,34 @@ function handleOrderReviewEdit(target) {
 }
 
 async function handleOrderReviewConfirm(event) {
-  closeOrderReviewDialog();
-  await performOrderSubmit(event);
+  // Keep "Check your order" open while the order is sent so the customer is not
+  // bounced back to the form mid-flight. Only a confirmed order closes it (which
+  // reveals the confirmation on the form beneath); an error keeps the review
+  // open with the reason, so nothing typed is lost and they can retry here.
+  const confirmBtn = document.getElementById("order-review-dialog-confirm");
+  const status = document.getElementById("order-review-dialog-status");
+  const originalLabel = confirmBtn?.textContent;
+  if (confirmBtn) {
+    confirmBtn.disabled = true;
+    confirmBtn.textContent = "Placing order…";
+  }
+  if (status) {
+    status.textContent = "Sending your order…";
+    status.classList.remove("is-error");
+  }
+  const outcome = await performOrderSubmit(event);
+  if (outcome && outcome.orderId) {
+    closeOrderReviewDialog();
+    return;
+  }
+  if (status) {
+    status.textContent = (outcome && outcome.error) || "Could not place the order. Please try again.";
+    status.classList.add("is-error");
+  }
+  if (confirmBtn) {
+    confirmBtn.disabled = false;
+    confirmBtn.textContent = originalLabel || "Place order";
+  }
 }
 
 // The actual submission — everything below ran inline in submitOrder before
@@ -1744,6 +1772,7 @@ async function performOrderSubmit(lockEvent) {
 
   let successOrderId = null;
   let successWasDuplicate = false;
+  let submitError = null;
   await withSubmitLock(lockEvent, async () => {
     try {
       const payload = buildCallablePayload(form);
@@ -1775,7 +1804,13 @@ async function performOrderSubmit(lockEvent) {
       successOrderId = orderId;
     } catch (error) {
       // Callable errors surface as { code, message, details } from HttpsError.
-      setPublicFeedback(error && error.message ? error.message : String(error), { error: true, scroll: true });
+      // humanizeCustomerError keeps the server's authored validation text (bad
+      // date, out-of-area, unknown product) but turns infra/auth codes into a
+      // plain, actionable line so a shopper doesn't abandon the order at the wall.
+      submitError = humanizeCustomerError(error, {
+        fallback: "Your order didn't go through. Please check your connection and tap Place order again.",
+      });
+      setPublicFeedback(submitError, { error: true, scroll: true });
     }
   }, { busyLabel: "Submitting..." });
 
@@ -1821,11 +1856,15 @@ async function performOrderSubmit(lockEvent) {
       console.warn("Could not save delivery address choice:", error);
       feedback.insertAdjacentHTML(
         "beforeend",
-        `<p class="muted">The order was received, but the delivery address could not be saved to your profile: ${escapeHtml(error.message || String(error))}</p>`
+        `<p class="muted">Your order was received, but we couldn't save this delivery address to your profile: ${escapeHtml(humanizeCustomerError(error, { fallback: "we couldn't reach your profile just now — you can add it from My account later." }))}</p>`
       );
     }
     await maybeSaveIdentityToProfile(submittedIdentity);
   }
+
+  // Let the caller (the review dialog's "Place order") decide what to do next:
+  // close on a confirmed order, or stay open and show the error for a retry.
+  return { orderId: successOrderId, error: submitError };
 }
 
 function uniqueAddresses(values, excluded = "") {

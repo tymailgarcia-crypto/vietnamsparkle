@@ -17,6 +17,7 @@ import {
 } from "./firebaseClient.js";
 import { buildOrderId, computeDepositBreakdown, normalizePhoneE164VN, paymentStatusFor, requireRole, setDeliveryWindow, todayKey, withSubmitLock } from "./shared.js";
 import { mapsApiKey } from "./firebaseWebConfig.js";
+import { createEditOrderAddressController } from "./editOrderAddress.js";
 
 const mergeCustomersFn = httpsCallable(functions, "mergeCustomers");
 
@@ -112,6 +113,26 @@ function loadCustomerMaps() {
   });
   return customerMapsPromise;
 }
+
+// The New order dialog's address field reuses the shared type-ahead + confirmed-
+// pin controller (same one Add customer / edit-order use), mapped onto this
+// dialog's new-order-address* ids. reset({address, deliveryLocation}) seeds the
+// customer's already-confirmed pin so an unchanged address needs no re-confirm;
+// changing the text invalidates it and requires a fresh Google Maps check.
+const NEW_ORDER_ADDRESS_IDS = {
+  "edit-address": "new-order-address",
+  "edit-address-verify": "new-order-address-verify",
+  "edit-address-confirm": "new-order-address-confirm",
+  "edit-address-reset-pin": "new-order-address-reset-pin",
+  "edit-address-map-wrap": "new-order-address-map-wrap",
+  "edit-address-map": "new-order-address-map",
+  "edit-address-autocomplete-list": "new-order-address-autocomplete-list",
+  "edit-address-status": "new-order-address-status"
+};
+const newOrderAddress = createEditOrderAddressController({
+  loadMaps: loadCustomerMaps,
+  getElement: (id) => el(NEW_ORDER_ADDRESS_IDS[id] || id)
+});
 
 function normalizeDeliveryAddress(value) {
   return String(value || "").trim().replace(/\s+/g, " ").toLowerCase();
@@ -759,7 +780,12 @@ function openNewOrderDialog() {
   el("new-order-customer-name").textContent = customer.name || "customer";
   el("new-order-date").value = todayKey();
   setDeliveryWindow(el("new-order-window"), "");
-  el("new-order-address").value = customer.address || "";
+  const primaryAddress = customer.address || "";
+  el("new-order-address").value = primaryAddress;
+  // Seed the controller with the customer's saved pin for this address, so an
+  // unchanged address is already confirmed and needs no extra Maps check.
+  const seededLocation = savedLocationForAddress(primaryAddress, savedAddressLocations(customer));
+  newOrderAddress.reset(seededLocation ? { address: primaryAddress, deliveryLocation: seededLocation } : { address: primaryAddress });
   el("new-order-notes").value = "";
   const addSelect = el("new-order-add-select");
   addSelect.innerHTML = '<option value="">Choose a product to add...</option>'
@@ -783,6 +809,17 @@ async function saveNewOrder(event) {
     statusNode.style.color = "var(--danger, #b3261e)";
     return;
   }
+  // Require a confirmed pin for the exact address on the field. The controller
+  // seeds the customer's saved pin for an unchanged address, so this passes
+  // straight through unless the owner edited the address to a new one.
+  const orderAddress = el("new-order-address").value.trim();
+  const confirmedLocation = newOrderAddress.confirmedFor(orderAddress);
+  if (!confirmedLocation) {
+    statusNode.textContent = "Confirm the delivery address on Google Maps before saving.";
+    statusNode.style.color = "var(--danger, #b3261e)";
+    el("new-order-address-verify")?.focus();
+    return;
+  }
   await withSubmitLock(event, async () => {
     try {
       statusNode.textContent = "Creating order...";
@@ -793,21 +830,6 @@ async function saveNewOrder(event) {
       const deliveryDate = el("new-order-date").value;
       const batch = writeBatch(db);
 
-      // Reuse a saved pin only when it belongs to the exact selected address.
-      // This prevents a manually changed order address from inheriting the
-      // customer's default pin and sending the driver to the wrong place.
-      const orderAddress = el("new-order-address").value.trim();
-      const savedOrderLocation = savedLocationForAddress(orderAddress, savedAddressLocations(customer));
-      const inheritedLocation = savedOrderLocation
-        ? {
-            lat: savedOrderLocation.lat,
-            lng: savedOrderLocation.lng,
-            formattedAddress: savedOrderLocation.formattedAddress || null,
-            geocodedAt: nowIso,
-            sourceCustomerId: customer.id
-          }
-        : null;
-
       batch.set(doc(db, "orders", orderId), {
         createdAt: nowIso,
         sourceChannel: "owner_manual",
@@ -817,7 +839,13 @@ async function saveNewOrder(event) {
         phone: customer.phone || "",
         email: customer.email || null,
         address: orderAddress,
-        deliveryLocation: inheritedLocation,
+        deliveryLocation: {
+          lat: confirmedLocation.lat,
+          lng: confirmedLocation.lng,
+          formattedAddress: confirmedLocation.formattedAddress || null,
+          geocodedAt: nowIso,
+          sourceCustomerId: customer.id
+        },
         deliveryDate,
         deliveryWindow: el("new-order-window").value.trim(),
         assignedDriverId: null,
@@ -910,7 +938,7 @@ async function ensureAllCustomersLoaded() {
 }
 
 function scoreMatch(customer, needle) {
-  const haystack = [customer.name, customer.phone, customer.email, customer.id, customer.area]
+  const haystack = [customer.name, customer.phone, customer.email, customer.id]
     .map((v) => String(v || "").toLowerCase())
     .join(" ");
   return haystack.includes(needle) ? 1 : 0;
@@ -924,7 +952,7 @@ function renderMergeSuggestions(list) {
     return;
   }
   container.innerHTML = list.slice(0, 20).map((c) => {
-    const bits = [c.phone, c.email, c.area].filter(Boolean).map(escapeHtml).join(" · ");
+    const bits = [c.phone, c.email].filter(Boolean).map(escapeHtml).join(" · ");
     return `
       <div class="card" data-merge-pick="${escapeHtml(c.id)}" style="cursor:pointer;padding:10px 12px;border-radius:0">
         <strong>${escapeHtml(c.name || "Unknown")}</strong>

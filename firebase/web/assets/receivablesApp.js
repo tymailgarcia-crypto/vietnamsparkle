@@ -12,7 +12,7 @@ import {
   signOut,
   where
 } from "./firebaseClient.js";
-import { buildPaymentId, collectedPaymentProblem, formatCurrency, mergeThresholds, requireRole, THRESHOLD_DEFAULTS, todayKey, withSubmitLock } from "./shared.js";
+import { buildPaymentId, collectedPaymentProblem, formatCurrency, initPhotoSourceInputs, mergeThresholds, paymentEvidenceProblem, requireRole, THRESHOLD_DEFAULTS, todayKey, withSubmitLock } from "./shared.js";
 import {
   invoiceContext,
   renderInvoiceHtml,
@@ -280,6 +280,18 @@ async function saveRecordPayment(event) {
         return;
       }
     }
+    // Electronic payments (transfer/QR) need a reference or a photo — same rule
+    // the server re-checks. Cash is exempt.
+    const evidenceProblem = paymentEvidenceProblem({
+      method: el("record-payment-method").value || "cash",
+      reference: el("record-payment-reference").value,
+      hasProof: !!proofFile,
+      amount
+    });
+    if (evidenceProblem) {
+      showError(evidenceProblem);
+      return;
+    }
     paymentSnapshot = {
       collected: true,
       amount,
@@ -523,3 +535,7 @@ onAuthStateChanged(auth, async (user) => {
   appView.classList.remove("hidden");
   await loadReceivables();
 });
+
+// Give the record-payment dialog's proof input an explicit Take photo / library
+// choice. The dialog is static in receivables.html, so one call at load covers it.
+initPhotoSourceInputs();

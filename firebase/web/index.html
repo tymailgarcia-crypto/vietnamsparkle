@@ -51,18 +51,20 @@
          not read like a discount line, because no money moves until the driver
          counts the containers at delivery. */
       .empties-pickup {
-        margin-top: 12px;
+        margin-top: 10px;
         padding: 10px 12px;
         border: 1px solid rgba(27, 104, 233, 0.28);
         border-radius: 10px;
         background: rgba(27, 104, 233, 0.05);
       }
       .empties-pickup-summary {
-        display: block;
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
         font-size: 13px;
         line-height: 1.4;
       }
-      .empties-pickup-summary .muted { font-weight: 400; }
+      .empties-pickup-summary .muted { font-weight: 400; text-align: right; }
       .empties-pickup-check {
         display: flex;
         align-items: flex-start;
@@ -85,6 +87,19 @@
       .empties-pickup-status {
         margin-top: 6px;
         font-size: 12px;
+      }
+      .empties-pickup-details {
+        margin-top: 4px;
+        font-size: 12px;
+      }
+      .empties-pickup-details summary {
+        color: var(--muted, #5d6a74);
+        cursor: pointer;
+      }
+      .empties-pickup-details p {
+        margin: 5px 0 0;
+        color: var(--muted, #5d6a74);
+        line-height: 1.4;
       }
       @media (max-width: 480px) {
         .empties-pickup-check { min-height: 44px; align-items: center; }
@@ -227,18 +242,6 @@
         </div>
         <h3>Order totals</h3>
         <div id="totals"></div>
-        <!-- Empties pickup. Shown only to a signed-in customer who is actually
-             holding containers. Deliberately OUTSIDE #totals: it is a request,
-             not a line item, and nothing in here may change the figures above.
-             See publicApp.js renderEmptiesPickup. -->
-        <div class="empties-pickup hidden" id="empties-pickup">
-          <div class="empties-pickup-summary" id="empties-pickup-summary"></div>
-          <label class="empties-pickup-check" for="empties-pickup-toggle">
-            <input type="checkbox" id="empties-pickup-toggle">
-            <span>I'll have them ready — collect them on this delivery.</span>
-          </label>
-          <div class="empties-pickup-status muted" id="empties-pickup-status" role="status"></div>
-        </div>
         <div class="button-row public-order-actions" style="margin-top:16px">
           <a class="button-link secondary" href="./account.html" id="account-link">Sign in</a>
           <button type="button" class="secondary" id="reorder-open-button">Reorder</button>
@@ -303,7 +306,26 @@
     <dialog id="order-review-dialog" class="edit-dialog order-review-dialog" aria-labelledby="order-review-dialog-title">
       <h3 id="order-review-dialog-title" class="order-review-dialog-title">Check your order</h3>
       <div id="order-review-dialog-body" class="order-review-dialog-body"></div>
+      <!-- Optional empties collection belongs at the final decision point, not
+           in the always-visible sticky totals. It remains separate from the
+           monetary totals because the driver confirms the actual credit. -->
+      <div class="empties-pickup hidden" id="empties-pickup">
+        <div class="empties-pickup-summary">
+          <strong>Empty containers</strong>
+          <span class="muted" id="empties-pickup-summary"></span>
+        </div>
+        <label class="empties-pickup-check" for="empties-pickup-toggle">
+          <input type="checkbox" id="empties-pickup-toggle">
+          <span>Collect them with this delivery</span>
+        </label>
+        <details class="empties-pickup-details">
+          <summary>How deposit credit works</summary>
+          <p id="empties-pickup-details"></p>
+        </details>
+        <div class="empties-pickup-status muted" id="empties-pickup-status" role="status"></div>
+      </div>
       <p class="muted order-review-dialog-note">Nothing is paid now — the driver collects payment at delivery.</p>
+      <p id="order-review-dialog-status" class="order-review-dialog-status" role="status" aria-live="polite"></p>
       <div class="button-row order-review-dialog-actions">
         <button type="button" class="ghost" id="order-review-dialog-back">Go back &amp; edit</button>
         <button type="button" class="primary" id="order-review-dialog-confirm">Place order</button>

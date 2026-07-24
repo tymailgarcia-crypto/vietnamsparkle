@@ -2,11 +2,15 @@ import {
   auth,
   collection,
   db,
+  doc,
   getDocs,
   onAuthStateChanged,
-  signOut
+  serverTimestamp,
+  signOut,
+  updateDoc
 } from "./firebaseClient.js";
-import { formatCurrency, productImageUrl, requireRole } from "./shared.js";
+import { formatCurrency, productImageUrl, renderImportanceButton, renderImportantNote, renderOrderContactMenu, requireRole, withSubmitLock } from "./shared.js";
+import { importantNoteIsValid, normalizeImportantNote } from "./adminDashboardModel.js";
 import { mapsApiKey } from "./firebaseWebConfig.js";
 
 const state = {
@@ -317,6 +321,7 @@ function renderRows() {
           <div>${customerHref ? `<a class="directory-card-title" href="${customerHref}">${customerName}</a>` : `<strong class="directory-card-title">${customerName}</strong>`}<div class="muted">Delivery ${escapeHtml(order.deliveryDate || "not scheduled")}</div></div>
           <span class="badge status-${escapeHtml(status)}">${escapeHtml(status)}</span>
         </div>
+        ${renderImportantNote(order, "order-important-note")}
         <div class="directory-card-details">
           <div><span class="muted">Subtotal</span><strong>${escapeHtml(formatCurrency(order.subtotal))}</strong></div>
           <div><span class="muted">Balance</span><strong>${escapeHtml(formatCurrency(order.balanceDue))}</strong></div>
@@ -329,7 +334,8 @@ function renderRows() {
         <div class="button-row directory-card-actions">
           <a class="button-link primary" href="./order.html?id=${encodeURIComponent(order.id)}">Open order</a>
           ${customerHref ? `<a class="button-link secondary" href="${customerHref}">Customer</a>` : ""}
-          ${phoneHref ? `<a class="button-link secondary" href="${phoneHref}">Call</a>` : ""}
+          ${renderOrderContactMenu(order)}
+          ${renderImportanceButton(order)}
         </div>
       </article>`;
   }).join("");
@@ -342,6 +348,9 @@ function renderRows() {
       const order = state.orders.find((row) => row.id === button.dataset.mapOrder);
       if (order) openOrderMap(order);
     });
+  });
+  cards.querySelectorAll("[data-important-order]").forEach((button) => {
+    button.addEventListener("click", () => openImportanceDialog(button.dataset.importantOrder));
   });
   initializeMapPreviews();
 }
@@ -357,6 +366,78 @@ function setView(view) {
 
 function formatOrderId(orderId) {
   return escapeHtml(String(orderId || "")).replace(/-/g, "-<br>");
+}
+
+// --- Important note (mark / edit / remove) ---------------------------------
+// Mirrors the dashboard flow: writes order.important + importantNote, patches
+// local state, and re-renders. Validation comes from adminDashboardModel so the
+// two pages enforce the same rule.
+
+function openImportanceDialog(orderId) {
+  const order = state.orders.find((row) => row.id === orderId);
+  if (!order) return;
+  const noteInput = el("importance-note");
+  el("importance-order-id").value = order.id;
+  el("importance-order-label").textContent = `${order.customerName || "Unknown customer"} · ${order.id}`;
+  noteInput.value = order.important === true ? normalizeImportantNote(order.importantNote) : "";
+  noteInput.setCustomValidity("");
+  el("importance-status").textContent = "";
+  el("importance-clear-button").classList.toggle("hidden", order.important !== true);
+  el("importance-dialog").showModal();
+  noteInput.focus();
+}
+
+function patchImportanceInState(orderId, important, importantNote) {
+  state.orders = state.orders.map((order) => order.id === orderId ? { ...order, important, importantNote } : order);
+  renderRows();
+}
+
+async function saveImportantOrder(event) {
+  event.preventDefault();
+  const orderId = el("importance-order-id").value;
+  const noteInput = el("importance-note");
+  const note = normalizeImportantNote(noteInput.value);
+  const status = el("importance-status");
+  noteInput.setCustomValidity(importantNoteIsValid(note) ? "" : "Enter a note before marking this order important.");
+  if (!importantNoteIsValid(note)) {
+    noteInput.reportValidity();
+    status.textContent = "Note is required.";
+    return;
+  }
+  await withSubmitLock(event, async () => {
+    try {
+      status.textContent = "Saving…";
+      await updateDoc(doc(db, "orders", orderId), {
+        important: true,
+        importantNote: note,
+        importantUpdatedAt: serverTimestamp()
+      });
+      patchImportanceInState(orderId, true, note);
+      el("importance-dialog").close();
+    } catch (error) {
+      status.textContent = error.message || String(error);
+    }
+  }, { busyLabel: "Saving…" });
+}
+
+async function clearImportantOrder() {
+  const orderId = el("importance-order-id").value;
+  const status = el("importance-status");
+  const button = el("importance-clear-button");
+  await withSubmitLock(button, async () => {
+    try {
+      status.textContent = "Removing…";
+      await updateDoc(doc(db, "orders", orderId), {
+        important: false,
+        importantNote: null,
+        importantUpdatedAt: serverTimestamp()
+      });
+      patchImportanceInState(orderId, false, null);
+      el("importance-dialog").close();
+    } catch (error) {
+      status.textContent = error.message || String(error);
+    }
+  }, { busyLabel: "Removing…" });
 }
 
 async function loadOrders() {
@@ -406,6 +487,19 @@ el("proof-preview-dialog").addEventListener("close", () => {
   el("proof-preview-image").src = "";
 });
 el("orders-map-close").addEventListener("click", () => el("orders-map-dialog").close());
+el("importance-form").addEventListener("submit", saveImportantOrder);
+el("importance-clear-button").addEventListener("click", clearImportantOrder);
+el("importance-cancel-button").addEventListener("click", () => el("importance-dialog").close());
+el("importance-note").addEventListener("input", (event) => {
+  event.target.setCustomValidity("");
+  el("importance-status").textContent = "";
+});
+// Close any open contact pop-over when clicking elsewhere.
+document.addEventListener("click", (event) => {
+  document.querySelectorAll("#order-cards details.customer-contact[open]").forEach((details) => {
+    if (!details.contains(event.target)) details.removeAttribute("open");
+  });
+});
 setView(state.view);
 
 onAuthStateChanged(auth, async (user) => {

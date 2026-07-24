@@ -401,6 +401,13 @@
         #daily-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       }
     </style>
+    <link rel="manifest" href="/manifest.webmanifest">
+    <meta name="theme-color" content="#1b68e9">
+    <link rel="icon" type="image/png" sizes="32x32" href="/assets/icons/favicon-32.png">
+    <link rel="apple-touch-icon" href="/assets/icons/apple-touch-icon.png">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-title" content="VS Owner">
+    <meta name="mobile-web-app-capable" content="yes">
   </head>
   <body>
     <main class="page has-admin-dock">
@@ -561,13 +568,14 @@
               </select>
             </label>
             <label class="span-2">
-              Reference (optional)
+              Reference (required for bank transfer / QR, unless you add a photo)
               <input id="delivery-payment-reference" type="text" maxlength="199" placeholder="Bank reference or note">
             </label>
             <label class="span-2">
-              Proof photo (optional)
-              <input id="delivery-payment-proof" type="file" accept="image/*" capture="environment">
-              <span class="muted" id="delivery-payment-proof-hint">Transfer screenshot or signed receipt. Photos are compressed automatically; source max 30 MB.</span>
+              Proof photo (required for bank transfer / QR, unless you add a reference)
+              <input id="delivery-payment-proof" type="file" accept="image/*">
+              <button type="button" class="proof-camera-btn" data-proof-camera-for="delivery-payment-proof">📷 Take photo</button>
+              <span class="muted" id="delivery-payment-proof-hint">Take a photo, or choose an existing transfer screenshot or receipt from your library. Photos are compressed automatically; source max 30 MB.</span>
             </label>
           </div>
 
@@ -601,8 +609,9 @@
               <p class="muted" style="margin:4px 0 8px">A photo or a written account — one of the two before the order can close.</p>
               <label>
                 Photo of the returned containers
-                <input id="delivery-return-proof" type="file" accept="image/*" capture="environment">
-                <span class="muted">Compressed automatically; source max 30 MB.</span>
+                <input id="delivery-return-proof" type="file" accept="image/*">
+                <button type="button" class="proof-camera-btn" data-proof-camera-for="delivery-return-proof">📷 Take photo</button>
+                <span class="muted">Take a photo or choose one from your library. Compressed automatically; source max 30 MB.</span>
               </label>
               <label style="margin-top:8px">
                 Or write what was collected
