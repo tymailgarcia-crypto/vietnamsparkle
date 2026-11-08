@@ -123,6 +123,27 @@ textarea {
   margin: 0 0 10px;
 }
 
+/* Collapsible order panels. A <details class="panel"> keeps the normal panel
+   look; the <summary> carries the heading and a caret that flips when open. */
+details.panel > summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+details.panel > summary::-webkit-details-marker { display: none; }
+details.panel > summary > :first-child { margin-bottom: 0; }
+details.panel[open] > summary { margin-bottom: 12px; }
+details.panel > summary::after {
+  content: "\25BE";
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 15px;
+  transition: transform 0.15s ease;
+}
+details.panel[open] > summary::after { transform: rotate(180deg); }
+
 .muted {
   color: var(--muted);
 }
@@ -1232,7 +1253,9 @@ textarea:focus {
   .grid-3,
   .form-grid,
   .stats-grid {
-    grid-template-columns: 1fr;
+    /* minmax(0, …): a bare 1fr track grows to its content's min width, which
+       pushed the phone catalog's 2-up product cards past the panel edge. */
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .edit-dialog {
@@ -1385,7 +1408,7 @@ textarea:focus {
 
   .catalog-column {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 8px;
   }
 
@@ -3444,3 +3467,473 @@ button.success-locked:disabled {
   cursor: pointer;
 }
 .proof-camera-btn:hover { background: rgba(15, 33, 57, 0.09); }
+
+/* --- Phone + desktop layout audit fixes (2026-10-23) --------------------- */
+/* Found by screenshotting every page at 375px and 1440px against the emulator. */
+
+/* Short pages (Finance, Receivables) showed hard horizontal seams where the
+   body gradient ended and the canvas repeated it. */
+body {
+  min-height: 100vh;
+}
+
+/* The global `input { width: 100% }` stretched checkboxes and radios to the
+   full row, squeezing their labels into a sliver (Settings → Phone alerts
+   overflowed a phone by ~50px). */
+input[type="checkbox"],
+input[type="radio"] {
+  width: auto;
+  padding: 0;
+}
+
+/* Hero (blue) buttons: .ghost had no hero variant, so "Sign out" on My account
+   rendered dark ink on dark blue. */
+.hero button.ghost {
+  background: rgba(255, 255, 255, 0.14);
+  color: #ffffff;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+}
+
+.hero button.ghost:hover {
+  background: rgba(255, 255, 255, 0.24);
+}
+
+/* accountApp's setStatus() writes an inline `color: var(--muted)`, which beat
+   the white hero rule and made "Signed in as …" unreadable. */
+.hero #hero-auth-status {
+  color: rgba(255, 255, 255, 0.96) !important;
+}
+
+.hero #hero-auth-status[style*="danger"] {
+  color: #ffd6d0 !important;
+}
+
+/* The empty contact-details status line reserved ~36px, leaving a hole under
+   Phone on the order form. It stays in the DOM (aria-live) but takes no room. */
+.personal-details-status:empty {
+  min-height: 0;
+  margin: 0;
+}
+
+/* Toolbars (Orders, Customers): the global input width made every filter a
+   full-width row on desktop. Let them share a line and wrap on phones. */
+.toolbar > .button-row {
+  flex: 1 1 auto;
+  align-items: flex-end;
+}
+
+/* Status badges beside a long customer name: keep "Pending approval" on one
+   line and let the name wrap instead. */
+.compact-order .top .badge,
+.directory-card-head > .badge {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.toolbar .button-row > input,
+.toolbar .button-row > select {
+  width: auto;
+  flex: 1 1 170px;
+}
+
+.toolbar .button-row > input[type="search"] {
+  flex: 2 1 240px;
+}
+
+/* Collapsible panel caret: the ▾ glyph rendered ~6px wide in Inter. */
+details.panel > summary::after {
+  content: "";
+  flex: 0 0 auto;
+  width: 9px;
+  height: 9px;
+  margin: 0 6px 4px auto;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(45deg);
+}
+
+details.panel[open] > summary::after {
+  margin-bottom: -4px;
+  transform: rotate(-135deg);
+}
+
+/* Dashboard status tabs: one even row on desktop instead of 3 + 2. */
+@media (min-width: 761px) {
+  #order-status-filter {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  /* Phone catalog cards are ~155px wide; with the thumb beside the name the
+     name wrapped one word per line. Stack thumb above name instead. */
+  .catalog-column:not(.catalog-list-mode) .catalog-item {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "thumb"
+      "name"
+      "details"
+      "qty";
+    align-items: start;
+  }
+
+  .catalog-column:not(.catalog-list-mode) .catalog-item .product-name {
+    font-size: 15px;
+    overflow-wrap: anywhere;
+  }
+
+  /* Sticky totals: "Sign in to order" was clipped inside a 1/3-width button. */
+  .public-order-actions .primary {
+    flex-grow: 1.6;
+  }
+
+  .public-order-actions button,
+  .public-order-actions .button-link {
+    white-space: normal;
+    line-height: 1.15;
+  }
+
+  /* Order cards: keep "Open order" on one line. */
+  .directory-card-actions > * {
+    white-space: nowrap;
+  }
+}
+
+/* Phone owner menu button: was a 32px sharp-cornered square half off the top
+   of the hero card. Round, 40px, and seated inside the hero's corner. */
+@media (max-width: 960px), (hover: none) and (pointer: coarse) {
+  .floating-settings.top-menu {
+    top: max(24px, env(safe-area-inset-top));
+    right: 24px;
+    width: 40px;
+    height: 40px;
+    min-height: 40px;
+    border-radius: 50%;
+    color: #ffffff;
+    font-size: 20px;
+  }
+
+  .floating-settings.top-menu .top-menu-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+}
+
+/* Map order table on a phone: the 760px-min table scrolled sideways and hid
+   Phone/Address/Driver off-screen. Each order becomes a labelled card instead
+   (labels come from data-label on the cells in mapApp.js). */
+@media (max-width: 600px) {
+  .map-order-table {
+    min-width: 0;
+    table-layout: auto;
+  }
+
+  .map-order-table,
+  .map-order-table tbody {
+    display: block;
+  }
+
+  .map-order-table colgroup,
+  .map-order-table thead {
+    display: none;
+  }
+
+  .map-order-table tbody tr[data-order-id] {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px 12px;
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .map-order-table tbody tr[data-order-id]:last-child {
+    border-bottom: 0;
+  }
+
+  .map-order-table tbody tr[data-order-id] > td {
+    display: block;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .map-order-table td[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: 2px;
+    color: var(--muted);
+    font-family: 'Inter', sans-serif;
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  .map-order-table td.map-customer-name {
+    grid-column: 1 / -1;
+    font-size: 16px;
+    font-weight: 700;
+  }
+
+  .map-order-table td.map-address-cell {
+    grid-column: 1 / -1;
+  }
+
+  .map-order-table tbody tr[data-order-id] > td.trip-select-column {
+    display: none;
+  }
+
+  .map-order-table.trip-selection-active tbody tr[data-order-id] > td.trip-select-column {
+    display: block;
+    grid-column: 1 / -1;
+    text-align: left;
+  }
+}
+
+/* --- Staff help chat (helpChat.js) --------------------------------------- */
+/* Ask opens from the owner tools menu; the chat panel stays available on staff pages. */
+
+.help-chat-panel {
+  position: fixed;
+  z-index: 1100;
+  right: 20px;
+  bottom: max(20px, env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  width: min(400px, calc(100vw - 40px));
+  height: min(600px, calc(100vh - 40px));
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: var(--surface);
+  box-shadow: 0 20px 60px rgba(15, 33, 57, 0.3);
+  overflow: hidden;
+}
+
+.help-chat-panel[hidden] {
+  display: none;
+}
+
+.help-chat-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 14px 12px 12px 16px;
+  background: linear-gradient(140deg, #0c3870 0%, #1b68e9 100%);
+  color: #ffffff;
+}
+
+.help-chat-head > div {
+  flex: 1;
+  min-width: 0;
+}
+
+.help-chat-head strong {
+  display: block;
+  font-size: 16px;
+}
+
+.help-chat-head small {
+  display: block;
+  margin-top: 2px;
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 12px;
+}
+
+.help-chat-icon {
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  min-height: 36px;
+  padding: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.16);
+  color: #ffffff;
+  font-size: 16px;
+}
+
+.help-chat-log {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  overflow-y: auto;
+  background: var(--sand);
+}
+
+.help-chat-msg {
+  max-width: 88%;
+  padding: 10px 12px;
+  border-radius: 14px;
+  font-size: 15px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.help-chat-msg.is-user {
+  align-self: flex-end;
+  background: var(--brand);
+  color: #ffffff;
+  border-bottom-right-radius: 4px;
+  white-space: pre-wrap;
+}
+
+.help-chat-msg.is-bot {
+  align-self: flex-start;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-bottom-left-radius: 4px;
+}
+
+.help-chat-msg.is-bot p {
+  margin: 0 0 8px;
+}
+
+.help-chat-msg.is-bot ol,
+.help-chat-msg.is-bot ul {
+  margin: 0 0 8px;
+  padding-left: 20px;
+}
+
+.help-chat-msg.is-bot li + li {
+  margin-top: 4px;
+}
+
+.help-chat-msg.is-bot > :last-child {
+  margin-bottom: 0;
+}
+
+.help-chat-msg.is-bot a {
+  color: var(--brand);
+  font-weight: 600;
+}
+
+.help-chat-msg.is-pending {
+  color: var(--muted);
+  font-size: 20px;
+  letter-spacing: 2px;
+}
+
+.help-chat-error {
+  align-self: stretch;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: rgba(192, 57, 43, 0.1);
+  color: var(--danger);
+  font-size: 14px;
+}
+
+.help-chat-empty p {
+  margin: 4px 0 12px;
+  color: var(--muted);
+}
+
+.help-chat-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.help-chat-suggestions button {
+  min-height: 36px;
+  padding: 7px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--brand-dark);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.help-chat-form {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 10px 12px 4px;
+  border-top: 1px solid var(--line);
+}
+
+.help-chat-form textarea {
+  flex: 1;
+  min-height: 44px;
+  max-height: 120px;
+  resize: none;
+  padding: 11px 12px;
+}
+
+.help-chat-form button {
+  min-height: 44px;
+}
+
+.help-chat-note {
+  margin: 0;
+  padding: 2px 12px 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+@media (max-width: 960px), (hover: none) and (pointer: coarse) {
+  .help-chat-panel {
+    right: 8px;
+    left: 8px;
+    bottom: max(8px, env(safe-area-inset-bottom));
+    width: auto;
+    height: min(78vh, 620px);
+  }
+}
+
+/* --- Settings → Staff (staffAdmin.js) ------------------------------------ */
+
+.staff-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+}
+
+.staff-row-main {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.staff-row-main .muted {
+  font-size: 13px;
+}
+
+.staff-row-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.staff-badge-driver {
+  background: var(--sky-tint-strong);
+  color: var(--brand-dark);
+}
+
+.staff-badge-warn {
+  background: #fff1d6;
+  color: #7a4b00;
+}
+
+.staff-add-form {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.staff-driver-check {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  color: var(--ink);
+}
+
+.staff-driver-check input {
+  width: 20px;
+  height: 20px;
+  accent-color: var(--brand);
+}

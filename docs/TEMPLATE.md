@@ -16,24 +16,17 @@ claimed. Participants must write their own ratings without AI assistance.
 
 1. Extract business identity, contact channels and branding into documented
    configuration while preserving the deployed implementation.
-2. Extend the local preview into a full callable demo with fictional customers
-   and orders, deterministic dates and disabled external integrations.
-3. Verify concurrent delivery/payment retries and document their invariants.
-4. Reconcile deployed-but-uncommitted work with authoring sessions, prepare a
-   reproducible release and capture screenshots using fictional fixtures.
+2. Improve route behavior with synthetic GPS traces; real-device road testing
+   remains separate from the credential-free demo.
+3. Improve local fixture coverage for additional cancellation/refund interfaces.
 
 These are proposed tasks, not completed functionality. Production rule changes
 and business behavior changes require separate focused work.
 
-## Preparation verification — 2026-11-08
+## Preparation completed — 2026-11-08
 
-- Five focused suites pass against both the current working files (73 checks)
-  and the pre-preparation Git version (82 checks). Their different counts reflect
-  existing uncommitted changes, not additional tests created for this preparation.
-- Auth, Firestore, Storage and Hosting emulators started with the demo project.
-  HTTP checks confirmed the served demo configuration, fictional owner login and
-  two products read through the Firestore rules. A remote seed host was rejected.
-- Verification used this machine's Node 24 and Java 21; the documented Node 22
-  release runtime and WSL2 environment were not independently verified here.
-- No browser screenshot review, full callable lifecycle, deployment or Alignerr
-  eligibility approval is implied by these checks.
+The isolated callable demo, desktop/phone screenshots, verified application-source
+reconciliation, concurrent-delivery regression checks and payment retry checks
+are complete. See [verification scope and limitations](RECONCILIATION.md).
+Node 22 and Java 21 were used for the full-stack checks. WSL2 and Alignerr
+eligibility were not verified. No production deployment occurred.

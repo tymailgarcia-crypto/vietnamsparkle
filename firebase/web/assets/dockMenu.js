@@ -78,8 +78,16 @@ initDockMenu();
 // belong in the bottom nav dock still have a consistent home. The existing
 // settings anchor is MOVED into the panel (relabeled), so every page keeps
 // exactly one settings link and no markup had to change.
-function initTopMenu() {
-  const cog = document.querySelector("a.cog-button.floating-settings");
+function initTopMenu(createIfMissing = false) {
+  if (document.querySelector(".top-menu")) return;
+  let cog = document.querySelector("a.cog-button.floating-settings");
+  if (!cog && createIfMissing) {
+    const app = document.getElementById("app-view");
+    if (!app) return;
+    cog = document.createElement("a");
+    cog.href = "./settings.html";
+    app.prepend(cog);
+  }
   if (!cog || cog.closest(".top-menu")) return;
 
   const wrap = document.createElement("div");
@@ -134,3 +142,8 @@ function initTopMenu() {
 }
 
 initTopMenu();
+
+export function getOwnerToolsMenu() {
+  initTopMenu(true);
+  return document.querySelector(".top-menu-panel");
+}

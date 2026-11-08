@@ -666,3 +666,13 @@ onAuthStateChanged(auth, async (user) => {
     console.error("Could not load drivers/products:", error);
   }
 });
+
+// staffAdmin.js fires this after adding/removing an employee who drives.
+window.addEventListener("vs:drivers-changed", async () => {
+  try {
+    await loadDriversAndProducts();
+    renderDrivers();
+  } catch (error) {
+    console.error("Could not reload drivers:", error);
+  }
+});

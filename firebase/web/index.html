@@ -104,6 +104,92 @@
       @media (max-width: 480px) {
         .empties-pickup-check { min-height: 44px; align-items: center; }
       }
+      /* Old-customer opening empties. The entry area is quiet/neutral; only the
+         money preview is amber, because that line is the one a customer could
+         mistake for a promised refund — it must read as conditional. */
+      .preapp-empties {
+        margin-top: 10px;
+        padding: 12px;
+        border: 1px solid rgba(0, 0, 0, 0.12);
+        border-radius: 10px;
+        background: rgba(0, 0, 0, 0.02);
+      }
+      .preapp-empties-head { display: flex; flex-direction: column; gap: 2px; font-size: 14px; }
+      .preapp-empties-head .muted { font-size: 12px; font-weight: 400; }
+      .preapp-empties-choice { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+      .preapp-choice {
+        min-height: 40px;
+        padding: 8px 10px;
+        border: 1px solid rgba(0, 0, 0, 0.18);
+        border-radius: 8px;
+        background: #fff;
+        font-size: 13px;
+        line-height: 1.2;
+        cursor: pointer;
+        color: var(--muted, #5d6a74);
+      }
+      .preapp-choice.is-selected {
+        border-color: var(--brand, #1b68e9);
+        background: rgba(27, 104, 233, 0.08);
+        color: var(--brand, #1b68e9);
+        font-weight: 500;
+      }
+      .preapp-empties-body { margin-top: 10px; }
+      .preapp-empties-hint { margin: 0 0 8px; font-size: 12px; }
+      .preapp-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 6px 0;
+        border-top: 1px solid rgba(0, 0, 0, 0.07);
+        font-size: 14px;
+      }
+      .preapp-row:first-child { border-top: 0; }
+      .preapp-row.is-zero .preapp-row-label { color: var(--muted, #5d6a74); }
+      .preapp-stepper { display: flex; align-items: center; gap: 12px; }
+      .preapp-step {
+        width: 34px;
+        height: 34px;
+        border: 1px solid rgba(0, 0, 0, 0.28);
+        border-radius: 8px;
+        background: #fff;
+        font-size: 18px;
+        line-height: 1;
+        cursor: pointer;
+        color: #1f2a33;
+      }
+      .preapp-qty { min-width: 18px; text-align: center; font-weight: 500; font-size: 16px; }
+      .preapp-empties-preview {
+        margin-top: 12px;
+        padding: 12px;
+        border: 1px solid rgba(191, 117, 23, 0.38);
+        border-radius: 10px;
+        background: rgba(191, 117, 23, 0.08);
+      }
+      .preapp-preview-empty { margin: 0; font-size: 13px; }
+      .preapp-preview-warn { margin: 0 0 10px; font-size: 14px; line-height: 1.35; color: #8a5a0b; }
+      .preapp-preview-table { background: #fff; border-radius: 8px; padding: 8px 10px; }
+      .preapp-preview-row {
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 4px 0;
+        font-size: 13px;
+      }
+      .preapp-preview-total {
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 8px 0 2px;
+        margin-top: 4px;
+        border-top: 1px solid rgba(0, 0, 0, 0.1);
+        font-size: 14px;
+      }
+      .preapp-preview-note { margin: 10px 0 0; font-size: 12px; line-height: 1.45; color: #8a5a0b; }
+      @media (max-width: 480px) {
+        .preapp-step { width: 38px; height: 38px; }
+      }
     </style>
   </head>
   <body>
@@ -197,8 +283,11 @@
           <div id="address-map-wrap" class="span-2 address-map-wrap" hidden>
             <div id="address-confirm-map" class="address-confirm-map" aria-label="Map showing the delivery location"></div>
             <div class="address-map-footer">
-              <p class="muted address-map-help">Drag the pin to your exact entrance, then submit your order.</p>
-              <button id="address-reset-pin" class="ghost" type="button">Reset pin</button>
+              <p class="muted address-map-help">Drag the pin to your exact entrance, then choose “Use this address”.</p>
+              <div class="edit-address-map-actions">
+                <button id="address-reset-pin" class="ghost" type="button">Reset pin</button>
+                <button id="address-confirm" class="secondary" type="button">Use this address</button>
+              </div>
             </div>
           </div>
           <fieldset id="address-save-options" class="span-2 address-save-options" hidden>
@@ -323,6 +412,25 @@
           <p id="empties-pickup-details"></p>
         </details>
         <div class="empties-pickup-status muted" id="empties-pickup-status" role="status"></div>
+      </div>
+      <!-- Old customer with containers from before the app. Shown by
+           renderPreAppEmpties only to a signed-in customer who holds nothing on
+           the ledger yet. Non-binding: the counts are a claim the owner
+           confirms, and the estimate is NEVER added to the order totals. -->
+      <div class="preapp-empties hidden" id="preapp-empties">
+        <div class="preapp-empties-head">
+          <strong>Do you already have our empty containers?</strong>
+          <span class="muted">From before you used this app.</span>
+        </div>
+        <div class="preapp-empties-choice" role="group" aria-label="Are you a new or existing customer?">
+          <button type="button" class="preapp-choice" data-preapp-choice="new" aria-pressed="true">New — I have none</button>
+          <button type="button" class="preapp-choice" data-preapp-choice="old" aria-pressed="false">I already have some</button>
+        </div>
+        <div class="preapp-empties-body hidden" id="preapp-empties-body">
+          <p class="muted preapp-empties-hint">Add every kind you are holding.</p>
+          <div id="preapp-empties-rows"></div>
+          <div class="preapp-empties-preview" id="preapp-empties-preview" role="status" aria-live="polite"></div>
+        </div>
       </div>
       <p class="muted order-review-dialog-note">Nothing is paid now — the driver collects payment at delivery.</p>
       <p id="order-review-dialog-status" class="order-review-dialog-status" role="status" aria-live="polite"></p>

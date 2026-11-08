@@ -277,35 +277,33 @@ it("proof: a photo alone is accepted", () => {
 it("proof: nothing at all is refused", () => {
   const problem = containerReturnProofProblem({ hasPhoto: false, note: "" });
   assert.match(problem, /photo/i);
-  assert.match(problem, /write what you collected/i);
+  assert.match(problem, /returned containers/i);
   assert.strictEqual(containerReturnProofType({ hasPhoto: false, note: "" }), null);
 });
 
-it("proof: a real written account replaces the photo", () => {
-  // The whole point of the alternative — a photo can be of an empty floor, so a
-  // specific sentence someone put their name to is worth at least as much.
-  const note = "3 crates collected from Ms Hoa at the shop, camera broken";
-  assert.strictEqual(containerReturnProofProblem({ hasPhoto: false, note }), null);
-  assert.strictEqual(containerReturnProofType({ hasPhoto: false, note }), "note");
+it("proof: a written account does not replace the required photo", () => {
+  const note = "Fictional demo: three crates counted at the demo stop";
+  assert.match(containerReturnProofProblem({ hasPhoto: false, note }), /photo/i);
+  assert.strictEqual(containerReturnProofType({ hasPhoto: false, note }), null);
 });
 
 it("proof: a token note is refused", () => {
   const problem = containerReturnProofProblem({ hasPhoto: false, note: "ok" });
-  assert.match(problem, /at least 15 characters/);
+  assert.match(problem, /photo/i);
   assert.strictEqual(containerReturnProofProblem({ hasPhoto: false, note: "   ok   " }), problem,
-    "padding a short note with spaces must not get past the minimum");
+    "padding a note must not replace the photo");
 });
 
 it("proof: whitespace is not an account of anything", () => {
-  assert.match(containerReturnProofProblem({ hasPhoto: false, note: "               " }), /write what you collected/i);
+  assert.match(containerReturnProofProblem({ hasPhoto: false, note: "               " }), /photo/i);
   assert.strictEqual(containerReturnProofType({ hasPhoto: false, note: "     " }), null);
 });
 
-it("proof: exactly at the minimum is accepted, one short is not", () => {
+it("proof: neither old note-length boundary replaces the photo", () => {
   const atMin = "x".repeat(RETURN_NOTE_MIN_LENGTH);
   const belowMin = "x".repeat(RETURN_NOTE_MIN_LENGTH - 1);
-  assert.strictEqual(containerReturnProofProblem({ hasPhoto: false, note: atMin }), null);
-  assert.match(containerReturnProofProblem({ hasPhoto: false, note: belowMin }), /at least/);
+  assert.match(containerReturnProofProblem({ hasPhoto: false, note: atMin }), /photo/i);
+  assert.match(containerReturnProofProblem({ hasPhoto: false, note: belowMin }), /photo/i);
 });
 
 it("proof: both photo and note is recorded as both", () => {

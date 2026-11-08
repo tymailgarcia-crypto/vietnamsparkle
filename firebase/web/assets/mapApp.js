@@ -320,12 +320,12 @@ function renderRows(orders) {
             ${selected ? "checked" : ""} ${hasPin ? "" : 'disabled title="A confirmed map pin is required"'}>
         </td>
         <td class="map-customer-name">${escapeHtml(order.customerName || customer.name || "Unknown")}</td>
-        <td>${renderMapOrderThumbs(order.id)}</td>
-        <td>${renderDeliveryDate(order.deliveryDate)}</td>
-        <td>${phoneCell}</td>
-        <td>${pinMark} ${mapsHref ? `<a class="row-link address-map-link" href="${mapsHref}" target="_blank" rel="noopener" title="Open in Google Maps" aria-label="Open ${escapeHtml(fullAddress)} in Google Maps">${formatMapAddress(address)}</a>` : formatMapAddress(address)}</td>
-        <td style="font-family:monospace;font-size:12px"><a href="${boardHref}">${formatOrderId(order.id)}</a></td>
-        <td>${escapeHtml(driverName(order.assignedDriverId))}</td>
+        <td data-label="Products">${renderMapOrderThumbs(order.id)}</td>
+        <td data-label="Delivery">${renderDeliveryDate(order.deliveryDate)}</td>
+        <td data-label="Phone">${phoneCell}</td>
+        <td data-label="Address" class="map-address-cell">${pinMark} ${mapsHref ? `<a class="row-link address-map-link" href="${mapsHref}" target="_blank" rel="noopener" title="Open in Google Maps" aria-label="Open ${escapeHtml(fullAddress)} in Google Maps">${formatMapAddress(address)}</a>` : formatMapAddress(address)}</td>
+        <td data-label="Order ID" style="font-family:monospace;font-size:12px"><a href="${boardHref}">${formatOrderId(order.id)}</a></td>
+        <td data-label="Driver">${escapeHtml(driverName(order.assignedDriverId))}</td>
       </tr>
     `;
   }).join("");
@@ -614,7 +614,7 @@ async function loadDrivers() {
   const select = el("driver-filter");
   const preserved = select.value;
   select.innerHTML = '<option value="">All drivers</option><option value="__unassigned__">Unassigned</option>'
-    + state.drivers.map((d) => `<option value="${escapeHtml(d.id)}">${escapeHtml(d.driverName)}</option>`).join("");
+    + state.drivers.filter((d) => d.active !== false).map((d) => `<option value="${escapeHtml(d.id)}">${escapeHtml(d.driverName)}</option>`).join("");
   if (preserved) {
     select.value = preserved;
     return;

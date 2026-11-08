@@ -1,3 +1,4 @@
+import { returnDeliveryToAssignment } from "./returnDelivery.js";
 import {
   addDoc,
   auth,
@@ -32,6 +33,8 @@ import {
   describeDepositBalanceProblem,
   escapeHtml,
   formatCurrency,
+  groupThousands,
+  parseAmountValue,
   initPhotoSourceInputs,
   isBrokenDepositBalance,
   localDateKey,
@@ -47,7 +50,8 @@ import {
   setDeliveryWindow,
   THRESHOLD_DEFAULTS,
   todayKey,
-  withSubmitLock
+  withSubmitLock,
+  formatOrderStatus
 } from "./shared.js";
 import {
   invoiceContext,
@@ -165,14 +169,15 @@ function renderHero() {
     .filter((payment) => payment.paymentDate === state.selectedDate && payment.method === "cash")
     .reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
   const transfer = state.payments
-    .filter((payment) => payment.paymentDate === state.selectedDate && payment.method === "transfer")
+    // Bank transfer + QR together, matching Finance's "Bank/QR" split.
+    .filter((payment) => payment.paymentDate === state.selectedDate && (payment.method === "transfer" || payment.method === "bank_qr"))
     .reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
   const unpaid = todayOrders.filter((order) => order.paymentStatus !== "paid").length;
 
   document.getElementById("daily-kpis").innerHTML = `
     <div class="daily-kpi"><span>Today orders</span><strong>${todayOrders.length}</strong></div>
     <div class="daily-kpi"><span>Cash today</span><strong>${formatCurrency(cash)}</strong></div>
-    <div class="daily-kpi"><span>Transfer today</span><strong>${formatCurrency(transfer)}</strong></div>
+    <div class="daily-kpi"><span>Transfer/QR today</span><strong>${formatCurrency(transfer)}</strong></div>
     <div class="daily-kpi"><span>Unpaid</span><strong>${unpaid}</strong></div>
   `;
 }
@@ -336,15 +341,6 @@ async function updateOrderStatus(orderId, nextStatus) {
   }
   await updateDoc(doc(db, "orders", orderId), {
     status: nextStatus,
-    updatedAt: new Date().toISOString()
-  });
-}
-
-async function returnOrderToAssignment(orderId) {
-  const order = state.orders.find((row) => row.id === orderId);
-  if (!order || order.status !== "out_for_delivery") return;
-  await updateDoc(doc(db, "orders", orderId), {
-    status: "assigned",
     updatedAt: new Date().toISOString()
   });
 }
@@ -649,16 +645,22 @@ function renderDriverSelect(order) {
   return `
     <select data-driver="${escapeHtml(order.id)}">
       <option value="">Unassigned</option>
-      ${state.drivers.map((driver) => `<option value="${escapeHtml(driver.id)}" ${driver.id === order.assignedDriverId ? "selected" : ""}>${escapeHtml(driver.driverName)}</option>`).join("")}
+      ${state.drivers
+        // Removed employees' driver docs stay (active:false) for history; only
+        // offer them where they are already the assigned driver.
+        .filter((driver) => driver.active !== false || driver.id === order.assignedDriverId)
+        .map((driver) => `<option value="${escapeHtml(driver.id)}" ${driver.id === order.assignedDriverId ? "selected" : ""}>${escapeHtml(driver.driverName)}</option>`).join("")}
     </select>
   `;
 }
 
 function renderStateActions(order) {
+  // No Cancel while out for delivery: the server refuses it until the order is
+  // Reset to assigned, so the button only ever produced an error.
   const managementActions = `
     <span class="order-management-actions">
       ${renderImportanceButton(order)}
-      <button class="ghost" data-cancel="${escapeHtml(order.id)}">Cancel order</button>
+      ${order.status === "out_for_delivery" ? "" : `<button class="ghost" data-cancel="${escapeHtml(order.id)}">Cancel order</button>`}
       <button class="ghost" data-edit="${escapeHtml(order.id)}">Edit details</button>
     </span>`;
   const contactAction = renderQuickCallAction(order);
@@ -684,7 +686,8 @@ function renderStateActions(order) {
       `;
     case "out_for_delivery":
       return `
-        <button class="primary" data-collect="${order.id}">Mark delivered &amp; record payment</button>
+        <a class="button-link primary" href="./order.html?id=${encodeURIComponent(order.id)}&amp;delivery=open">Open Delivery Mode</a>
+        <button class="secondary" data-collect="${order.id}">Mark delivered &amp; record payment</button>
         <button class="secondary" data-return-assignment="${order.id}">Reset</button>
         ${managementActions}
         ${contactAction}
@@ -921,7 +924,7 @@ function renderOrderCompact(order) {
     <div class="compact-order" data-order-card="${escapeHtml(order.id)}">
       <div class="top">
         <div class="who">${nameCell}</div>
-        <span class="badge status-${escapeHtml(order.status)}">${escapeHtml(order.status)}</span>
+        <span class="badge status-${escapeHtml(order.status)}">${escapeHtml(formatOrderStatus(order.status))}</span>
       </div>
       <div class="order-delivery-timing ${deliveryTiming.overdue ? "is-overdue" : ""}">${escapeHtml(deliveryTiming.label)}</div>
       ${pickupBadge ? `<div class="where">${pickupBadge}</div>` : ""}
@@ -1065,7 +1068,7 @@ function renderOrderBoard() {
     button.addEventListener("click", async () => {
       if (!confirm("Return this delivery to the assignment stage? The assigned driver will be kept.")) return;
       try {
-        await returnOrderToAssignment(button.dataset.returnAssignment);
+        await returnDeliveryToAssignment(button.dataset.returnAssignment);
         await refreshDashboard();
       } catch (error) {
         setStatus(error.message || String(error), true);
@@ -1344,6 +1347,9 @@ async function saveEditedOrder(event) {
       // refunded event. Keeps the deposits page + customer balance in sync
       // with the edited order. Legacy "mixed" events get zeroed out naturally
       // as the new per-type charges land.
+      // Not before approval: approveOrder charges the full deposit from the
+      // order's items at approval time, so booking a delta here as well would
+      // charge the containers twice (found 2026-10-23).
       const productsById = Object.fromEntries(state.products.map((p) => [p.id, p]));
       const newBreakdown = computeDepositBreakdown(editState.items, productsById);
       const newByType = Object.fromEntries(newBreakdown.map((b) => [b.containerType, b]));
@@ -1363,7 +1369,9 @@ async function saveEditedOrder(event) {
             existingByType[type].amount -= amt;
           }
         });
-      const allTypes = new Set([...Object.keys(existingByType), ...Object.keys(newByType)]);
+      const allTypes = order?.status === "pending_approval"
+        ? new Set()
+        : new Set([...Object.keys(existingByType), ...Object.keys(newByType)]);
       const nowStr = todayKey();
       allTypes.forEach((type) => {
         const need = newByType[type] || { qty: 0, amount: 0 };
@@ -1494,7 +1502,7 @@ function brokenBalanceWarningHtml(broken) {
   return `<div class="card" style="border:2px solid var(--danger,#b3261e)">
     <strong style="color:var(--danger,#b3261e)">This customer's container record is wrong</strong>
     <ul class="muted" style="margin:6px 0 0;padding-left:18px">${lines}</ul>
-    <div class="muted top-gap">Deliver and take payment as normal — but don't record returns or write-offs against this customer until it's corrected, or the next deposit they pay will vanish into the gap. Check their deposit history on the customer page.</div>
+    <div class="muted top-gap">Deliver and take payment as normal — but don't record returns or write-offs against this customer until it's corrected, or the next deposit they pay will vanish into the gap. The <a href="./deposits.html">Deposits</a> page lists it under “container records need fixing”.</div>
   </div>`;
 }
 
@@ -1506,42 +1514,60 @@ function renderHeldContainers(held) {
   if (!types.length) {
     if (help) {
       help.textContent = warning
-        ? "Nothing can be returned here until the record below is corrected."
-        : "This customer isn't holding any containers, so there's nothing to return and nothing to write off. If they hand one back anyway, take it — but there's no deposit of theirs to give back, so note it on the order instead.";
+        ? "Fix the record below first."
+        : "No empties to take back.";
     }
     container.innerHTML = warning;
     recalcAdminDeliveryCod();
     return;
   }
-  if (help) help.textContent = "Enter qty returned this trip and pick how to handle the deposit. Leave qty 0 for containers that stayed with the customer.";
+  if (help) help.textContent = "Tap + or − for what came back.";
   container.innerHTML = warning + types.map((type) => {
     const info = held[type];
+    const heldQty = Number(info.qty || 0);
+    const name = humanizeContainerType(type);
     return `
       <div class="card">
         <div class="order-top">
           <div>
-            <strong>${escapeHtml(humanizeContainerType(type))}</strong>
-            <div class="muted">${Number(info.qty || 0)} held · ${formatCurrency(info.outstandingAmount)} deposit outstanding</div>
+            <strong>${escapeHtml(name)}</strong>
+            <div class="muted">${heldQty} held</div>
           </div>
-          <div class="button-row" style="gap:6px;flex-wrap:wrap">
-            <label class="muted" style="gap:4px;display:flex;align-items:center">
-              Returned
-              <input type="number" data-return-qty="${escapeHtml(type)}" min="0" max="${Number(info.qty || 0)}" step="1" value="0" style="width:64px">
-            </label>
-            <select data-return-handling="${escapeHtml(type)}">
-              <option value="credit">Apply to this order</option>
-              <option value="refund">Refund cash now</option>
-              <option value="keep">Owner will decide later</option>
+          <div class="button-row" style="gap:8px;align-items:center;flex-wrap:wrap">
+            <button class="ghost" type="button" data-return-minus="${escapeHtml(type)}" aria-label="One less ${escapeHtml(name)} back" disabled>−</button>
+            <span class="qty-value" data-return-value="${escapeHtml(type)}">0</span>
+            <button class="ghost" type="button" data-return-plus="${escapeHtml(type)}" aria-label="One more ${escapeHtml(name)} back">+</button>
+            <input type="hidden" data-return-qty="${escapeHtml(type)}" data-max="${heldQty}" value="0">
+            <select data-return-handling="${escapeHtml(type)}" aria-label="What to do with ${escapeHtml(name)}">
+              <option value="credit">Off this bill</option>
+              <option value="refund">Cash back now</option>
+              <option value="keep">Decide later</option>
             </select>
           </div>
         </div>
       </div>
     `;
   }).join("");
-  container.querySelectorAll("[data-return-qty], [data-return-handling]").forEach((node) => {
-    node.addEventListener("input", recalcAdminDeliveryCod);
-    node.addEventListener("change", recalcAdminDeliveryCod);
-  });
+  container.querySelectorAll("[data-return-minus]").forEach((btn) => btn.addEventListener("click", () => stepReturnQty(btn.dataset.returnMinus, -1)));
+  container.querySelectorAll("[data-return-plus]").forEach((btn) => btn.addEventListener("click", () => stepReturnQty(btn.dataset.returnPlus, 1)));
+  container.querySelectorAll("[data-return-handling]").forEach((node) => node.addEventListener("change", recalcAdminDeliveryCod));
+  recalcAdminDeliveryCod();
+}
+
+// +/− steppers drive a hidden qty input, clamped 0..held. They call recalc
+// directly (setting .value from JS fires no input event) and grey out at the ends.
+function stepReturnQty(type, delta) {
+  const input = document.querySelector(`[data-return-qty="${type}"]`);
+  if (!input) return;
+  const max = Number(input.dataset.max || 0);
+  const next = Math.min(max, Math.max(0, Number(input.value || 0) + delta));
+  input.value = String(next);
+  const label = document.querySelector(`[data-return-value="${type}"]`);
+  if (label) label.textContent = String(next);
+  const minusBtn = document.querySelector(`[data-return-minus="${type}"]`);
+  const plusBtn = document.querySelector(`[data-return-plus="${type}"]`);
+  if (minusBtn) minusBtn.disabled = next <= 0;
+  if (plusBtn) plusBtn.disabled = next >= max;
   recalcAdminDeliveryCod();
 }
 
@@ -1575,17 +1601,17 @@ function recalcAdminDeliveryCod() {
   const due = Number(deliveryDialogState.balanceDue || 0);
   const cashToCollect = Math.max(0, due - creditTotal);
   const amountInput = document.getElementById("delivery-payment-amount");
-  if (!deliveryDialogState.amountOverridden && amountInput) amountInput.value = cashToCollect;
+  if (!deliveryDialogState.amountOverridden && amountInput) amountInput.value = groupThousands(cashToCollect);
   const collected = document.querySelector('input[name="collected"]:checked')?.value === "collected";
-  const cashPaid = collected ? Number(amountInput?.value || 0) : 0;
+  const cashPaid = collected ? parseAmountValue(amountInput?.value) : 0;
   const overCredit = Math.min(creditTotal, Math.max(0, cashPaid + creditTotal - due));
   const summary = document.getElementById("delivery-cod-summary");
   if (summary && (creditTotal > 0 || refundTotal > 0)) {
     const lines = [`<div><span>Order due</span><strong>${escapeHtml(formatCurrency(due))}</strong></div>`];
-    if (creditTotal > 0) lines.push(`<div><span>− Deposit credit applied</span><strong>−${escapeHtml(formatCurrency(creditTotal))}</strong></div>`);
+    if (creditTotal > 0) lines.push(`<div><span>− Empties credit</span><strong>−${escapeHtml(formatCurrency(creditTotal))}</strong></div>`);
     lines.push(`<div class="delivery-cod-total"><span>Cash to collect</span><strong>${escapeHtml(formatCurrency(cashToCollect))}</strong></div>`);
-    if (refundTotal > 0) lines.push(`<div><span>Cash to refund (separate)</span><strong>${escapeHtml(formatCurrency(refundTotal))}</strong></div>`);
-    if (overCredit > 0) lines.push(`<div><span class="muted" style="grid-column:1/-1">Choose below whether to refund the ${escapeHtml(formatCurrency(overCredit))} excess or carry it forward.</span></div>`);
+    if (refundTotal > 0) lines.push(`<div><span>Cash to hand back</span><strong>${escapeHtml(formatCurrency(refundTotal))}</strong></div>`);
+    if (overCredit > 0) lines.push(`<div><span class="muted" style="grid-column:1/-1">${escapeHtml(formatCurrency(overCredit))} left over — choose below.</span></div>`);
     summary.innerHTML = lines.join("");
     summary.classList.remove("hidden");
   } else if (summary) {
@@ -1616,7 +1642,7 @@ function populateLossTypeSelect() {
     if (nothingToWriteOff) checkbox.checked = false;
   }
   const help = document.getElementById("delivery-loss-help");
-  if (help) help.textContent = nothingToWriteOff ? "Nothing to write off — this customer has no containers on file." : "";
+  if (help) help.textContent = nothingToWriteOff ? "Nothing to write off." : "";
   syncLossQtyMax();
   toggleLossFields();
 }
@@ -1665,7 +1691,7 @@ async function openDeliveryPaymentDialog(order) {
   document.getElementById("delivery-payment-order-id").value = order.id;
   document.getElementById("delivery-payment-customer").textContent = order.customerName || "customer";
   document.getElementById("delivery-payment-due").textContent = formatCurrency(order.balanceDue);
-  document.getElementById("delivery-payment-amount").value = Number(order.balanceDue || 0);
+  document.getElementById("delivery-payment-amount").value = groupThousands(order.balanceDue);
   document.getElementById("delivery-payment-method").value = "cash";
   document.getElementById("delivery-payment-reference").value = "";
   // A file input keeps its selection across dialog opens — without this the
@@ -1747,7 +1773,7 @@ async function saveDeliveryPayment(event) {
   // disabled by withSubmitLock).
   let paymentSnapshot;
   if (collected === "collected") {
-    const amount = Number(document.getElementById("delivery-payment-amount").value || 0);
+    const amount = parseAmountValue(document.getElementById("delivery-payment-amount").value);
     // P0-09: positive whole VND only, and zero while a balance remains routes
     // to the "Not collected today" branch instead of writing a silent 0 VND
     // payment. The server re-checks this against the FRESH balance; this is
@@ -1811,9 +1837,9 @@ async function saveDeliveryPayment(event) {
   // A container that physically changed hands must leave a record before the
   // order can close — a credit/refund with no account of it is exactly how a
   // deposit goes missing (driver credits it but forgets to take the empty).
-  // Photo OR written note, per containerReturnProofProblem: a photo of an empty
-  // floor proves nothing, so the note is a real alternative rather than a lesser
-  // one. Mirrors orderApp.js::saveDeliveryPayment via the shared rule.
+  // A PHOTO is required (containerReturnProofProblem); the note is optional
+  // extra context, not a substitute. Mirrors orderApp.js::saveDeliveryPayment
+  // via the shared rule.
   const returnProofInput = document.getElementById("delivery-return-proof");
   const returnProofFile = returnProofInput && returnProofInput.files && returnProofInput.files[0]
     ? returnProofInput.files[0]
@@ -2816,7 +2842,9 @@ document.querySelectorAll('input[name="collected"]').forEach((radio) => {
   });
 });
 document.getElementById("delivery-payment-amount")?.addEventListener("input", () => {
-  deliveryDialogState.amountOverridden = document.getElementById("delivery-payment-amount").value.trim() !== "";
+  const field = document.getElementById("delivery-payment-amount");
+  field.value = groupThousands(field.value);
+  deliveryDialogState.amountOverridden = field.value.trim() !== "";
   recalcAdminDeliveryCod();
 });
 const lossCheckboxNode = document.getElementById("delivery-loss-checkbox");

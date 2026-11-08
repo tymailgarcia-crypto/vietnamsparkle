@@ -109,17 +109,33 @@ function matchesSearch(customer) {
     .some((field) => String(field || "").toLowerCase().includes(q));
 }
 
+// customer.orderCount / lastOrderAt are only written by the Sheets import and
+// never updated by app orders, so they read "0 orders" next to "Last order:
+// Today". Count from the orders this page already loads; keep the imported
+// figure only when it is higher (legacy history not present as order docs).
+function customerOrderCount(customer) {
+  const insight = state.insights[customer.id];
+  return Math.max(insight ? insight.orders.length : 0, Number(customer.orderCount || 0));
+}
+
+function customerLastOrder(customer) {
+  const insight = state.insights[customer.id];
+  const fromOrders = insight && insight.lastOrderDate ? String(insight.lastOrderDate) : "";
+  const imported = customer.lastOrderAt ? String(customer.lastOrderAt).slice(0, 10) : "";
+  return fromOrders > imported ? fromOrders : imported;
+}
+
 function sortRows(rows) {
   const copy = rows.slice();
   switch (state.sort) {
     case "name-desc":
       return copy.sort((a, b) => String(b.name || "").localeCompare(String(a.name || "")));
     case "last-order-desc":
-      return copy.sort((a, b) => String(b.lastOrderAt || "").localeCompare(String(a.lastOrderAt || "")));
+      return copy.sort((a, b) => customerLastOrder(b).localeCompare(customerLastOrder(a)));
     case "last-order-asc":
-      return copy.sort((a, b) => String(a.lastOrderAt || "").localeCompare(String(b.lastOrderAt || "")));
+      return copy.sort((a, b) => customerLastOrder(a).localeCompare(customerLastOrder(b)));
     case "order-count-desc":
-      return copy.sort((a, b) => Number(b.orderCount || 0) - Number(a.orderCount || 0));
+      return copy.sort((a, b) => customerOrderCount(b) - customerOrderCount(a));
     default:
       return copy.sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
   }
@@ -212,7 +228,7 @@ function renderRows() {
     const nameHref = `./customer.html?id=${encodeURIComponent(customer.id)}`;
     const phoneHref = phoneDialHref(customer.phone);
     const mapsHref = mapDirectionsHref(customer.address);
-    const lastOrder = customer.lastOrderAt ? String(customer.lastOrderAt).slice(0, 10) : "";
+    const lastOrder = customerLastOrder(customer);
     const notesText = customer.notes ? String(customer.notes).replace(/\n+/g, " · ").slice(0, 120) : "";
     const phoneHtml = phoneHref ? `<a href="${phoneHref}">${escapeHtml(customer.phone)}</a>` : escapeHtml(customer.phone || "");
     const emailHtml = customer.email
@@ -225,7 +241,7 @@ function renderRows() {
         <td>${mapsHref ? `<a class="row-link address-map-link" href="${mapsHref}" target="_blank" rel="noopener" title="Open in Google Maps" aria-label="Open ${escapeHtml(customer.address)} in Google Maps">${escapeHtml(customer.address)}</a>` : escapeHtml(customer.address || "")}</td>
         <td class="notes-cell">${escapeHtml(notesText)}</td>
         <td>${escapeHtml(lastOrder)}</td>
-        <td>${Number(customer.orderCount || 0)}</td>
+        <td>${customerOrderCount(customer)}</td>
       </tr>
     `;
   }).join("");
@@ -236,13 +252,14 @@ function renderRows() {
     const mapsHref = mapDirectionsHref(customer.address);
     const insight = state.insights[customer.id] || { outstanding: 0, containers: 0, lifetime: 0 };
     const attention = customerAttention(insight);
-    const lastDays = daysAgo(insight.lastOrderDate || customer.lastOrderAt);
+    const lastDays = daysAgo(customerLastOrder(customer));
     const lastOrder = lastDays == null ? "Never" : lastDays === 0 ? "Today" : `${lastDays}d ago`;
+    const orderCount = customerOrderCount(customer);
     return `
       <article class="card directory-card">
         <div class="directory-card-head">
           <div><a class="directory-card-title" href="${nameHref}">${escapeHtml(customer.name || "Unknown")}</a></div>
-          <span class="directory-count">${Number(customer.orderCount || 0)} order${Number(customer.orderCount || 0) === 1 ? "" : "s"}</span>
+          <span class="directory-count">${orderCount} order${orderCount === 1 ? "" : "s"}</span>
         </div>
         <div class="customer-attention customer-attention-${attention.tone}">${escapeHtml(attention.text)}</div>
         <div class="customer-insight-grid">

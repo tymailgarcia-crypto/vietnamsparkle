@@ -1,5 +1,29 @@
 # Handoff — as of 2026-07-21
 
+## Minimized End delivery and right-thumb controls — deployed 2026-11-08
+
+Hosting version `9ce4e7e012644d1f` is live, based on AI accessibility release `331c768fc8850d77`. All 62 live files matched the reconciled candidate manifest.
+
+- The minimized delivery bar now offers **End delivery** and **Resume**, grouped on the right. End delivery confirms before returning the order to Assigned, retaining its driver and closing the pinned stop. It works from any staff page, including after a reload. A failed operation keeps the stop available for retry.
+- The drawer has a right-edge expansion cue. Call sits beside the rightmost Mark delivered action, and expanded order actions align right. Navigation, follow and minimize controls remain at the right edge.
+- The fresh-status transaction is shared by the minimized bar, the full delivery drawer and both existing Reset actions through `assets/returnDelivery.js`. It rejects completed/cancelled orders, treats an already Assigned order as an idempotent retry, and writes only status/updatedAt.
+
+Release evidence is in `firebase/.firebase/right-handed-delivery-2026-11-07/`, using `reconciled-hosting/`, `deploy-info.json`, `deploy-candidate-sha256.json`, `deploy.log` and `verification.json`. Five prepared driver assets were reconciled over the newer AI accessibility release. Six shared transaction regression cases passed, plus browser checks for cross-page End, confirmation cancellation, failed retry, stale delivered state, driver/payment preservation, right-aligned 44px touch targets, map coverage and the existing map/drawer controls. Physical driver testing remains open.
+
+## Delivery return and Ask menu — deployed 2026-11-07
+
+Hosting version `f7a6023f22a45c27` is live. The original local build was reconciled against the newer AI-order release `cf2c023ea6b0ab42` before deployment. All 60 served files matched the reconciled candidate SHA-256 manifest.
+
+- Delivery Mode's expanded drawer has **Return for another attempt** with confirmation. It moves an out-for-delivery order back to Assigned, keeps its driver, and closes/unpins the active stop. The driver chose this behavior instead of cancelling the order. Dashboard Reset and order-page Reset also read the current order inside a transaction and reject completed/cancelled orders. Returning an already Assigned order is a safe retry. Only status and updatedAt are written.
+- **Ask** lives in the top-right owner tools hamburger. Its floating launcher was removed. Settings gets the same menu if no cog existed.
+- Validation included 12 fresh-status regression checks and browser checks for retry confirmation/failure/success, map layout, the existing completion/minimize hooks, chat answers, closing focus and sign-out cleanup. The real-driver phone test remains open.
+
+### Deployment evidence
+
+The release bundle is at `D:\vietnam sparkle\firebase\.firebase\local-delivery-retry-2026-11-07`. The published folder is **reconciled-hosting/**, with `reconciled-firebase.json`, `deploy-baseline-sha256.json`, `deploy-candidate-sha256.json`, `deploy-info.json`, `deploy.log` and `verification.json`. The original hosting/ folder predates the AI-order reconciliation.
+
+The six changed assets were deliveryMode.js, orderApp.js, adminApp.js, dockMenu.js, helpChat.js and styles.css. The live return-photo gate and AI order feature are included. The shared source tree still has separate older photo-removal and onboarding edits. Future releases should reconcile those deliberately. This deployment used Hosting only.
+
 ## Read this first: current state (2026-07-21)
 
 The tree-reconciliation the July-20 briefing below asked for is **DONE**: commit

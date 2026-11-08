@@ -152,7 +152,7 @@
 
         <section class="panel">
           <h2>Warehouse (route origin)</h2>
-          <p class="muted">The address every route starts and ends at. Used by the route planner on <code>/route.html</code>. Saving geocodes the address to a lat/lng pin so the planner can measure real distances.</p>
+          <p class="muted">The address every route starts and ends at. Used by the trip planner on the <a href="./map.html">Map</a> page. Saving geocodes the address to a lat/lng pin so the planner can measure real distances.</p>
           <form id="warehouse-form" class="form-grid">
             <label class="span-2">
               Warehouse address
@@ -177,17 +177,45 @@
           <div class="muted" id="test-data-summary" style="margin-top:8px;font-size:13px"></div>
         </section>
 
+        <section class="panel" id="staff-panel">
+          <h2>Staff</h2>
+          <p class="muted">Everyone listed here can sign in to these staff pages, with full access (orders, customers, money and settings). To add someone, ask them to sign in once on the order page first (Google or email), then enter that email below. They need to sign out and back in before the staff pages open for them.</p>
+          <div id="staff-list" class="stack"><p class="muted">Loading staff…</p></div>
+          <form id="staff-add-form" class="form-grid staff-add-form">
+            <label>Email they sign in with
+              <input id="staff-email" type="email" required maxlength="200" autocomplete="off" placeholder="name@gmail.com">
+            </label>
+            <label>Name
+              <input id="staff-name" type="text" maxlength="80" autocomplete="off" placeholder="Shown in the driver list">
+            </label>
+            <label>Phone (optional)
+              <input id="staff-phone" type="tel" maxlength="40" autocomplete="off" placeholder="+84 905 123 456">
+            </label>
+            <label class="staff-driver-check">
+              <input id="staff-is-driver" type="checkbox" checked>
+              <span>Delivery driver — add to the driver list</span>
+            </label>
+            <div class="button-row span-2">
+              <button class="primary" type="submit">Add employee</button>
+            </div>
+          </form>
+          <p class="muted" id="staff-status" role="status" aria-live="polite"></p>
+        </section>
+
         <section class="panel">
           <h2>Drivers &amp; loadouts</h2>
           <p class="muted">The container capacity each driver's truck holds on a standard run. The route planner uses this as a hard constraint — a route that overflows any container type is rejected before we spend routing quota on it. Leave a type at 0 if the truck never carries it.</p>
           <div id="drivers-list" class="stack"></div>
-          <p class="muted" id="drivers-empty" style="display:none">No active drivers found. Add drivers by running the Sheets import, or ask an owner to create a driver doc.</p>
+          <p class="muted" id="drivers-empty" style="display:none">No active drivers yet. Add one under Staff above with "Delivery driver" ticked.</p>
         </section>
       </div>
     </main>
 
     <script type="module" src="./assets/settingsApp.js"></script>
+    <script type="module" src="./assets/staffAdmin.js"></script>
     <script type="module" src="./assets/dockMenu.js"></script>
+    <script type="module" src="./assets/deliveryMode.js"></script>
+    <script type="module" src="./assets/helpChat.js"></script>
     <script type="module" src="./assets/pushNotifications.js"></script>
   </body>
 </html>

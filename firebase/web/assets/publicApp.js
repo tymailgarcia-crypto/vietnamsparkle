@@ -34,6 +34,7 @@ import {
   ORDER_DRAFT_STORAGE_KEY,
   parseStoredOrderDraft,
   phoneEntryErrorMessage,
+  preAppEmptyTypesFromCatalog,
   productCategoryKey,
   productImageUrl,
   resolveSubmissionKey,
@@ -42,6 +43,7 @@ import {
   setDeliveryWindow,
   submissionFingerprint,
   summarizeHeldContainers,
+  summarizePreAppEmptiesClaim,
   summarizeReorderChanges,
   todayKeyInZone,
   withSubmitLock
@@ -282,6 +284,120 @@ async function loadHeldContainersForUid(uid) {
   return summarizeHeldContainers(snap.docs.map((row) => row.data()));
 }
 
+// --- Old-customer opening empties (non-binding declaration) ----------------
+//
+// A customer who used the business before this app existed already holds
+// containers whose cash deposit the ledger has no record of. renderEmptiesPickup
+// shows this block instead of the pickup card when a signed-in customer holds
+// nothing on the ledger yet. The counts are a CLAIM the owner confirms later
+// (confirmPreAppEmpties); the money estimate is prose and is NEVER added to the
+// order totals or the callable's priced fields.
+const preAppEmpties = { active: false, counts: {} };
+
+function renderPreAppEmpties(canShow) {
+  const card = document.getElementById("preapp-empties");
+  if (!card) return;
+  const types = canShow ? preAppEmptyTypesFromCatalog(state.products) : [];
+  if (!canShow || !types.length) {
+    card.classList.add("hidden");
+    // Drop any stale declaration so it can never ride along on the payload.
+    preAppEmpties.active = false;
+    preAppEmpties.counts = {};
+    return;
+  }
+  card.classList.remove("hidden");
+  renderPreAppChoice();
+  renderPreAppRows(types);
+  renderPreAppPreview(types);
+}
+
+function setPreAppActive(active) {
+  preAppEmpties.active = active === true;
+  if (!preAppEmpties.active) preAppEmpties.counts = {};
+  const types = preAppEmptyTypesFromCatalog(state.products);
+  renderPreAppChoice();
+  renderPreAppRows(types);
+  renderPreAppPreview(types);
+}
+
+function renderPreAppChoice() {
+  document.querySelectorAll("[data-preapp-choice]").forEach((btn) => {
+    const isOld = btn.dataset.preappChoice === "old";
+    const pressed = isOld ? preAppEmpties.active : !preAppEmpties.active;
+    btn.setAttribute("aria-pressed", String(pressed));
+    btn.classList.toggle("is-selected", pressed);
+  });
+  const body = document.getElementById("preapp-empties-body");
+  if (body) body.classList.toggle("hidden", !preAppEmpties.active);
+}
+
+function renderPreAppRows(types) {
+  const wrap = document.getElementById("preapp-empties-rows");
+  if (!wrap) return;
+  wrap.innerHTML = types.map((t) => {
+    const qty = Math.max(0, Math.floor(Number(preAppEmpties.counts[t.containerType]) || 0));
+    const label = publicContainerLabel(t.containerType, 2);
+    return `
+      <div class="preapp-row${qty > 0 ? "" : " is-zero"}">
+        <span class="preapp-row-label">${escapeHtml(label)}</span>
+        <div class="preapp-stepper">
+          <button type="button" class="preapp-step" data-preapp-minus="${escapeHtml(t.containerType)}" aria-label="One fewer ${escapeHtml(label)}">−</button>
+          <span class="preapp-qty" data-preapp-qty="${escapeHtml(t.containerType)}">${qty}</span>
+          <button type="button" class="preapp-step" data-preapp-plus="${escapeHtml(t.containerType)}" aria-label="One more ${escapeHtml(label)}">+</button>
+        </div>
+      </div>`;
+  }).join("");
+  wrap.querySelectorAll("[data-preapp-minus]").forEach((b) => {
+    b.addEventListener("click", () => adjustPreAppCount(b.dataset.preappMinus, -1, types));
+  });
+  wrap.querySelectorAll("[data-preapp-plus]").forEach((b) => {
+    b.addEventListener("click", () => adjustPreAppCount(b.dataset.preappPlus, 1, types));
+  });
+}
+
+function adjustPreAppCount(type, delta, types) {
+  const current = Math.max(0, Math.floor(Number(preAppEmpties.counts[type]) || 0));
+  const next = Math.min(999, Math.max(0, current + delta));
+  if (next > 0) preAppEmpties.counts[type] = next;
+  else delete preAppEmpties.counts[type];
+  const node = wrap_preAppQtyNode(type);
+  if (node) {
+    node.textContent = String(next);
+    node.closest(".preapp-row")?.classList.toggle("is-zero", next === 0);
+  }
+  renderPreAppPreview(types);
+}
+
+function wrap_preAppQtyNode(type) {
+  const rows = document.getElementById("preapp-empties-rows");
+  if (!rows) return null;
+  return Array.from(rows.querySelectorAll("[data-preapp-qty]"))
+    .find((node) => node.getAttribute("data-preapp-qty") === String(type)) || null;
+}
+
+function renderPreAppPreview(types) {
+  const box = document.getElementById("preapp-empties-preview");
+  if (!box) return;
+  const { lines, totalQty, totalDeposit } = summarizePreAppEmptiesClaim(preAppEmpties.counts, types);
+  if (!totalQty) {
+    box.innerHTML = `<p class="preapp-preview-empty muted">Add the empties you have above.</p>`;
+    return;
+  }
+  const rowsHtml = lines.map((l) => `
+    <div class="preapp-preview-row">
+      <span>${Number(l.qty)} × ${escapeHtml(publicContainerLabel(l.containerType, l.qty))}</span>
+      <span>${l.depositPerUnit > 0 ? "~" + escapeHtml(formatCurrency(l.amount)) : "—"}</span>
+    </div>`).join("");
+  const totalLine = totalDeposit >= 1 ? `~${formatCurrency(totalDeposit)}` : "your deposit back";
+  box.innerHTML = `
+    <p class="preapp-preview-warn"><strong>You get money back only if you give the empties to the driver.</strong></p>
+    <div class="preapp-preview-table">
+      ${rowsHtml}
+      <div class="preapp-preview-total"><span>Give back everything</span><strong>${escapeHtml(totalLine)}</strong></div>
+    </div>
+    <p class="preapp-preview-note muted">The driver checks the empties first. No money is paid before pick-up. This is an estimate — we confirm the real number and deposit.</p>`;
+}
+
 async function renderEmptiesPickup(user) {
   const card = document.getElementById("empties-pickup");
   const toggle = document.getElementById("empties-pickup-toggle");
@@ -295,6 +411,7 @@ async function renderEmptiesPickup(user) {
   // to write the flag to.
   if (!user || !state.customer?.id) {
     hide();
+    renderPreAppEmpties(false);
     return;
   }
   let rows = [];
@@ -304,6 +421,7 @@ async function renderEmptiesPickup(user) {
     // A container read must never stand between a customer and placing an order.
     console.warn("Could not load held containers on the order form:", error);
     hide();
+    renderPreAppEmpties(false);
     return;
   }
   if (requestId !== emptiesPickupRequestId) return;
@@ -314,6 +432,10 @@ async function renderEmptiesPickup(user) {
   // with mid-order. The deposits page flags it on the owner's side.
   const holding = rows.filter((row) => Number(row.qty) > 0 && !isBrokenDepositBalance(row.qty, row.deposit));
   const requested = state.customer?.emptiesPickupRequested === true;
+  // An established customer (holds something) gets the pickup card; a customer
+  // with an empty ledger may be an old customer holding pre-app containers, so
+  // they get the opening-empties declaration instead.
+  renderPreAppEmpties(holding.length === 0);
   if (!holding.length && !requested) {
     hide();
     return;
@@ -376,10 +498,20 @@ async function toggleEmptiesPickup(event) {
 
 document.getElementById("empties-pickup-toggle")?.addEventListener("change", toggleEmptiesPickup);
 
+// New vs old customer choice on the opening-empties block. Static buttons, so
+// wire once; renderPreAppChoice keeps their pressed state in sync.
+document.querySelectorAll("[data-preapp-choice]").forEach((btn) => {
+  btn.addEventListener("click", () => setPreAppActive(btn.dataset.preappChoice === "old"));
+});
+
 let mapsLoadPromise = null;
 let addressMap = null;
 let addressMarker = null;
 let addressInfoWindow = null;
+// Formatted address the current pin resolves to. Set when the confirmation
+// popup is shown, cleared whenever the pin is invalidated, and read by the
+// footer "Use this address" button so it can confirm the exact same pin.
+let pinFormattedAddress = "";
 let addressAutocompleteTimer = null;
 let addressAutocompleteRequestId = 0;
 let addressAutocompletePredictions = [];
@@ -860,9 +992,26 @@ async function handleSavedAddressSelection() {
 
 function clearDeliveryLocation(message = "Address changed — confirm the pin again.") {
   state.deliveryLocation = null;
+  pinFormattedAddress = "";
   addressInfoWindow?.close();
   document.getElementById("address-map-wrap")?.setAttribute("hidden", "");
   setAddressVerifyStatus(message, false);
+}
+
+// Confirm the resolved pin from the always-visible footer button. The button
+// lives in the page rather than inside the map InfoWindow because Google clips
+// tall InfoWindow content on desktop, leaving the in-window button unreachable.
+function confirmDeliveryPin() {
+  if (!addressMarker || !pinFormattedAddress) return;
+  const pos = addressMarker.getPosition();
+  state.deliveryLocation = {
+    lat: pos.lat(),
+    lng: pos.lng(),
+    formattedAddress: String(pinFormattedAddress).slice(0, 499),
+    source: "customer_google_maps"
+  };
+  setAddressVerifyStatus("✓ Location confirmed on Google Maps", true);
+  addressInfoWindow?.close();
 }
 
 async function verifyAddressOnMap() {
@@ -929,21 +1078,14 @@ async function verifyAddressOnMap() {
     addressMap.setCenter(position);
     if (addressMarker) addressMarker.setMap(null);
     addressMarker = new google.maps.Marker({ map: addressMap, position, draggable: true, title: "Drag to your delivery entrance" });
-    const savePosition = (pos, formattedAddress) => {
-      state.deliveryLocation = {
-        lat: pos.lat(),
-        lng: pos.lng(),
-        formattedAddress: String(formattedAddress || currentFormattedAddress || address).slice(0, 499),
-        source: "customer_google_maps"
-      };
-      setAddressVerifyStatus("✓ Location confirmed on Google Maps", true);
-    };
-
     // Use the supported InfoWindow API instead of reaching into Google's
-    // generated `.gm-style-iw…` DOM. The customer can explicitly accept the
-    // suggested pin without having to move it; dragging remains available
-    // when Google lands near, rather than exactly on, the entrance.
+    // generated `.gm-style-iw…` DOM. The popup is informational only — it shows
+    // the address the pin resolved to; the customer confirms with the footer
+    // "Use this address" button (see `confirmDeliveryPin`), which stays visible
+    // below the map even when Google clips the InfoWindow on desktop.
     const showPinConfirmation = () => {
+      pinFormattedAddress = currentFormattedAddress;
+
       const content = document.createElement("div");
       content.style.maxWidth = "240px";
 
@@ -954,28 +1096,17 @@ async function verifyAddressOnMap() {
       const detail = document.createElement("p");
       detail.style.margin = "6px 0 10px";
       detail.textContent = currentApproximate
-        ? "Google found an approximate match. Drag the pin if needed, or confirm it here."
-        : "Drag the pin if it needs correcting, or confirm it here.";
+        ? "Google found an approximate match. Drag the pin if needed, then choose “Use this address” below."
+        : "Drag the pin if it needs correcting, then choose “Use this address” below.";
       content.appendChild(detail);
 
       const resolvedAddress = document.createElement("p");
-      resolvedAddress.style.margin = "0 0 10px";
+      resolvedAddress.style.margin = "0";
       resolvedAddress.style.overflowWrap = "anywhere";
       const addressLabel = document.createElement("strong");
       addressLabel.textContent = "Address: ";
       resolvedAddress.append(addressLabel, document.createTextNode(currentFormattedAddress));
       content.appendChild(resolvedAddress);
-
-      const confirmButton = document.createElement("button");
-      confirmButton.type = "button";
-      confirmButton.className = "primary";
-      confirmButton.style.width = "100%";
-      confirmButton.textContent = "Use this address";
-      confirmButton.addEventListener("click", () => {
-        savePosition(addressMarker.getPosition(), currentFormattedAddress);
-        addressInfoWindow?.close();
-      });
-      content.appendChild(confirmButton);
 
       addressInfoWindow = addressInfoWindow || new google.maps.InfoWindow({ maxWidth: 280 });
       addressInfoWindow.setContent(content);
@@ -989,6 +1120,7 @@ async function verifyAddressOnMap() {
     addressMarker.addListener("dragstart", () => {
       pinAddressLookupId += 1;
       state.deliveryLocation = null;
+      pinFormattedAddress = "";
       addressInfoWindow?.close();
       setAddressVerifyStatus("Pin moved — check its position, then choose “Use this address”.", false);
     });
@@ -1203,7 +1335,7 @@ function buildCallablePayload(form) {
   if (!lines.length) {
     throw new Error("Select at least one item.");
   }
-  return {
+  const payload = {
     items: lines.map((line) => ({
       productId: line.id,
       quantity: line.quantity
@@ -1224,6 +1356,17 @@ function buildCallablePayload(form) {
       notes: form.notes.value.trim()
     }
   };
+  // Non-binding old-customer opening-empties claim. Server stores it on the
+  // order for the owner to confirm; it never touches the priced fields.
+  if (preAppEmpties.active) {
+    const counts = {};
+    Object.keys(preAppEmpties.counts).forEach((type) => {
+      const qty = Math.max(0, Math.floor(Number(preAppEmpties.counts[type]) || 0));
+      if (qty > 0) counts[type] = qty;
+    });
+    if (Object.keys(counts).length) payload.preAppEmptiesClaim = counts;
+  }
+  return payload;
 }
 
 async function applyReorderById(reorderId) {
@@ -1629,7 +1772,7 @@ function renderOrderReviewBody() {
     : "";
   const notes = String(form.notes?.value || "").trim();
   return `
-    <section class="order-review-section">
+    <section class="order-review-section" id="order-review-items-section">
       <div class="order-review-section-head"><h4>Items</h4>${editButton("items", "the items")}</div>
       <ul class="order-review">${itemRows}</ul>
       <div class="order-total-summary">
@@ -1666,8 +1809,22 @@ function openOrderReviewDialog() {
   // scroll region. Hold the node while replacing the generated sections, then
   // reattach that same node rather than cloning it.
   const pickupCard = document.getElementById("empties-pickup");
+  const preAppCard = document.getElementById("preapp-empties");
   body.innerHTML = renderOrderReviewBody();
-  if (pickupCard) body.appendChild(pickupCard);
+  // Keep the empties right under the order total, not stranded at the bottom
+  // (Ty): a customer must see the deposit/empties context next to the amount,
+  // before scrolling past Contact/Address/When/Notes. Insert after the Items
+  // section (which ends with the totals); fall back to the end if it's absent.
+  // Only one card is ever un-hidden (renderEmptiesPickup decides), but both are
+  // persistent nodes that must survive the innerHTML rewrite above.
+  const emptiesAnchor = document.getElementById("order-review-items-section");
+  if (emptiesAnchor) {
+    if (pickupCard) emptiesAnchor.after(pickupCard);
+    if (preAppCard) emptiesAnchor.after(preAppCard);
+  } else {
+    if (preAppCard) body.appendChild(preAppCard);
+    if (pickupCard) body.appendChild(pickupCard);
+  }
   pickupCard?.querySelector("details")?.removeAttribute("open");
   const confirmBtn = document.getElementById("order-review-dialog-confirm");
   if (confirmBtn) {
@@ -1797,6 +1954,10 @@ async function performOrderSubmit(lockEvent) {
       document.getElementById("address-map-wrap")?.setAttribute("hidden", "");
       setAddressVerifyStatus("Confirm the delivery pin to help us find you.");
       state.quantities = {};
+      // A placed order carried any opening-empties declaration with it; clear it
+      // so the next order for this now-established customer starts clean.
+      preAppEmpties.active = false;
+      preAppEmpties.counts = {};
       renderCatalog();
       renderTotals();
       refreshDeliveryDateFloor();
@@ -2359,6 +2520,7 @@ document.getElementById("address-reset-pin")?.addEventListener("click", () => {
   clearDeliveryLocation("Pin reset — find this delivery address on the map again.");
   document.getElementById("address-verify-button")?.focus();
 });
+document.getElementById("address-confirm")?.addEventListener("click", confirmDeliveryPin);
 const publicAddressInput = document.getElementById("form-address");
 publicAddressInput?.addEventListener("input", () => {
   if (state.deliveryLocation) clearDeliveryLocation();

@@ -1,0 +1,246 @@
+{
+  "checkedAt": "2026-11-08T05:37:28.514Z",
+  "version": "9ce4e7e012644d1f",
+  "files": [
+    {
+      "path": "account.html",
+      "sha256": "0db0031668b6699f1502e2dedb023baa29a71e4a3990b4821486bbc04d310daf"
+    },
+    {
+      "path": "admin.html",
+      "sha256": "0cf8548843fc4b346837f99818ca7c7ee22a7889a5b72c6807331b69504d58e9"
+    },
+    {
+      "path": "assets/accountApp.js",
+      "sha256": "d09bbb8deeebafc09eea74800772141265e8872c3a773d4e7d59cb5f3f123516"
+    },
+    {
+      "path": "assets/adminDashboardModel.js",
+      "sha256": "8b86c621f76a4a5e0f47511d630dc04097b96dd64744b4a62547be0357f00a1b"
+    },
+    {
+      "path": "assets/adminApp.js",
+      "sha256": "ad7655e3e6812e1d5cc6d757c6f8587c2edea8209c67c571c66cebde82521e73"
+    },
+    {
+      "path": "assets/aiOrderModel.js",
+      "sha256": "e230eded9d1c92a951eab205fffea7d12e66f8f373c3ab6451a5b59fc8d87cce"
+    },
+    {
+      "path": "assets/catalogApp.js",
+      "sha256": "47811eb67ee49dae6e0b73fcc47d5342a862d5a996d845a69445b103b67c1cf0"
+    },
+    {
+      "path": "assets/customerApp.js",
+      "sha256": "e8c76719cb3bcddb4c39a8ecdbf7d6fe1ebaa5635b082376104b83f51884c130"
+    },
+    {
+      "path": "assets/aiOrder.css",
+      "sha256": "88bc40cc3a0d73fdedbfc2f9ec21b0d87febf640a0c15002b36e4f085426212d"
+    },
+    {
+      "path": "assets/customerOrderApp.js",
+      "sha256": "d725a4b5947b6d1ba5539bbadc4f36dd9a7e4dae5875c8ee381669b4da6c9525"
+    },
+    {
+      "path": "assets/customersApp.js",
+      "sha256": "9c4807565b25dac9913a0d5f56bad60db1d108deb5016bc72f4562b8a8cbbd54"
+    },
+    {
+      "path": "assets/deliveryMode.css",
+      "sha256": "a925dacb9b64246fcd55ef7e50c73c0b17ce49d1a03f5b874e784ce063452350"
+    },
+    {
+      "path": "assets/aiOrder.js",
+      "sha256": "638605f4f289d493c0cbc28820b814177ebad336c8158929608fe9ce99141e43"
+    },
+    {
+      "path": "assets/deliveryMode.js",
+      "sha256": "c9458a6438b61a95309f1dc133b18f029c148c156d36f1e6e5576980fae31074"
+    },
+    {
+      "path": "assets/depositsApp.js",
+      "sha256": "09be518a73889677f88b8eeaa0e21dfad8b16a880850b27041b44d0aac5a8b85"
+    },
+    {
+      "path": "assets/deliveryRouting.js",
+      "sha256": "471ffd49b67434b9185cb5427783250d4e2414fad440a0709796d045188088ec"
+    },
+    {
+      "path": "assets/dockMenu.js",
+      "sha256": "839b3fa5022db31c3934b14af6c49848c84b7d0f6a83372e9a2e7f7f85bf4037"
+    },
+    {
+      "path": "assets/duplicatesApp.js",
+      "sha256": "083e77fa1e89b90ede6dd3bf71babecf558dc59cb2c3e2ac9c1e9cbc113380e5"
+    },
+    {
+      "path": "assets/editOrderAddress.js",
+      "sha256": "e1894f1eec3dbedb07fc6dc1a4650dd3ef377d1500fc3fbe33fbc49c936f7bef"
+    },
+    {
+      "path": "assets/firebaseClient.js",
+      "sha256": "7ba4ead867ef321496a1e6bcf5cadc5f5e2b410f13992949335882a700f48e50"
+    },
+    {
+      "path": "assets/financeApp.js",
+      "sha256": "f5e29f464fbd7c116ae7b58a63f6f541a334dd6c5157c99058f5aa521b1c29b7"
+    },
+    {
+      "path": "assets/firebaseWebConfig.js",
+      "sha256": "a6e9a3d8e8e19c7bb295e3384e2b747e11ef6040a9f8841f437bf70c24966486"
+    },
+    {
+      "path": "assets/icons/favicon-32.png",
+      "sha256": "269f61d40ef28049d05cf586f1c56484235bef94def5a34fbd81a4b771c8fbfd"
+    },
+    {
+      "path": "assets/helpChatRender.js",
+      "sha256": "0311c06512259568153d054010f8a1f9c04acd8f2caec9bf8e77b3b9bf4f2ac4"
+    },
+    {
+      "path": "assets/helpChat.js",
+      "sha256": "3b99658b1c455668d8890d7eb1bdbe61ae9e634aaa92cb1c69d640f475609ce2"
+    },
+    {
+      "path": "assets/icons/apple-touch-icon.png",
+      "sha256": "159fee1c8a539765757dbc6905229ebb4e2245ce53c33f2ff5ef3a4cc910346b"
+    },
+    {
+      "path": "assets/icons/icon-192.png",
+      "sha256": "a6be145f7b58a51e00a1ee67bf9fd3470565f7b41c02e73399dd7fb3ad324a84"
+    },
+    {
+      "path": "assets/icons/notification-icon.png",
+      "sha256": "51f538dec5ef811676582fe3a1e45dd62f03bf84395e0fd3ca676307f00f041d"
+    },
+    {
+      "path": "assets/icons/icon-512.png",
+      "sha256": "23f92699319aa327b8a6ca26ec427785611d59644e37403ba07c2ebd2a286a37"
+    },
+    {
+      "path": "assets/invoice.js",
+      "sha256": "a47e3e51ea4fc70cd8a7a9e2bcac71446e9812ab9e5c0867477a4e85771651b4"
+    },
+    {
+      "path": "assets/mapApp.js",
+      "sha256": "bad73cbce964a8b91c0eb05b51b300d7d48e0e9327b77226a908bdbec0da90f9"
+    },
+    {
+      "path": "assets/ordersApp.js",
+      "sha256": "89e7ce9cbcfe6c63e3170848546c1e5009a81bac7082e7c3d2c02fc8e73dd715"
+    },
+    {
+      "path": "assets/publicApp.js",
+      "sha256": "378890194e35ee8aeb08c8d99af9f7a2adbba730949b6c50cccf5e0eb258d68e"
+    },
+    {
+      "path": "assets/orderApp.js",
+      "sha256": "a6302900c7be6085033509aedc3ba37209bd750b80f59a9823fe8aced29b4bda"
+    },
+    {
+      "path": "assets/receivablesApp.js",
+      "sha256": "368c4262ebaf7eddeea35f81e48b5ceacf127371ac9beca16f458636ab4076cb"
+    },
+    {
+      "path": "assets/pushNotifications.js",
+      "sha256": "bc4f34206966d1a749e2e6a659a523fd266be3cafdc8d46874a9658a8e368252"
+    },
+    {
+      "path": "assets/routePlanning.js",
+      "sha256": "844106042ca086ef6ec023f8fc05063e750d6562b3bd7c54d7c9d9bda92d8bf3"
+    },
+    {
+      "path": "assets/reportsApp.js",
+      "sha256": "8150d70d2779e97da04be0dfd1384312db86290b10a66bb5632b8ffd5b961ff3"
+    },
+    {
+      "path": "assets/settingsApp.js",
+      "sha256": "cc3c90f36c2dc00bc6709382e1572d31f199d76dc9f2ea98982d5cc5baf3dd07"
+    },
+    {
+      "path": "assets/shared.js",
+      "sha256": "df55dfda4261d143a42c76359ca3e48e247299fb4bc68b37c2e84d1ce3d7efdb"
+    },
+    {
+      "path": "assets/staffAdmin.js",
+      "sha256": "9c73a3f57648c769e2cbf0b1a19a26f4bfd739866a7f44d6a39ee33bb6ba401d"
+    },
+    {
+      "path": "assets/storageUploads.js",
+      "sha256": "1bb4fda04d992f52d88e2324f30f113554b98cc410110f318db32f2823728a24"
+    },
+    {
+      "path": "catalog.html",
+      "sha256": "42711760d28e6d9203d6564d34a2650674c5b0004c8faaadeef018a594d26a6f"
+    },
+    {
+      "path": "assets/styles.css",
+      "sha256": "90c0f452ec78d8a740f7d6ea11bc7a050ff676d36d9ad5b9e2aa28b38a8109ae"
+    },
+    {
+      "path": "customer-order.html",
+      "sha256": "9af6312ae82110dd83f3bb619693e98e7c48a26c1a9a9a78fbbb76704e643557"
+    },
+    {
+      "path": "deposits.html",
+      "sha256": "0b01f24181888b0f3c0c6e2ff3b85fcfe2a40c341bd8278bc1c2f7ef8d840f3c"
+    },
+    {
+      "path": "duplicates.html",
+      "sha256": "da0710006bf21fce82ed1f52066fe3e13ebf474de25abeb080ccdc4477466bfd"
+    },
+    {
+      "path": "finance.html",
+      "sha256": "a9c577336d41be7411c89b8eccdca09f0c59b1d9b6a0266b9eb1a3c64d797ff4"
+    },
+    {
+      "path": "firebase-messaging-sw.js",
+      "sha256": "4e5038750c9c91673e77a228dd9834d385ed02ea6ede2f9b93c482dd4e5e8868"
+    },
+    {
+      "path": "index.html",
+      "sha256": "bd80f0fae4b251e6d44fcafa68325c3fa62da442fee593c85a21051b6eff93e3"
+    },
+    {
+      "path": "customer.html",
+      "sha256": "6258d79c27ad0af848adf709b1f8252e4c527ad1eb58665d81efe8272a8fc905"
+    },
+    {
+      "path": "manifest.webmanifest",
+      "sha256": "024c78e79274bc7aa5054677ffdd66f5c52ca609f8cb38b5dc3c4b550b23c429"
+    },
+    {
+      "path": "customers.html",
+      "sha256": "1b27dbeed12ea9cd6d8565936296c6c528e6b3ccc2479e510d7391463ae07f34"
+    },
+    {
+      "path": "map.html",
+      "sha256": "5f6bf96640f96f70339eb06a87287a6bb4083b20ea8318f6fc53e06baafc52c5"
+    },
+    {
+      "path": "receivables.html",
+      "sha256": "dd05e3b91ee31a8567be7d8b00180de06b6d3c78c8582f7079f6314480d71c44"
+    },
+    {
+      "path": "reports.html",
+      "sha256": "33339cd4d9103812c72bb8e98dcae679408743f65ace303c73b68b3685cca884"
+    },
+    {
+      "path": "settings.html",
+      "sha256": "672d0f27da411d50476acd858f2c271a6dc62122b29f5793c58eb0c91cb6b8fa"
+    },
+    {
+      "path": "order.html",
+      "sha256": "624891d1dce1d1f00b597f1871ff71aef866eb0e9211da96b15b82c8af87d309"
+    },
+    {
+      "path": "orders.html",
+      "sha256": "7ba16267124b8c3e249b7c46f9e3a9e333f6c0740491e857a7ab1be4817b35aa"
+    },
+    {
+      "path": "assets/returnDelivery.js",
+      "sha256": "36bcce3d0c8c6673523a9c186d81935c80a2653f130e412abea0d1802d7ee910"
+    }
+  ]
+}

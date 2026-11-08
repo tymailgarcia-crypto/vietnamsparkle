@@ -202,7 +202,7 @@ for (const [label, src] of [["adminApp.js", adminSrc], ["orderApp.js", orderSrc]
   const recalc = sliceFn(src, recalcName, label);
 
   it(`${label}: takes the bar from shared.js rather than its own copy`, () => {
-    assert.match(src, /import[\s\S]{0,400}containerReturnProofProblem[\s\S]{0,400}from "\.\/shared\.js"/);
+    assert.match(src, /import\s*\{[^}]*\bcontainerReturnProofProblem\b[^}]*\}\s*from "\.\/shared\.js"/);
   });
 
   // Without this the suite above would still pass while the app deadlocked: the
@@ -222,22 +222,32 @@ for (const [label, src] of [["adminApp.js", adminSrc], ["orderApp.js", orderSrc]
     assert.ok(save.includes("containerReturnProofProblem("), "save does not consult the shared rule");
   });
 
-  it(`${label}: the photo is uploaded before the transaction opens`, () => {
+  it(`${label}: the photo is uploaded before calling the atomic backend`, () => {
     const upload = save.indexOf("uploadContainerReturnProof(");
-    const tx = save.indexOf("runTransaction(");
+    const call = save.indexOf("commitDeliveryFn(");
     assert.ok(upload > -1, "no upload call");
-    assert.ok(upload < tx, "upload runs inside the transaction — it would duplicate on retry");
+    assert.ok(call > upload, "the callable must receive an already uploaded photo");
+    assert.ok(!save.includes('runTransaction('), 'delivery money writes belong to the backend');
   });
 
-  it(`${label}: the document id and proof type land on the deposit_credit payment`, () => {
-    assert.match(save, /method: "deposit_credit"[\s\S]{0,300}proofDocumentId: returnProofDocumentId/);
-    assert.match(save, /method: "deposit_credit"[\s\S]{0,300}proofType: returnProofType/);
-  });
-
-  it(`${label}: the document id lands on the return depositEvents`, () => {
-    assert.match(save, /eventType[\s\S]{0,200}linkedDocumentId: returnProofDocumentId/);
+  it(`${label}: forwards photo, proof type and written evidence to the backend`, () => {
+    const call = save.slice(save.indexOf('commitDeliveryFn('));
+    assert.match(call, /\breturnProofDocumentId\s*,/);
+    assert.match(call, /\breturnProofType\s*,/);
+    assert.match(call, /\breturnProofNote\b/);
   });
 }
+
+const server = readFileSync(join(HERE, '../../functions/index.js'), 'utf8');
+const commit = sliceFn(server, 'commitDeliveryImpl', 'functions/index.js');
+it('atomic backend: records the photo and proof type on deposit credit', () => {
+  assert.match(commit, /method: "deposit_credit"[\s\S]*proofDocumentId: returnProofDocumentId/);
+  assert.match(commit, /method: "deposit_credit"[\s\S]*proofType: returnProofType/);
+});
+it('atomic backend: links the photo and written evidence to return events', () => {
+  assert.match(commit, /linkedDocumentId: returnProofDocumentId/);
+  assert.match(commit, /proofNote: returnProofNote/);
+});
 
 console.log("\nanti-drift — the dashboard cannot fall behind the order page again\n");
 

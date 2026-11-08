@@ -9,7 +9,7 @@ import {
   signOut,
   updateDoc
 } from "./firebaseClient.js";
-import { formatCurrency, productImageUrl, renderImportanceButton, renderImportantNote, renderOrderContactMenu, requireRole, withSubmitLock } from "./shared.js";
+import { formatCurrency, formatOrderStatus, productImageUrl, renderImportanceButton, renderImportantNote, renderOrderContactMenu, requireRole, withSubmitLock } from "./shared.js";
 import { importantNoteIsValid, normalizeImportantNote } from "./adminDashboardModel.js";
 import { mapsApiKey } from "./firebaseWebConfig.js";
 
@@ -300,7 +300,7 @@ function renderRows() {
       <tr>
         <td>${customerCell}</td>
         <td>${phoneCell}</td>
-        <td><span class="badge status-${escapeHtml(status)}">${escapeHtml(status)}</span></td>
+        <td><span class="badge status-${escapeHtml(status)}">${escapeHtml(formatOrderStatus(status))}</span></td>
         <td><span class="badge pay-${escapeHtml(payStatus)}">${escapeHtml(humanizePaymentStatus(payStatus))}</span></td>
         <td style="text-align:right">${escapeHtml(formatCurrency(order.subtotal))}</td>
         <td style="text-align:right">${escapeHtml(formatCurrency(order.balanceDue))}</td>
@@ -319,7 +319,7 @@ function renderRows() {
       <article class="card directory-card order-directory-card">
         <div class="directory-card-head">
           <div>${customerHref ? `<a class="directory-card-title" href="${customerHref}">${customerName}</a>` : `<strong class="directory-card-title">${customerName}</strong>`}<div class="muted">Delivery ${escapeHtml(order.deliveryDate || "not scheduled")}</div></div>
-          <span class="badge status-${escapeHtml(status)}">${escapeHtml(status)}</span>
+          <span class="badge status-${escapeHtml(status)}">${escapeHtml(formatOrderStatus(status))}</span>
         </div>
         ${renderImportantNote(order, "order-important-note")}
         <div class="directory-card-details">

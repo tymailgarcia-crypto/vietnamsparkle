@@ -31,6 +31,10 @@ let pendingAddressConfirmation = null;
 let accountAddressMap = null;
 let accountAddressMarker = null;
 let accountAddressInfoWindow = null;
+// Formatted address the current pin resolves to. Set when the confirmation
+// popup is shown, cleared when the pin is invalidated, and read by the footer
+// "Use this address" button so it can confirm the exact same pin.
+let accountPinFormattedAddress = "";
 let accountAddressAutocompleteTimer = null;
 let accountAddressAutocompleteRequestId = 0;
 let accountAddressAutocompletePredictions = [];
@@ -199,6 +203,7 @@ function handleAccountAddressAutocompleteKeydown(event) {
 
 function resetPendingAddressConfirmation() {
   pendingAddressConfirmation = null;
+  accountPinFormattedAddress = "";
   accountAddressInfoWindow?.close();
   el("account-address-map-wrap")?.setAttribute("hidden", "");
   updateAddressFormMode();
@@ -250,6 +255,26 @@ function updateAddressFormMode() {
     input.placeholder = editing ? "Update this delivery address" : "Add another delivery address";
   }
   el("cancel-address-edit")?.classList.toggle("hidden", !editing);
+}
+
+// Confirm the resolved pin from the always-visible footer button. It lives in
+// the page rather than inside the map InfoWindow because Google clips tall
+// InfoWindow content on desktop, leaving the in-window button unreachable. This
+// stages the pin (the form's "Save confirmed address" button then writes it).
+function confirmAccountPin() {
+  if (!accountAddressMarker || !accountPinFormattedAddress) return;
+  const pos = accountAddressMarker.getPosition();
+  const input = el("new-address-input");
+  const address = String(input?.value || accountPinFormattedAddress).trim();
+  pendingAddressConfirmation = {
+    address,
+    lat: pos.lat(),
+    lng: pos.lng(),
+    formattedAddress: String(accountPinFormattedAddress).slice(0, 499)
+  };
+  updateAddressFormMode();
+  accountAddressInfoWindow?.close();
+  setAddressEditorStatus("✓ Address and delivery pin confirmed. Save when ready.");
 }
 
 function beginEditAddress(text) {
@@ -1011,20 +1036,9 @@ async function findPinFor(value) {
       title: "Drag to your delivery entrance"
     });
 
-    const capture = (pos, confirmedAddress) => {
-      const input = el("new-address-input");
-      const address = String(input?.value || confirmedAddress || value).trim();
-      pendingAddressConfirmation = {
-        address,
-        lat: pos.lat(),
-        lng: pos.lng(),
-        formattedAddress: String(confirmedAddress || currentFormattedAddress || address).slice(0, 499)
-      };
-      updateAddressFormMode();
-      setAddressEditorStatus("✓ Address and delivery pin confirmed. Save when ready.");
-    };
-
     const showPinConfirmation = () => {
+      accountPinFormattedAddress = currentFormattedAddress;
+
       const content = document.createElement("div");
       content.style.maxWidth = "240px";
 
@@ -1035,28 +1049,17 @@ async function findPinFor(value) {
       const detail = document.createElement("p");
       detail.style.margin = "6px 0 10px";
       detail.textContent = currentApproximate
-        ? "Google found an approximate match. Drag the pin if needed, or confirm it here."
-        : "Drag the pin if it needs correcting, or confirm it here.";
+        ? "Google found an approximate match. Drag the pin if needed, then choose “Use this address” below."
+        : "Drag the pin if it needs correcting, then choose “Use this address” below.";
       content.appendChild(detail);
 
       const resolvedAddress = document.createElement("p");
-      resolvedAddress.style.margin = "0 0 10px";
+      resolvedAddress.style.margin = "0";
       resolvedAddress.style.overflowWrap = "anywhere";
       const addressLabel = document.createElement("strong");
       addressLabel.textContent = "Address: ";
       resolvedAddress.append(addressLabel, document.createTextNode(currentFormattedAddress));
       content.appendChild(resolvedAddress);
-
-      const confirmButton = document.createElement("button");
-      confirmButton.type = "button";
-      confirmButton.className = "primary";
-      confirmButton.style.width = "100%";
-      confirmButton.textContent = "Use this address";
-      confirmButton.addEventListener("click", () => {
-        capture(accountAddressMarker.getPosition(), currentFormattedAddress);
-        accountAddressInfoWindow?.close();
-      });
-      content.appendChild(confirmButton);
 
       accountAddressInfoWindow = accountAddressInfoWindow || new google.maps.InfoWindow({ maxWidth: 280 });
       accountAddressInfoWindow.setContent(content);
@@ -1076,6 +1079,7 @@ async function findPinFor(value) {
     accountAddressMarker.addListener("dragstart", () => {
       pinAddressLookupId += 1;
       pendingAddressConfirmation = null;
+      accountPinFormattedAddress = "";
       accountAddressInfoWindow?.close();
       updateAddressFormMode();
       setAddressEditorStatus("Pin moved — check its position, then choose “Use this address”.");
@@ -1714,6 +1718,7 @@ el("account-address-reset-pin")?.addEventListener("click", () => {
   setAddressEditorStatus("Pin reset — update the address if needed, then find it on the map again.");
   el("new-address-input")?.focus();
 });
+el("account-address-confirm")?.addEventListener("click", confirmAccountPin);
 const accountAddressInput = el("new-address-input");
 accountAddressInput?.addEventListener("input", () => {
   if (pendingAddressConfirmation || !el("account-address-map-wrap")?.hidden) {

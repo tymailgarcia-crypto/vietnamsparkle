@@ -52,6 +52,10 @@ const {
 
 setGlobalOptions({ region: "us-central1", maxInstances: 10 });
 
+// Reconciled deployed staff and help endpoints.
+exports.askHelp = require("./helpChat").askHelp;
+exports.manageStaff = require("./staff").manageStaff;
+
 // Lazy-init pattern: only initialize the Admin SDK the first time a handler
 // runs, not at module load. Keeps CLI discovery fast and avoids the
 // "Cannot determine backend specification. Timeout" error during deploy.
@@ -2664,3 +2668,11 @@ if (process.env.NODE_ENV === "test" || process.env.FUNCTIONS_EMULATOR === "true"
     refundEvidenceProblem
   });
 }
+
+// Reconciled AI parse and explicitly confirmed-save endpoints.
+const aiOrderFunctions = require("./aiOrder").createAiOrderFunctions({
+  computeDepositBreakdown, deliveryDateProblem, businessTodayKey, isInsideDeliveryArea, getDb: db
+});
+exports.parseAiOrder = aiOrderFunctions.parseAiOrder;
+exports.saveAiOrder = aiOrderFunctions.saveAiOrder;
+if (process.env.NODE_ENV === "test") exports._aiOrderTestApi = aiOrderFunctions.saveAiOrderImpl;

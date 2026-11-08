@@ -211,8 +211,11 @@
             <div id="account-address-map-wrap" class="address-map-wrap" hidden>
               <div id="account-address-map" class="address-confirm-map" aria-label="Map showing the new delivery address"></div>
               <div class="address-map-footer">
-                <p class="muted address-map-help" id="account-address-map-help">Check the suggested pin, correct it if needed, then confirm the address.</p>
-                <button id="account-address-reset-pin" class="ghost" type="button">Reset pin</button>
+                <p class="muted address-map-help" id="account-address-map-help">Check the suggested pin, correct it if needed, then choose “Use this address”.</p>
+                <div class="edit-address-map-actions">
+                  <button id="account-address-reset-pin" class="ghost" type="button">Reset pin</button>
+                  <button id="account-address-confirm" class="secondary" type="button">Use this address</button>
+                </div>
               </div>
             </div>
             <p class="muted" id="address-dialog-status" aria-live="polite"></p>

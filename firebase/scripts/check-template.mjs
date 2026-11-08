@@ -6,7 +6,12 @@ const suites = [
   'web/assets/reorderChanges.test.mjs',
   'web/assets/orderSubmissionKey.test.mjs',
   'web/assets/accountTruth.test.mjs',
-  'web/assets/depositLedger.test.mjs'
+  'web/assets/depositLedger.test.mjs',
+  'web/assets/returnProofGate.test.mjs',
+  'web/assets/returnDelivery.test.mjs',
+  'web/assets/deliveryRouting.test.mjs',
+  'web/assets/aiOrderModel.test.mjs',
+  'web/assets/helpChatRender.test.mjs'
 ];
 let failures = 0;
 for (const suite of suites) {

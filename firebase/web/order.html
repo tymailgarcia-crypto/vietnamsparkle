@@ -5,6 +5,19 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Order record · Vietnam Sparkle</title>
     <link rel="stylesheet" href="./assets/styles.css?v=order-actions-20260718-1">
+    <style>
+      /* Old-customer opening-empties confirm panel (orderApp.renderPreAppEmptiesPanel). */
+      #order-preapp-empties .order-preapp-card h3 { margin: 0 0 6px; }
+      .order-preapp-table { width: 100%; border-collapse: collapse; margin: 12px 0; }
+      .order-preapp-table th, .order-preapp-table td { padding: 6px 8px; text-align: left; border-bottom: 1px solid rgba(0,0,0,0.08); }
+      .order-preapp-table th:nth-child(n+2), .order-preapp-table td:nth-child(n+2) { text-align: right; }
+      .order-preapp-table input[type="number"] { width: 92px; max-width: 100%; padding: 6px 8px; }
+      .order-preapp-total { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0 10px; font-size: 15px; }
+      .order-preapp-list { margin: 4px 0 10px; padding-left: 18px; }
+      .order-preapp-list li { margin: 2px 0; }
+      .order-preapp-card.is-confirmed { border-left: 3px solid var(--success, #1a7f37); padding-left: 12px; }
+      .order-preapp-status:empty { display: none; }
+    </style>
   </head>
   <body>
     <main class="page has-admin-dock">
@@ -34,80 +47,52 @@
           <div id="order-cancellation-request"></div>
           <div id="order-actions" class="button-row" style="flex-wrap:wrap"></div>
         </section>
+        <section class="panel" id="order-preapp-empties" hidden></section>
         <section class="panel order-invoice-section">
           <div class="order-invoice-heading"><div><span class="pill">Document</span><h2>Invoice</h2></div><div class="button-row"><button id="order-invoice-download" class="primary" type="button" disabled>Download PDF</button><button id="order-invoice-email" class="secondary hidden" type="button">Email</button><a id="order-invoice-whatsapp" class="button-link secondary hidden" href="#" target="_blank" rel="noopener">WhatsApp</a></div></div>
           <p id="order-invoice-status" class="muted"></p>
           <div id="order-invoice-preview" class="order-invoice-preview"><div class="muted" style="padding:20px;text-align:center">Preparing invoice…</div></div>
         </section>
-        <section class="panel"><h2>Items</h2><div class="customer-table-wrap"><table class="customer-table"><thead><tr><th>Item</th><th style="text-align:right">Qty</th><th style="text-align:right">Unit price</th><th style="text-align:right">Line total</th></tr></thead><tbody id="order-item-rows"></tbody></table></div></section>
-        <section class="panel"><h2>Financial summary</h2><div id="order-money" class="order-record-money"></div></section>
+        <details class="panel" open><summary><h2>Items</h2></summary><div class="customer-table-wrap"><table class="customer-table"><thead><tr><th>Item</th><th style="text-align:right">Qty</th><th style="text-align:right">Unit price</th><th style="text-align:right">Line total</th></tr></thead><tbody id="order-item-rows"></tbody></table></div></details>
+        <details class="panel" open><summary><h2>Financial summary</h2></summary><div id="order-money" class="order-record-money"></div></details>
         <section class="panel" id="order-cancellation-panel" hidden>
           <div class="order-invoice-heading"><div><span class="pill">Cancellation</span><h2>Cancellation &amp; refund</h2></div><span id="order-cancellation-status" class="muted" role="status" aria-live="polite"></span></div>
           <div id="order-cancellation-body" class="stack"></div>
         </section>
-        <section class="panel"><h2>Payment history</h2><div id="order-payments" class="stack"></div></section>
-        <section class="panel"><h2>Stored documents</h2><p class="muted">Invoices, order confirmations, and payment-proof photos that were actually uploaded for this order.</p><div id="order-documents" class="stack"></div></section>
-        <section class="panel"><h2>Container and deposit history</h2><div id="order-deposits" class="stack"></div></section>
-        <section class="panel"><h2>Returns</h2><div id="order-returns" class="stack"></div></section>
-        <section class="panel">
-          <div class="order-correction-heading"><div><span class="pill">Append only</span><h2>Correction note</h2></div></div>
+        <details class="panel"><summary><h2>Payment history</h2></summary><div id="order-payments" class="stack"></div></details>
+        <details class="panel" open><summary><h2>Stored documents</h2></summary><p class="muted">Invoices, order confirmations, and payment-proof photos that were actually uploaded for this order.</p><div id="order-documents" class="stack"></div></details>
+        <details class="panel"><summary><h2>Container and deposit history</h2></summary><div id="order-deposits" class="stack"></div></details>
+        <details class="panel"><summary><h2>Returns</h2></summary><div id="order-returns" class="stack"></div></details>
+        <details class="panel">
+          <summary><div class="order-correction-heading"><div><span class="pill">Append only</span><h2>Correction note</h2></div></div></summary>
           <p class="muted">Explain a correction or exception without changing the original financial record. Saved notes cannot be edited or deleted.</p>
           <form id="order-correction-form" class="order-correction-form">
             <select id="order-correction-category" aria-label="Correction category"><option value="correction">Correction</option><option value="exception">Exception</option><option value="customer_request">Customer request</option><option value="internal_note">Internal compliance note</option></select>
             <textarea id="order-correction-note" rows="3" minlength="10" maxlength="2000" required placeholder="What was incorrect or exceptional, why, and what action was taken?"></textarea>
             <div class="button-row"><button class="primary" type="submit">Append correction</button><span id="order-correction-status" class="muted"></span></div>
           </form>
-        </section>
-        <section class="panel"><h2>Audit timeline</h2><p class="muted">Newest activity first. Built from retained order, payment, document, deposit, return, and correction records.</p><div id="order-audit-timeline" class="order-audit-timeline"></div></section>
-        <section class="panel"><h2>Record metadata</h2><dl id="order-metadata" class="order-record-metadata"></dl><p class="muted compliance-note">This is a retained operational and financial record. Corrections should be recorded through normal payment, return, cancellation, or order-management actions rather than deleting the record.</p></section>
+        </details>
+        <details class="panel"><summary><h2>Audit timeline</h2></summary><p class="muted">Newest activity first. Built from retained order, payment, document, deposit, return, and correction records.</p><div id="order-audit-timeline" class="order-audit-timeline"></div></details>
+        <details class="panel"><summary><h2>Record metadata</h2></summary><dl id="order-metadata" class="order-record-metadata"></dl><p class="muted compliance-note">This is a retained operational and financial record. Corrections should be recorded through normal payment, return, cancellation, or order-management actions rather than deleting the record.</p></details>
 
         <dialog id="delivery-payment-dialog" class="edit-dialog">
           <form id="delivery-payment-form" class="form-grid" style="min-width:min(560px,90vw)">
             <h3 class="span-2" style="margin:0">Mark delivered — <span id="delivery-payment-customer"></span></h3>
-            <p class="muted span-2" style="margin:0">Amount due: <strong id="delivery-payment-due">0 VND</strong></p>
-            <div id="delivery-cod-summary" class="span-2 delivery-cod-summary hidden"></div>
-            <fieldset id="delivery-overcredit-field" class="span-2 hidden" style="border:1px solid #e0b25a;border-radius:12px;padding:12px">
-              <legend style="padding:0 6px;font-weight:700">Deposit credit exceeds this order</legend>
-              <p class="muted" style="margin:0 0 8px">There is <strong id="delivery-overcredit-amount">0 VND</strong> left after clearing the order. What should happen to it?</p>
-              <div class="button-row" style="gap:12px;align-items:flex-start">
-                <label style="display:flex;gap:6px;align-items:flex-start"><input type="radio" name="delivery-overcredit" value="carry" checked><span><strong>Carry forward</strong><small class="muted" style="display:block">Keep it as customer credit for later orders.</small></span></label>
-                <label style="display:flex;gap:6px;align-items:flex-start"><input type="radio" name="delivery-overcredit" value="refund"><span><strong>Refund cash now</strong><small class="muted" style="display:block">Return the excess and leave this order at zero.</small></span></label>
-              </div>
-            </fieldset>
             <input type="hidden" id="delivery-payment-order-id">
 
-            <div class="span-2 button-row">
-              <label class="button-row" style="gap:6px;cursor:pointer"><input type="radio" name="collected" value="collected" checked><span>Collected</span></label>
-              <label class="button-row" style="gap:6px;cursor:pointer"><input type="radio" name="collected" value="deferred"><span>Not collected today</span></label>
-            </div>
-
-            <div id="delivery-collected-fields" class="span-2 form-grid">
-              <label>Amount collected<input id="delivery-payment-amount" type="number" min="0" step="1000"></label>
-              <label>Method<select id="delivery-payment-method"><option value="cash">Cash</option><option value="transfer">Bank transfer</option><option value="bank_qr">QR code</option><option value="other">Other</option></select></label>
-              <label class="span-2">Reference (required for bank transfer / QR, unless you add a photo)<input id="delivery-payment-reference" type="text" maxlength="199" placeholder="Bank reference or note"></label>
-              <label class="span-2">Proof photo (required for bank transfer / QR, unless you add a reference)<input id="delivery-payment-proof" type="file" accept="image/*"><button type="button" class="proof-camera-btn" data-proof-camera-for="delivery-payment-proof">📷 Take photo</button><span class="muted">Take a photo, or choose an existing transfer screenshot or receipt from your library. Photos are compressed automatically; source max 30 MB.</span></label>
-            </div>
-
-            <div id="delivery-deferred-fields" class="span-2 form-grid hidden">
-              <label>Reason<select id="delivery-deferral-reason"><option value="customer_said_next_time">Customer said next time</option><option value="customer_not_home">Customer wasn't home</option><option value="driver_forgot_to_ask">Driver forgot to ask</option><option value="waived_by_owner">Waived by owner</option><option value="other">Other</option></select></label>
-              <label>Follow up by<input id="delivery-follow-up" type="date"></label>
-              <label class="span-2">Notes<textarea id="delivery-deferral-notes" rows="2" maxlength="999" placeholder="What did the customer say?"></textarea></label>
-            </div>
-
             <div class="span-2">
-              <h4 style="margin:12px 0 8px">Containers returned this trip</h4>
+              <h4 style="margin:0 0 8px">1 · Empties collected this trip</h4>
               <p class="muted" style="margin:0 0 8px" id="delivery-containers-help">Loading customer containers...</p>
               <div id="delivery-containers-list" class="stack"></div>
               <div id="delivery-return-proof-field" class="hidden" style="margin-top:10px">
-                <strong>Record what came back <span style="color:var(--danger,#b3261e)">*</span></strong>
-                <p class="muted" style="margin:4px 0 8px">A photo or a written account — one of the two before the order can close.</p>
-                <label>Photo of the returned containers<input id="delivery-return-proof" type="file" accept="image/*"><button type="button" class="proof-camera-btn" data-proof-camera-for="delivery-return-proof">📷 Take photo</button><span class="muted">Take a photo or choose one from your library. Compressed automatically; source max 30 MB.</span></label>
-                <label style="margin-top:8px">Or write what was collected<textarea id="delivery-return-note" rows="2" placeholder="e.g. 3 crates collected from Ms Hoa at the shop — phone camera not working"></textarea><span class="muted">Say what actually came back, and from whom. Saved against this delivery under your name.</span></label>
+                <strong>Photo of what came back <span style="color:var(--danger,#b3261e)">*</span></strong>
+                <label style="margin-top:6px">Photo<input id="delivery-return-proof" type="file" accept="image/*"><button type="button" class="proof-camera-btn" data-proof-camera-for="delivery-return-proof">📷 Take photo</button></label>
+                <label style="margin-top:8px">Note (optional)<textarea id="delivery-return-note" rows="2" placeholder="e.g. 3 crates from Ms Hoa"></textarea></label>
               </div>
             </div>
 
             <div class="span-2">
-              <label class="button-row" style="gap:6px;cursor:pointer"><input type="checkbox" id="delivery-loss-checkbox"><span>Report lost or destroyed containers</span></label>
+              <label class="button-row" style="gap:6px;cursor:pointer"><input type="checkbox" id="delivery-loss-checkbox"><span>Report lost or broken containers</span></label>
               <p class="muted" id="delivery-loss-help" style="margin:4px 0 0"></p>
               <div id="delivery-loss-fields" class="form-grid hidden" style="margin-top:8px">
                 <label>Container type<select id="delivery-loss-type"></select></label>
@@ -116,10 +101,42 @@
               </div>
             </div>
 
+            <h4 class="span-2" style="margin:12px 0 0;padding-top:14px;border-top:1px solid #e3e8ec">2 · Payment</h4>
+            <p class="muted span-2" style="margin:0">Amount due: <strong id="delivery-payment-due">0 VND</strong></p>
+            <div id="delivery-cod-summary" class="span-2 delivery-cod-summary hidden"></div>
+            <fieldset id="delivery-overcredit-field" class="span-2 hidden" style="border:1px solid #e0b25a;border-radius:12px;padding:12px">
+              <legend style="padding:0 6px;font-weight:700">Empties worth more than the bill</legend>
+              <p class="muted" style="margin:0 0 8px"><strong id="delivery-overcredit-amount">0 VND</strong> left over. Keep it or give it back?</p>
+              <div class="button-row" style="gap:12px;align-items:flex-start">
+                <label style="display:flex;gap:6px;align-items:flex-start"><input type="radio" name="delivery-overcredit" value="carry" checked><span><strong>Keep as credit</strong><small class="muted" style="display:block">For next time</small></span></label>
+                <label style="display:flex;gap:6px;align-items:flex-start"><input type="radio" name="delivery-overcredit" value="refund"><span><strong>Give cash back</strong><small class="muted" style="display:block">Now</small></span></label>
+              </div>
+            </fieldset>
+
             <div class="span-2 button-row">
+              <label class="button-row" style="gap:6px;cursor:pointer"><input type="radio" name="collected" value="collected" checked><span>Collected</span></label>
+              <label class="button-row" style="gap:6px;cursor:pointer"><input type="radio" name="collected" value="deferred"><span>Not collected today</span></label>
+            </div>
+
+            <div id="delivery-collected-fields" class="span-2 form-grid">
+              <label>Amount collected<input id="delivery-payment-amount" type="text" inputmode="numeric" autocomplete="off"></label>
+              <label>Method<select id="delivery-payment-method"><option value="cash">Cash</option><option value="bank_qr">QR code</option></select></label>
+              <label class="span-2">Reference — for QR payment (or add a photo)<input id="delivery-payment-reference" type="text" maxlength="199" placeholder="Bank reference or note"></label>
+              <label class="span-2">Proof photo — for QR payment (or add a reference)<input id="delivery-payment-proof" type="file" accept="image/*"><button type="button" class="proof-camera-btn" data-proof-camera-for="delivery-payment-proof">📷 Take photo</button></label>
+            </div>
+
+            <div id="delivery-deferred-fields" class="span-2 form-grid hidden">
+              <label>Reason<select id="delivery-deferral-reason"><option value="customer_said_next_time">Customer said next time</option><option value="customer_not_home">Customer wasn't home</option><option value="driver_forgot_to_ask">Driver forgot to ask</option><option value="waived_by_owner">Waived by owner</option><option value="other">Other</option></select></label>
+              <label>Follow up by<input id="delivery-follow-up" type="date"></label>
+              <label class="span-2">Notes<textarea id="delivery-deferral-notes" rows="2" maxlength="999" placeholder="What did the customer say?"></textarea></label>
+            </div>
+
+            <div class="span-2 button-row">
+              <div class="delivery-mode-confirm-due">Balance after returns <strong id="delivery-mode-confirm-due"></strong></div>
               <button class="primary" type="submit">Save &amp; mark delivered</button>
+              <button class="secondary delivery-mode-back" type="button" id="delivery-mode-back" hidden>Back to stop</button>
               <button class="ghost" type="button" id="delivery-payment-cancel-button">Discard</button>
-              <span class="muted" id="delivery-payment-status"></span>
+              <span class="muted" id="delivery-payment-status" role="status"></span>
             </div>
           </form>
         </dialog>
@@ -166,5 +183,6 @@
     </main>
     <script type="module" src="./assets/orderApp.js?v=order-actions-20260718-1"></script>
     <script type="module" src="./assets/dockMenu.js"></script>
+    <script type="module" src="./assets/helpChat.js"></script>
   </body>
 </html>

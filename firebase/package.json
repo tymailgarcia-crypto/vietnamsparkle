@@ -5,9 +5,12 @@
   "type": "module",
   "scripts": {
     "test": "node scripts/check-template.mjs",
+    "test:backend": "node scripts/check-template-backend.mjs",
+    "test:rules": "node scripts/check-template-rules.mjs",
     "demo": "node scripts/template-demo.mjs",
     "demo:prepare": "node scripts/template-demo.mjs --prepare-only",
     "demo:seed": "node scripts/seed-template-demo.mjs",
+    "demo:verify": "node scripts/verify-template-demo.mjs",
     "emulators": "firebase emulators:start --only auth,firestore,functions,hosting --import=emulator-data --export-on-exit=emulator-data",
     "seed:emulator": "node src/scripts/seedEmulatorProducts.js",
     "import:sheets": "node src/scripts/importSheetsJson.js",

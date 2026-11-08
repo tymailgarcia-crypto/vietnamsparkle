@@ -1,3 +1,4 @@
+import { returnDeliveryToAssignment } from "./returnDelivery.js";
 import {
   addDoc,
   auth,
@@ -10,6 +11,7 @@ import {
   httpsCallable,
   onAuthStateChanged,
   query,
+  runTransaction,
   serverTimestamp,
   setDoc,
   updateDoc,
@@ -27,6 +29,8 @@ import {
   containerReturnProofType,
   describeDepositBalanceProblem,
   formatCurrency,
+  groupThousands,
+  parseAmountValue,
   initPhotoSourceInputs,
   isBrokenDepositBalance,
   localDateKey,
@@ -35,15 +39,19 @@ import {
   paymentEvidenceProblem,
   paymentStatusFor,
   refundEvidenceProblem,
+  preAppEmptyTypesFromCatalog,
   requireRole,
   setDeliveryWindow,
   todayKey,
-  withSubmitLock
+  withSubmitLock,
+  formatOrderStatus
 } from "./shared.js";
 import { attachQrToPreview, buildEmailShare, buildWhatsAppShare, generateInvoicePdf, invoiceContext, renderInvoiceHtml } from "./invoice.js";
 import { uploadContainerReturnProof, uploadPaymentProof, uploadRefundProof, validateProofFile } from "./storageUploads.js";
 import { mapsApiKey } from "./firebaseWebConfig.js";
 import { createEditOrderAddressController } from "./editOrderAddress.js";
+
+import { finishDeliveryMode, isDeliveryModeOpen, openDeliveryMode, resumeDeliveryMode } from "./deliveryMode.js";
 
 const el = (id) => document.getElementById(id);
 const escapeHtml = (value) => String(value == null ? "" : value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -55,6 +63,7 @@ const attachRefundEvidenceFn = httpsCallable(functions, "attachRefundEvidence");
 const resolveOrderCancellationFn = httpsCallable(functions, "resolveOrderCancellation");
 const submitOrderCancellationFn = httpsCallable(functions, "submitOrderCancellation");
 const commitDeliveryFn = httpsCallable(functions, "commitDelivery");
+const confirmPreAppEmptiesFn = httpsCallable(functions, "confirmPreAppEmpties");
 let currentInvoiceContext = null;
 
 // P0-07: stable per-action token for the cancellation callable's idempotent caseId.
@@ -217,11 +226,12 @@ async function renderOrder(order, customer, items, payments, deposits, returns, 
   el("order-subline").textContent = `Order for ${order.customerName || customer.name || "Unknown customer"} · delivery ${order.deliveryDate || "not scheduled"}`;
   const customerHref = order.customerId ? `./customer.html?id=${encodeURIComponent(order.customerId)}` : "";
   el("order-summary").innerHTML = `
-    <div class="order-record-heading"><div><span class="badge status-${escapeHtml(status)}">${escapeHtml(humanize(status))}</span> <span class="badge pay-${escapeHtml(payStatus)}">${escapeHtml(humanize(payStatus))}</span></div><div class="button-row">${customerHref ? `<a class="button-link primary" href="${customerHref}">Open customer</a>` : ""}</div></div>
+    <div class="order-record-heading"><div><span class="badge status-${escapeHtml(status)}">${escapeHtml(formatOrderStatus(status))}</span> <span class="badge pay-${escapeHtml(payStatus)}">${escapeHtml(formatOrderStatus(payStatus))}</span></div><div class="button-row">${customerHref ? `<a class="button-link primary" href="${customerHref}">Open customer</a>` : ""}</div></div>
     <div class="order-record-grid"><div><span>Customer</span><strong>${escapeHtml(order.customerName || customer.name || "Unknown")}</strong><small>${escapeHtml(order.phone || customer.phone || "No phone")}${order.email || customer.email ? `<br>${escapeHtml(order.email || customer.email)}` : ""}</small></div><div><span>Delivery</span><strong>${escapeHtml(order.deliveryDate || "Not scheduled")}</strong><small>${escapeHtml(order.deliveryWindow || "No window")}</small></div><div class="order-record-address"><span>Delivery address</span><strong>${escapeHtml(order.address || "Not recorded")}</strong></div></div>
     ${order.notes ? `<div class="order-record-notes"><span>Order notes</span><p>${escapeHtml(order.notes)}</p></div>` : ""}`;
   renderOrderActions(order);
   renderCancellationPanel();
+  renderPreAppEmptiesPanel(order);
   el("order-item-rows").innerHTML = items.length ? items.map((item) => `<tr><td>${escapeHtml(item.productName || item.productId || "Unknown item")}<div class="muted">${escapeHtml(item.productId || "")}</div></td><td style="text-align:right">${Number(item.quantity || 0)}</td><td style="text-align:right">${escapeHtml(formatCurrency(item.unitPrice))}</td><td style="text-align:right"><strong>${escapeHtml(formatCurrency(item.lineTotal))}</strong></td></tr>`).join("") : `<tr><td colspan="4" class="muted">No item records found.</td></tr>`;
   el("order-money").innerHTML = [["Subtotal", order.subtotal], ["Container deposits", order.depositTotal], ["Paid", order.amountPaid], ["Balance due", order.balanceDue]].map(([label, value]) => `<div><span>${label}</span><strong>${escapeHtml(formatCurrency(value))}</strong></div>`).join("");
   const documentsById = new Map(documents.map((documentRecord) => [documentRecord.id, documentRecord]));
@@ -232,7 +242,16 @@ async function renderOrder(order, customer, items, payments, deposits, returns, 
   }).join("") : empty("No payment events recorded.");
   el("order-documents").innerHTML = documents.length ? [...documents].sort((a, b) => eventTime(b.uploadedAt) - eventTime(a.uploadedAt)).map(renderDocumentCard).join("") : empty("No uploaded invoices or payment proofs are linked to this order.");
   el("order-deposits").innerHTML = deposits.length ? deposits.map((d) => eventCard(`${humanize(d.eventType)} · ${Number(d.qty || 0)} ${humanize(d.containerType)}`, [["Event ID", d.id], ["Date", d.eventDate || dateValue(d.createdAt)], ["Amount", formatCurrency(d.amount)], ["Notes", d.notes]])).join("") : empty("No container deposit events recorded.");
-  el("order-returns").innerHTML = returns.length ? returns.map((r) => eventCard(`${Number(r.qty || 0)} ${humanize(r.containerType)} returned`, [["Return ID", r.id], ["Returned", r.returnedAt || r.returnDate], ["Condition", humanize(r.condition)], ["Notes", r.notes]])).join("") : empty("No returns recorded for this order.");
+  // The delivery form records returned empties as "credited" (off the bill) or
+  // "refunded" (cash back) deposit events, not /returns docs — that collection
+  // only holds legacy imported returns. Show both, so this panel isn't always
+  // empty. (Order-edit "reduced containers" refunds are not physical returns.)
+  const returnEvents = deposits.filter((d) => (d.eventType === "credited" || d.eventType === "refunded") && !/^Order edit/.test(d.notes || ""));
+  const returnCards = [
+    ...returnEvents.map((d) => eventCard(`${Number(d.qty || 0)} ${humanize(d.containerType)} returned`, [["Date", d.eventDate || dateValue(d.createdAt)], ["Deposit", `${formatCurrency(d.amount)} · ${d.eventType === "credited" ? "taken off the bill" : "cash back"}`], ["Photo document ID", d.linkedDocumentId], ["Notes", d.notes]])),
+    ...returns.map((r) => eventCard(`${Number(r.qty || 0)} ${humanize(r.containerType)} returned`, [["Return ID", r.id], ["Returned", r.returnedAt || r.returnDate], ["Condition", humanize(r.condition)], ["Notes", r.notes]]))
+  ];
+  el("order-returns").innerHTML = returnCards.length ? returnCards.join("") : empty("No returns recorded for this order.");
   renderAuditTimeline(order, payments, deposits, returns, corrections, documents);
   const metadata = [["Order ID", order.id], ["Customer ID", order.customerId], ["Source", humanize(order.sourceChannel)], ["Created", dateValue(order.createdAtServer || order.createdAt)], ["Updated", dateValue(order.updatedAt)], ["Assigned driver ID", order.assignedDriverId], ["Auth UID", order.authUid], ["Delivery location", order.deliveryLocation ? `${order.deliveryLocation.lat}, ${order.deliveryLocation.lng}` : null], ["Cancellation reason", order.cancellationReason]];
   el("order-metadata").innerHTML = metadata.filter(([, value]) => value !== null && value !== undefined && value !== "").map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("");
@@ -262,6 +281,131 @@ async function renderOrder(order, customer, items, payments, deposits, returns, 
   el("order-load-status").textContent = "";
 }
 
+// --- Pre-app ("old") customer opening empties ------------------------------
+//
+// When an old customer declared containers they already hold (stored on the
+// order as preAppEmptiesClaim by submitPublicOrder), this panel lets the owner
+// confirm the REAL counts + the deposit that was actually paid, then records
+// them via confirmPreAppEmpties. Nothing here charges until the owner clicks —
+// the customer's numbers are only a starting guess. Once confirmed, it shows a
+// read-only summary and never offers to charge again (create-only server side).
+function renderPreAppEmptiesPanel(order) {
+  const node = el("order-preapp-empties");
+  if (!node) return;
+  const claim = order && order.preAppEmptiesClaim;
+  if (!claim || (claim.status !== "unconfirmed" && claim.status !== "confirmed")) {
+    node.innerHTML = "";
+    node.hidden = true;
+    return;
+  }
+  node.hidden = false;
+
+  if (claim.status === "confirmed") {
+    const entries = Array.isArray(claim.confirmedEntries) ? claim.confirmedEntries : [];
+    const total = entries.reduce((sum, e) => sum + Number(e.amount || 0), 0);
+    node.innerHTML = `
+      <div class="order-preapp-card is-confirmed">
+        <h3>Opening empties recorded</h3>
+        ${entries.length
+          ? `<ul class="order-preapp-list">${entries.map((e) => `<li>${Number(e.qty || 0)} × ${escapeHtml(humanize(e.containerType))} — ${escapeHtml(formatCurrency(e.amount))}</li>`).join("")}</ul>`
+          : `<p class="muted">No containers were recorded.</p>`}
+        <p class="muted">Total opening deposit ${escapeHtml(formatCurrency(total))}. These containers now net to zero when the customer returns them.</p>
+      </div>`;
+    return;
+  }
+
+  // Unconfirmed: editable confirm form seeded from the customer's claim and the
+  // catalog's current per-unit deposit (the owner overrides both if the real
+  // pre-app deposit differed).
+  const counts = (claim && claim.counts) || {};
+  const types = Object.keys(counts);
+  if (!types.length) { node.innerHTML = ""; node.hidden = true; return; }
+  const depositByType = {};
+  preAppEmptyTypesFromCatalog(state.products).forEach((t) => {
+    depositByType[t.containerType] = Number(t.depositPerUnit || 0);
+  });
+  const seedTotal = types.reduce((sum, type) => {
+    const qty = Math.max(0, Math.floor(Number(counts[type]) || 0));
+    return sum + qty * Number(depositByType[type] || 0);
+  }, 0);
+  node.innerHTML = `
+    <div class="order-preapp-card">
+      <h3>Old-customer empties to record</h3>
+      <p class="muted">This customer said they already have your containers from before the app. Check the counts and the deposit that was actually paid, then record it so their returns balance out instead of going below zero.</p>
+      <table class="order-preapp-table">
+        <thead><tr><th>Container</th><th>How many</th><th>Deposit each</th><th>Total</th></tr></thead>
+        <tbody>
+          ${types.map((type) => {
+            const qty = Math.max(0, Math.floor(Number(counts[type]) || 0));
+            const dep = Number(depositByType[type] || 0);
+            return `<tr>
+              <td>${escapeHtml(humanize(type))}</td>
+              <td><input type="number" inputmode="numeric" min="0" max="9999" step="1" data-preapp-qty="${escapeHtml(type)}" value="${qty}" aria-label="How many ${escapeHtml(humanize(type))}"></td>
+              <td><input type="number" inputmode="numeric" min="0" step="1000" data-preapp-dep="${escapeHtml(type)}" value="${dep}" aria-label="Deposit each for ${escapeHtml(humanize(type))}"></td>
+              <td data-preapp-line="${escapeHtml(type)}">${escapeHtml(formatCurrency(qty * dep))}</td>
+            </tr>`;
+          }).join("")}
+        </tbody>
+      </table>
+      <div class="order-preapp-total">Total opening deposit: <strong data-preapp-total>${escapeHtml(formatCurrency(seedTotal))}</strong></div>
+      <div class="button-row"><button class="primary" type="button" data-preapp-confirm>Record opening deposit</button></div>
+      <p class="muted order-preapp-status" data-preapp-status role="status"></p>
+    </div>`;
+
+  const recompute = () => {
+    let total = 0;
+    node.querySelectorAll("[data-preapp-qty]").forEach((qtyInput) => {
+      const type = qtyInput.getAttribute("data-preapp-qty");
+      const depInput = node.querySelector(`[data-preapp-dep="${CSS.escape(type)}"]`);
+      const qty = Math.max(0, Math.floor(Number(qtyInput.value) || 0));
+      const dep = Math.max(0, Number(depInput && depInput.value) || 0);
+      const line = qty * dep;
+      total += line;
+      const lineCell = node.querySelector(`[data-preapp-line="${CSS.escape(type)}"]`);
+      if (lineCell) lineCell.textContent = formatCurrency(line);
+    });
+    const totalCell = node.querySelector("[data-preapp-total]");
+    if (totalCell) totalCell.textContent = formatCurrency(total);
+  };
+  node.querySelectorAll("[data-preapp-qty],[data-preapp-dep]").forEach((input) => {
+    input.addEventListener("input", recompute);
+  });
+  const confirmBtn = node.querySelector("[data-preapp-confirm]");
+  if (confirmBtn) confirmBtn.addEventListener("click", () => confirmPreAppEmpties(order, node));
+}
+
+async function confirmPreAppEmpties(order, node) {
+  const statusNode = node.querySelector("[data-preapp-status]");
+  const confirmBtn = node.querySelector("[data-preapp-confirm]");
+  const entries = [];
+  node.querySelectorAll("[data-preapp-qty]").forEach((qtyInput) => {
+    const type = qtyInput.getAttribute("data-preapp-qty");
+    const depInput = node.querySelector(`[data-preapp-dep="${CSS.escape(type)}"]`);
+    const qty = Math.max(0, Math.floor(Number(qtyInput.value) || 0));
+    const depositPerUnit = Math.max(0, Number(depInput && depInput.value) || 0);
+    if (qty > 0) entries.push({ containerType: type, qty, depositPerUnit });
+  });
+  if (!entries.length) {
+    if (statusNode) statusNode.textContent = "Set at least one container count above.";
+    return;
+  }
+  if (entries.some((e) => !(e.depositPerUnit > 0))) {
+    if (statusNode) statusNode.textContent = "Set the deposit paid for each container before recording.";
+    return;
+  }
+  if (confirmBtn) { confirmBtn.disabled = true; confirmBtn.textContent = "Recording…"; }
+  if (statusNode) statusNode.textContent = "";
+  try {
+    await confirmPreAppEmptiesFn({ orderId: order.id, entries });
+    // Reload so the panel flips to confirmed and the new opening charges appear
+    // in the deposit-events section below.
+    await loadOrderRecord();
+  } catch (error) {
+    if (confirmBtn) { confirmBtn.disabled = false; confirmBtn.textContent = "Record opening deposit"; }
+    if (statusNode) statusNode.textContent = (error && error.message) || "Could not record the opening deposit.";
+  }
+}
+
 function setActionStatus(message, isError = false) {
   const node = el("order-action-status");
   node.textContent = message || "";
@@ -279,7 +423,10 @@ function driverOptions(order) {
   return `<label class="muted" style="display:flex;align-items:center;gap:6px">Driver
     <select data-order-driver aria-label="Assigned driver">
       <option value="">Unassigned</option>
-      ${state.drivers.map((driver) => `<option value="${escapeHtml(driver.id)}" ${driver.id === order.assignedDriverId ? "selected" : ""}>${escapeHtml(driver.driverName)}</option>`).join("")}
+      ${state.drivers
+        // Inactive (removed) drivers only where already assigned.
+        .filter((driver) => driver.active !== false || driver.id === order.assignedDriverId)
+        .map((driver) => `<option value="${escapeHtml(driver.id)}" ${driver.id === order.assignedDriverId ? "selected" : ""}>${escapeHtml(driver.driverName)}</option>`).join("")}
     </select>
   </label>`;
 }
@@ -288,7 +435,13 @@ function renderOrderActions(order) {
   const actionsNode = el("order-actions");
   const cancellationNode = el("order-cancellation-request");
   const editButton = `<button class="ghost" type="button" data-order-action="edit">Edit details</button>`;
-  const cancelButton = `<button class="ghost" type="button" data-order-action="cancel">Cancel order</button>`;
+  // Cancel is destructive and must live in the SAME place in every status, set
+  // apart from the forward action so it never gets tapped by mistake. margin-left
+  // :auto pins it to the far right of the wrapping row (same trick as
+  // .public-order-actions .primary), so as an order moves through its lifecycle
+  // the green "go" button stays far left and Cancel stays far right — nothing
+  // shuffles under the owner's thumb.
+  const cancelButton = `<button class="ghost" type="button" data-order-action="cancel" style="margin-left:auto">Cancel order</button>`;
   const callHref = phoneDialHref(order.phone || state.customer.phone);
   const callButton = callHref ? `<a class="button-link secondary" href="${escapeHtml(callHref)}">Call customer</a>` : "";
 
@@ -309,10 +462,12 @@ function renderOrderActions(order) {
       actionsNode.innerHTML = `${driverOptions(order)}${editButton}${cancelButton}`;
       break;
     case "assigned":
-      actionsNode.innerHTML = `${driverOptions(order)}<button class="primary" type="button" data-order-action="out-for-delivery">Send out for delivery</button>${editButton}${cancelButton}`;
+      actionsNode.innerHTML = `<button class="primary" type="button" data-order-action="out-for-delivery">Start delivery</button>${driverOptions(order)}${editButton}${cancelButton}`;
       break;
     case "out_for_delivery":
-      actionsNode.innerHTML = `<button class="primary" type="button" data-order-action="deliver">Mark delivered &amp; record payment</button>${cancelButton}${callButton}`;
+      // Cancel is refused server-side while out for delivery; Reset (back to
+      // assigned, driver kept) takes its fixed far-right slot instead.
+      actionsNode.innerHTML = `<button class="primary" type="button" data-order-action="delivery-mode">Open Delivery Mode</button><button class="secondary" type="button" data-order-action="deliver">Mark delivered &amp; record payment</button>${callButton}<button class="ghost" type="button" data-order-action="reset-assignment" style="margin-left:auto">Reset to assigned</button>`;
       break;
     case "delivered":
       actionsNode.innerHTML = `<span class="muted">Delivered — invoice is below.</span>`;
@@ -539,11 +694,48 @@ async function runActionControl(control, busyMessage, action) {
   }
 }
 
+let deliveryFormPaused = false;
+
+function deliveryModeDetails() {
+  return {
+    order: state.order,
+    customer: state.customer,
+    items: state.items,
+    loadMaps: loadMapsSdk,
+    onUnpin: () => { deliveryFormPaused = false; },
+    returnForAnotherAttempt: async () => {
+      const id = state.order.id;
+      try {
+        await returnDeliveryToAssignment(state.order.id);
+      } catch (error) {
+        setActionStatus(error.message || "Could not return the order. Try again.", true);
+        throw error;
+      }
+      finishDeliveryMode(id);
+      try {
+        await loadOrderRecord();
+      } catch {
+        setActionStatus("Returned to Assigned. Reload the page to refresh the order details.", true);
+        return;
+      }
+      setActionStatus("Returned to Assigned for another delivery attempt.");
+    },
+    markDelivered: () => openDeliveryPaymentDialog(state.order, { fromDeliveryMode: true })
+  };
+}
+
 async function handleOrderAction(event) {
   const control = event.currentTarget;
   const action = control.dataset.orderAction;
   if (action === "edit") {
     await openEditDialog(state.order);
+    return;
+  }
+  if (action === "delivery-mode") {
+    await runActionControl(control, "Opening delivery…", async () => {
+      await openDeliveryMode(deliveryModeDetails());
+      setActionStatus("");
+    });
     return;
   }
   if (action === "deliver") {
@@ -588,9 +780,34 @@ async function handleOrderAction(event) {
   }
   if (action === "out-for-delivery") {
     await runActionControl(control, "Updating order…", async () => {
-      await updateOrderStatus("out_for_delivery");
+      const orderRef = doc(db, "orders", state.order.id);
+      await openDeliveryMode({
+        ...deliveryModeDetails(),
+        start: async () => {
+          await runTransaction(db, async (transaction) => {
+            const snapshot = await transaction.get(orderRef);
+            if (snapshot.data()?.status !== "assigned") throw new Error("This order is no longer assigned. Reload it and try again.");
+            transaction.update(orderRef, { status: "out_for_delivery", updatedAt: new Date().toISOString() });
+          });
+          state.order = { ...state.order, status: "out_for_delivery" };
+        }
+      });
+      if (state.order.status === "out_for_delivery") {
+        await loadOrderRecord();
+        setActionStatus("Order is out for delivery.");
+      } else {
+        setActionStatus("");
+      }
+    });
+    return;
+  }
+  if (action === "reset-assignment") {
+    if (!confirm("Return this delivery to the assignment stage? The assigned driver will be kept.")) return;
+    await runActionControl(control, "Updating order…", async () => {
+      await returnDeliveryToAssignment(state.order.id);
+      finishDeliveryMode(state.order.id);
       await loadOrderRecord();
-      setActionStatus("Order is out for delivery.");
+      setActionStatus("Order is back to assigned. You can now edit or cancel it.");
     });
   }
 }
@@ -977,7 +1194,12 @@ async function saveEditedOrder(event) {
         existingByType[type].qty += direction * Number(deposit.qty || 0);
         existingByType[type].amount += direction * Number(deposit.amount || 0);
       });
-      const allTypes = new Set([...Object.keys(existingByType), ...Object.keys(newByType)]);
+      // Not before approval: approveOrder charges the full deposit from the
+      // order's items at approval time, so a delta booked here as well would
+      // charge the containers twice (found 2026-10-23).
+      const allTypes = order.status === "pending_approval"
+        ? new Set()
+        : new Set([...Object.keys(existingByType), ...Object.keys(newByType)]);
       allTypes.forEach((type) => {
         const need = newByType[type] || { qty: 0, amount: 0 };
         const have = existingByType[type] || { qty: 0, amount: 0 };
@@ -1093,7 +1315,7 @@ function brokenBalanceWarningHtml(broken) {
   return `<div class="card" style="border:2px solid var(--danger,#b3261e)">
     <strong style="color:var(--danger,#b3261e)">This customer's container record is wrong</strong>
     <ul class="muted" style="margin:6px 0 0;padding-left:18px">${lines}</ul>
-    <div class="muted top-gap">Deliver and take payment as normal — but don't record returns or write-offs against this customer until it's corrected, or the next deposit they pay will vanish into the gap. Check their deposit history on the customer page.</div>
+    <div class="muted top-gap">Deliver and take payment as normal — but don't record returns or write-offs against this customer until it's corrected, or the next deposit they pay will vanish into the gap. The <a href="./deposits.html">Deposits</a> page lists it under “container records need fixing”.</div>
   </div>`;
 }
 
@@ -1135,20 +1357,21 @@ function recalcDeliveryCod() {
   const refundTotal = returns.filter((r) => r.handling === "refund").reduce((s, r) => s + r.returnedQty * r.depositPerUnit, 0);
   const due = Number(deliveryDialogState.balanceDue || 0);
   const cashToCollect = Math.max(0, due - creditTotal);
+  el("delivery-mode-confirm-due").textContent = formatCurrency(cashToCollect);
   if (!deliveryDialogState.amountOverridden) {
-    el("delivery-payment-amount").value = cashToCollect;
+    el("delivery-payment-amount").value = groupThousands(cashToCollect);
   }
   const collected = document.querySelector('input[name="collected"]:checked')?.value === "collected";
-  const cashPaid = collected ? Number(el("delivery-payment-amount").value || 0) : 0;
+  const cashPaid = collected ? parseAmountValue(el("delivery-payment-amount").value) : 0;
   const overCredit = Math.min(creditTotal, Math.max(0, cashPaid + creditTotal - due));
 
   const summary = el("delivery-cod-summary");
   if (creditTotal > 0 || refundTotal > 0) {
     const lines = [`<div><span>Order due</span><strong>${escapeHtml(formatCurrency(due))}</strong></div>`];
-    if (creditTotal > 0) lines.push(`<div><span>− Deposit credit applied</span><strong>−${escapeHtml(formatCurrency(creditTotal))}</strong></div>`);
+    if (creditTotal > 0) lines.push(`<div><span>− Empties credit</span><strong>−${escapeHtml(formatCurrency(creditTotal))}</strong></div>`);
     lines.push(`<div class="delivery-cod-total"><span>Cash to collect</span><strong>${escapeHtml(formatCurrency(cashToCollect))}</strong></div>`);
-    if (refundTotal > 0) lines.push(`<div><span>Cash to refund (separate)</span><strong>${escapeHtml(formatCurrency(refundTotal))}</strong></div>`);
-    if (overCredit > 0) lines.push(`<div><span class="muted" style="grid-column:1/-1">Choose below whether to refund the ${escapeHtml(formatCurrency(overCredit))} excess or carry it forward.</span></div>`);
+    if (refundTotal > 0) lines.push(`<div><span>Cash to hand back</span><strong>${escapeHtml(formatCurrency(refundTotal))}</strong></div>`);
+    if (overCredit > 0) lines.push(`<div><span class="muted" style="grid-column:1/-1">${escapeHtml(formatCurrency(overCredit))} left over — choose below.</span></div>`);
     summary.innerHTML = lines.join("");
     summary.classList.remove("hidden");
   } else {
@@ -1169,27 +1392,48 @@ function renderHeldContainers(held) {
   const warning = brokenBalanceWarningHtml(brokenBalancesFrom(held));
   if (!types.length) {
     help.textContent = warning
-      ? "Nothing can be returned here until the record below is corrected."
-      : "This customer isn't holding any containers, so there's nothing to return and nothing to write off. If they hand one back anyway, take it — but there's no deposit of theirs to give back, so note it on the order instead.";
+      ? "Fix the record below first."
+      : "No empties to take back.";
     container.innerHTML = warning;
     recalcDeliveryCod();
     return;
   }
-  help.textContent = "Enter qty returned this trip and pick how to handle the deposit. Leave qty 0 for containers that stayed with the customer.";
+  help.textContent = "Tap + or − for what came back.";
   container.innerHTML = warning + types.map((type) => {
     const info = held[type];
+    const heldQty = Number(info.qty || 0);
+    const name = humanizeContainerType(type);
     return `<div class="card"><div class="order-top">
-      <div><strong>${escapeHtml(humanizeContainerType(type))}</strong><div class="muted">${Number(info.qty || 0)} held · ${formatCurrency(info.outstandingAmount)} deposit outstanding</div></div>
-      <div class="button-row" style="gap:6px;flex-wrap:wrap">
-        <label class="muted" style="gap:4px;display:flex;align-items:center">Returned <input type="number" data-return-qty="${escapeHtml(type)}" min="0" max="${Number(info.qty || 0)}" step="1" value="0" style="width:64px"></label>
-        <select data-return-handling="${escapeHtml(type)}"><option value="credit">Apply to this order</option><option value="refund">Refund cash now</option><option value="keep">Owner will decide later</option></select>
+      <div><strong>${escapeHtml(name)}</strong><div class="muted">${heldQty} held</div></div>
+      <div class="button-row" style="gap:8px;align-items:center;flex-wrap:wrap">
+        <button class="ghost" type="button" data-return-minus="${escapeHtml(type)}" aria-label="One less ${escapeHtml(name)} back" disabled>−</button>
+        <span class="qty-value" data-return-value="${escapeHtml(type)}">0</span>
+        <button class="ghost" type="button" data-return-plus="${escapeHtml(type)}" aria-label="One more ${escapeHtml(name)} back">+</button>
+        <input type="hidden" data-return-qty="${escapeHtml(type)}" data-max="${heldQty}" value="0">
+        <select data-return-handling="${escapeHtml(type)}" aria-label="What to do with ${escapeHtml(name)}"><option value="credit">Off this bill</option><option value="refund">Cash back now</option><option value="keep">Decide later</option></select>
       </div>
     </div></div>`;
   }).join("");
-  container.querySelectorAll("[data-return-qty], [data-return-handling]").forEach((node) => {
-    node.addEventListener("input", recalcDeliveryCod);
-    node.addEventListener("change", recalcDeliveryCod);
-  });
+  container.querySelectorAll("[data-return-minus]").forEach((btn) => btn.addEventListener("click", () => stepReturnQty(btn.dataset.returnMinus, -1)));
+  container.querySelectorAll("[data-return-plus]").forEach((btn) => btn.addEventListener("click", () => stepReturnQty(btn.dataset.returnPlus, 1)));
+  container.querySelectorAll("[data-return-handling]").forEach((node) => node.addEventListener("change", recalcDeliveryCod));
+  recalcDeliveryCod();
+}
+
+// +/− steppers drive a hidden qty input, clamped 0..held. They call recalc
+// directly (setting .value from JS fires no input event) and grey out at the ends.
+function stepReturnQty(type, delta) {
+  const input = document.querySelector(`[data-return-qty="${type}"]`);
+  if (!input) return;
+  const max = Number(input.dataset.max || 0);
+  const next = Math.min(max, Math.max(0, Number(input.value || 0) + delta));
+  input.value = String(next);
+  const label = document.querySelector(`[data-return-value="${type}"]`);
+  if (label) label.textContent = String(next);
+  const minusBtn = document.querySelector(`[data-return-minus="${type}"]`);
+  const plusBtn = document.querySelector(`[data-return-plus="${type}"]`);
+  if (minusBtn) minusBtn.disabled = next <= 0;
+  if (plusBtn) plusBtn.disabled = next >= max;
   recalcDeliveryCod();
 }
 
@@ -1207,7 +1451,7 @@ function populateLossTypeSelect() {
   checkbox.disabled = nothingToWriteOff;
   if (nothingToWriteOff) checkbox.checked = false;
   const help = el("delivery-loss-help");
-  if (help) help.textContent = nothingToWriteOff ? "Nothing to write off — this customer has no containers on file." : "";
+  if (help) help.textContent = nothingToWriteOff ? "Nothing to write off." : "";
   syncLossQtyMax();
   toggleLossFields();
 }
@@ -1232,13 +1476,22 @@ function toggleDeliveryPaymentFields() {
   el("delivery-payment-amount").required = collected;
 }
 
-async function openDeliveryPaymentDialog(order) {
+async function openDeliveryPaymentDialog(order, { fromDeliveryMode = false } = {}) {
   const dialog = el("delivery-payment-dialog");
-  if (!dialog || typeof dialog.showModal !== "function") return;
+  if (!dialog || typeof dialog.showModal !== "function" || dialog.open) return;
+  if (fromDeliveryMode && !isDeliveryModeOpen(order.id)) return;
+  dialog.classList.toggle("delivery-mode-payment", fromDeliveryMode);
+  el("delivery-mode-back").hidden = !fromDeliveryMode;
+  if (fromDeliveryMode && deliveryFormPaused && el("delivery-payment-order-id").value === order.id) {
+    deliveryFormPaused = false;
+    dialog.showModal();
+    return;
+  }
+  deliveryFormPaused = false;
   el("delivery-payment-order-id").value = order.id;
   el("delivery-payment-customer").textContent = order.customerName || "customer";
   el("delivery-payment-due").textContent = formatCurrency(order.balanceDue);
-  el("delivery-payment-amount").value = Number(order.balanceDue || 0);
+  el("delivery-payment-amount").value = groupThousands(order.balanceDue);
   el("delivery-payment-method").value = "cash";
   el("delivery-payment-reference").value = "";
   el("delivery-payment-proof").value = "";
@@ -1290,7 +1543,7 @@ async function saveDeliveryPayment(event) {
   let paymentSnapshot;
 
   if (collected) {
-    const amount = Number(el("delivery-payment-amount").value || 0);
+    const amount = parseAmountValue(el("delivery-payment-amount").value);
     // P0-09: positive whole VND only, and zero while a balance remains routes
     // to the "Not collected today" branch instead of writing a silent 0 VND
     // payment. The server re-checks this against the FRESH balance; this is
@@ -1298,6 +1551,7 @@ async function saveDeliveryPayment(event) {
     const amountProblem = collectedPaymentProblem(amount, deliveryDialogState.balanceDue);
     if (amountProblem) {
       statusNode.textContent = amountProblem;
+      if (el("delivery-mode-back").hidden === false) el("delivery-payment-amount").focus();
       statusNode.style.color = "var(--danger, #b3261e)";
       return;
     }
@@ -1320,6 +1574,7 @@ async function saveDeliveryPayment(event) {
     });
     if (evidenceProblem) {
       statusNode.textContent = evidenceProblem;
+      if (el("delivery-mode-back").hidden === false) el("delivery-payment-reference").focus();
       statusNode.style.color = "var(--danger, #b3261e)";
       return;
     }
@@ -1345,15 +1600,16 @@ async function saveDeliveryPayment(event) {
   // A container that physically changed hands must leave a record before the
   // order can close — a credit/refund with no account of it is exactly how a
   // deposit goes missing (driver credits it but forgets to take the empty).
-  // Photo OR written note, per containerReturnProofProblem: a photo of an empty
-  // floor proves nothing, so the note is a real alternative rather than a lesser
-  // one. Shared rule so this screen and the dashboard cannot drift apart.
+  // A PHOTO is required (containerReturnProofProblem); the note is optional
+  // extra context, not a substitute. Shared rule so this screen and the
+  // dashboard cannot drift apart.
   const returnProofFile = el("delivery-return-proof").files?.[0] || null;
   const returnNote = String(el("delivery-return-note")?.value || "").trim();
   if (containerReturns.length > 0) {
     const proofProblem = containerReturnProofProblem({ hasPhoto: !!returnProofFile, note: returnNote });
     if (proofProblem) {
       statusNode.textContent = proofProblem;
+      if (el("delivery-mode-back").hidden === false) el("delivery-return-proof").focus();
       statusNode.style.color = "var(--danger, #b3261e)";
       return;
     }
@@ -1509,6 +1765,7 @@ async function saveDeliveryPayment(event) {
         }
       }
       el("delivery-payment-dialog").close();
+      finishDeliveryMode(orderId);
       await loadOrderRecord();
       // Delivery is the moment the numbers are final — deposit credit/refund and
       // cash are now settled. Nudge the owner to the finalized invoice (draft
@@ -1603,6 +1860,12 @@ el("edit-cancel-button").addEventListener("click", () => el("edit-order-dialog")
 el("edit-add-item-button").addEventListener("click", addEditItem);
 el("delivery-payment-form").addEventListener("submit", saveDeliveryPayment);
 el("delivery-payment-cancel-button").addEventListener("click", () => el("delivery-payment-dialog").close());
+el("delivery-mode-back").addEventListener("click", () => {
+  const form = el("delivery-payment-form");
+  if (form.querySelector('button[type="submit"]').disabled) return;
+  deliveryFormPaused = isDeliveryModeOpen(el("delivery-payment-order-id").value);
+  el("delivery-payment-dialog").close();
+});
 document.querySelectorAll('input[name="collected"]').forEach((radio) => radio.addEventListener("change", () => {
   toggleDeliveryPaymentFields();
   recalcDeliveryCod();
@@ -1611,7 +1874,9 @@ el("delivery-loss-checkbox").addEventListener("change", toggleLossFields);
 // A hand-typed amount stops the live recalc from overwriting it. Emptying the
 // field hands control back to the auto-fill.
 el("delivery-payment-amount").addEventListener("input", () => {
-  deliveryDialogState.amountOverridden = el("delivery-payment-amount").value.trim() !== "";
+  const field = el("delivery-payment-amount");
+  field.value = groupThousands(field.value);
+  deliveryDialogState.amountOverridden = field.value.trim() !== "";
   recalcDeliveryCod();
 });
 
@@ -1620,7 +1885,13 @@ onAuthStateChanged(auth, async (user) => {
   if (!(await requireRole(user, "owner"))) return;
   el("auth-view").classList.add("hidden"); el("app-view").classList.remove("hidden");
   el("order-load-status").textContent = "Loading complete order record…";
-  try { await loadOrderRecord(); } catch (error) { el("order-headline").textContent = "Order unavailable"; el("order-load-status").textContent = error.message || String(error); }
+  try {
+    await loadOrderRecord();
+    if (state.order?.status === "out_for_delivery") await resumeDeliveryMode(deliveryModeDetails());
+  } catch (error) {
+    el("order-headline").textContent = "Order unavailable";
+    el("order-load-status").textContent = error.message || String(error);
+  }
 });
 
 // Give the delivery dialog's proof inputs an explicit Take photo / library

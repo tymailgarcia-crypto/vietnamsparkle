@@ -530,17 +530,59 @@
       <dialog id="delivery-payment-dialog" class="edit-dialog">
         <form id="delivery-payment-form" class="form-grid" style="min-width:min(560px,90vw)">
           <h3 class="span-2" style="margin:0">Mark delivered — <span id="delivery-payment-customer"></span></h3>
+          <input type="hidden" id="delivery-payment-order-id">
+
+          <div class="span-2">
+            <h4 style="margin:0 0 8px">1 · Empties collected this trip</h4>
+            <p class="muted" style="margin:0 0 8px" id="delivery-containers-help">Loading customer containers...</p>
+            <div id="delivery-containers-list" class="stack"></div>
+            <div id="delivery-return-proof-field" class="hidden" style="margin-top:10px">
+              <strong>Photo of what came back <span style="color:var(--danger,#b3261e)">*</span></strong>
+              <label style="margin-top:6px">
+                Photo
+                <input id="delivery-return-proof" type="file" accept="image/*">
+                <button type="button" class="proof-camera-btn" data-proof-camera-for="delivery-return-proof">📷 Take photo</button>
+              </label>
+              <label style="margin-top:8px">
+                Note (optional)
+                <textarea id="delivery-return-note" rows="2" placeholder="e.g. 3 crates from Ms Hoa"></textarea>
+              </label>
+            </div>
+          </div>
+
+          <div class="span-2">
+            <label class="button-row" style="gap:6px;cursor:pointer">
+              <input type="checkbox" id="delivery-loss-checkbox">
+              <span>Report lost or broken containers</span>
+            </label>
+            <p class="muted" id="delivery-loss-help" style="margin:4px 0 0"></p>
+            <div id="delivery-loss-fields" class="form-grid hidden" style="margin-top:8px">
+              <label>
+                Container type
+                <select id="delivery-loss-type"></select>
+              </label>
+              <label>
+                Qty lost
+                <input id="delivery-loss-qty" type="number" min="1" step="1" value="1">
+              </label>
+              <label class="span-2">
+                Reason / note
+                <input id="delivery-loss-note" type="text" maxlength="199" placeholder="Broken jug, never returned, etc.">
+              </label>
+            </div>
+          </div>
+
+          <h4 class="span-2" style="margin:12px 0 0;padding-top:14px;border-top:1px solid #e3e8ec">2 · Payment</h4>
           <p class="muted span-2" style="margin:0">Amount due: <strong id="delivery-payment-due">0 VND</strong></p>
           <div id="delivery-cod-summary" class="span-2 delivery-cod-summary hidden"></div>
           <fieldset id="delivery-overcredit-field" class="span-2 hidden" style="border:1px solid #e0b25a;border-radius:12px;padding:12px">
-            <legend style="padding:0 6px;font-weight:700">Deposit credit exceeds this order</legend>
-            <p class="muted" style="margin:0 0 8px">There is <strong id="delivery-overcredit-amount">0 VND</strong> left after clearing the order. What should happen to it?</p>
+            <legend style="padding:0 6px;font-weight:700">Empties worth more than the bill</legend>
+            <p class="muted" style="margin:0 0 8px"><strong id="delivery-overcredit-amount">0 VND</strong> left over. Keep it or give it back?</p>
             <div class="button-row" style="gap:12px;align-items:flex-start">
-              <label style="display:flex;gap:6px;align-items:flex-start"><input type="radio" name="delivery-overcredit" value="carry" checked><span><strong>Carry forward</strong><small class="muted" style="display:block">Keep it as customer credit for later orders.</small></span></label>
-              <label style="display:flex;gap:6px;align-items:flex-start"><input type="radio" name="delivery-overcredit" value="refund"><span><strong>Refund cash now</strong><small class="muted" style="display:block">Return the excess and leave this order at zero.</small></span></label>
+              <label style="display:flex;gap:6px;align-items:flex-start"><input type="radio" name="delivery-overcredit" value="carry" checked><span><strong>Keep as credit</strong><small class="muted" style="display:block">For next time</small></span></label>
+              <label style="display:flex;gap:6px;align-items:flex-start"><input type="radio" name="delivery-overcredit" value="refund"><span><strong>Give cash back</strong><small class="muted" style="display:block">Now</small></span></label>
             </div>
           </fieldset>
-          <input type="hidden" id="delivery-payment-order-id">
 
           <div class="span-2 button-row">
             <label class="button-row" style="gap:6px;cursor:pointer">
@@ -556,26 +598,23 @@
           <div id="delivery-collected-fields" class="span-2 form-grid">
             <label>
               Amount collected
-              <input id="delivery-payment-amount" type="number" min="0" step="1000">
+              <input id="delivery-payment-amount" type="text" inputmode="numeric" autocomplete="off">
             </label>
             <label>
               Method
               <select id="delivery-payment-method">
                 <option value="cash">Cash</option>
-                <option value="transfer">Bank transfer</option>
                 <option value="bank_qr">QR code</option>
-                <option value="other">Other</option>
               </select>
             </label>
             <label class="span-2">
-              Reference (required for bank transfer / QR, unless you add a photo)
+              Reference — for QR payment (or add a photo)
               <input id="delivery-payment-reference" type="text" maxlength="199" placeholder="Bank reference or note">
             </label>
             <label class="span-2">
-              Proof photo (required for bank transfer / QR, unless you add a reference)
+              Proof photo — for QR payment (or add a reference)
               <input id="delivery-payment-proof" type="file" accept="image/*">
               <button type="button" class="proof-camera-btn" data-proof-camera-for="delivery-payment-proof">📷 Take photo</button>
-              <span class="muted" id="delivery-payment-proof-hint">Take a photo, or choose an existing transfer screenshot or receipt from your library. Photos are compressed automatically; source max 30 MB.</span>
             </label>
           </div>
 
@@ -598,49 +637,6 @@
               Notes
               <textarea id="delivery-deferral-notes" rows="2" maxlength="999" placeholder="What did the customer say?"></textarea>
             </label>
-          </div>
-
-          <div class="span-2">
-            <h4 style="margin:12px 0 8px">Containers returned this trip</h4>
-            <p class="muted" style="margin:0 0 8px" id="delivery-containers-help">Loading customer containers...</p>
-            <div id="delivery-containers-list" class="stack"></div>
-            <div id="delivery-return-proof-field" class="hidden" style="margin-top:10px">
-              <strong>Record what came back <span style="color:var(--danger,#b3261e)">*</span></strong>
-              <p class="muted" style="margin:4px 0 8px">A photo or a written account — one of the two before the order can close.</p>
-              <label>
-                Photo of the returned containers
-                <input id="delivery-return-proof" type="file" accept="image/*">
-                <button type="button" class="proof-camera-btn" data-proof-camera-for="delivery-return-proof">📷 Take photo</button>
-                <span class="muted">Take a photo or choose one from your library. Compressed automatically; source max 30 MB.</span>
-              </label>
-              <label style="margin-top:8px">
-                Or write what was collected
-                <textarea id="delivery-return-note" rows="2" placeholder="e.g. 3 crates collected from Ms Hoa at the shop — phone camera not working"></textarea>
-                <span class="muted">Say what actually came back, and from whom. Saved against this delivery under your name.</span>
-              </label>
-            </div>
-          </div>
-
-          <div class="span-2">
-            <label class="button-row" style="gap:6px;cursor:pointer">
-              <input type="checkbox" id="delivery-loss-checkbox">
-              <span>Report lost or destroyed containers</span>
-            </label>
-            <p class="muted" id="delivery-loss-help" style="margin:4px 0 0"></p>
-            <div id="delivery-loss-fields" class="form-grid hidden" style="margin-top:8px">
-              <label>
-                Container type
-                <select id="delivery-loss-type"></select>
-              </label>
-              <label>
-                Qty lost
-                <input id="delivery-loss-qty" type="number" min="1" step="1" value="1">
-              </label>
-              <label class="span-2">
-                Reason / note
-                <input id="delivery-loss-note" type="text" maxlength="199" placeholder="Broken jug, never returned, etc.">
-              </label>
-            </div>
           </div>
 
           <div class="span-2 button-row">
@@ -728,5 +724,7 @@
 
     <script type="module" src="./assets/adminApp.js"></script>
     <script type="module" src="./assets/dockMenu.js"></script>
+    <script type="module" src="./assets/deliveryMode.js"></script>
+    <script type="module" src="./assets/helpChat.js"></script>
   </body>
 </html>

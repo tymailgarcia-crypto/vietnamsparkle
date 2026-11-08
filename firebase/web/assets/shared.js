@@ -3,6 +3,24 @@ export function formatCurrency(amount) {
   return new Intl.NumberFormat("en-US").format(value) + " VND";
 }
 
+// Owner-facing label for an order status code, so badges never show raw ids
+// like "pending_approval". Matches the orders.html status filter wording.
+// Customer pages keep their own friendlier copy (customerOrderApp/accountApp).
+const ORDER_STATUS_LABELS = {
+  pending_approval: "Pending approval",
+  new: "Approved",
+  assigned: "Assigned",
+  out_for_delivery: "Out for delivery",
+  delivered: "Delivered",
+  cancelled: "Cancelled"
+};
+
+export function formatOrderStatus(status) {
+  if (ORDER_STATUS_LABELS[status]) return ORDER_STATUS_LABELS[status];
+  const text = String(status || "unknown").replace(/_/g, " ");
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
 // Returns today's date in the browser's local timezone as YYYY-MM-DD.
 // toISOString() returns UTC — in Vietnam (UTC+7) between 00:00 and 07:00
 // local, that yields yesterday's date and corrupts every business date
@@ -669,6 +687,64 @@ export function computeDepositBreakdown(items, productsById) {
   return Object.values(byType);
 }
 
+// --- Pre-app ("old") customer opening empties -------------------------------
+//
+// The business and its customers existed before this app. An existing customer
+// therefore holds containers with a real cash deposit the ledger has no record
+// of, so their first return would net below zero and trip isBrokenDepositBalance
+// (there is no `charged` to net against). These helpers drive the customer's
+// non-binding "I already have your empties" declaration on the order form and
+// the owner's confirm step, which writes the missing opening `charged` events.
+//
+// Nothing here moves money on its own: the customer's counts are a claim, the
+// preview is an estimate, and only the owner's confirmed figures become a
+// depositEvent.
+
+// The returnable container types an old customer could be holding, derived from
+// the live catalog: one row per distinct containerType among products that
+// carry a deposit. depositPerUnit is what that type's deposit costs today —
+// used only for the customer's estimate and to seed the owner's confirm dialog.
+// Pass active products only (the order form already filters to active).
+export function preAppEmptyTypesFromCatalog(products = []) {
+  const byType = {};
+  products.forEach((product) => {
+    if (!product || product.active === false) return;
+    const type = String(product.containerType || "").trim();
+    const depositPerUnit = Number(product.defaultDepositAmount || 0);
+    if (!type || !(depositPerUnit > 0)) return;
+    // First deposit seen per type wins, so the estimate follows the catalog's
+    // own sort order rather than an arbitrary max.
+    if (!byType[type]) byType[type] = { containerType: type, depositPerUnit };
+  });
+  return Object.values(byType);
+}
+
+// Net a customer's declared/confirmed opening counts against the per-type
+// deposits into the estimate the preview shows and the owner confirms. Pure —
+// callers own the wording. Only positive counts contribute; unknown types (no
+// catalog deposit) contribute a zero amount but are still listed so the owner
+// sees them and can price them.
+export function summarizePreAppEmptiesClaim(counts = {}, catalogTypes = []) {
+  const depositByType = {};
+  (catalogTypes || []).forEach((row) => {
+    if (row && row.containerType) depositByType[row.containerType] = Number(row.depositPerUnit || 0);
+  });
+  const lines = [];
+  let totalQty = 0;
+  let totalDeposit = 0;
+  Object.keys(counts || {}).forEach((type) => {
+    const qty = Math.max(0, Math.floor(Number(counts[type]) || 0));
+    if (qty <= 0) return;
+    const depositPerUnit = Number(depositByType[type] || 0);
+    const amount = qty * depositPerUnit;
+    lines.push({ containerType: type, qty, depositPerUnit, amount });
+    totalQty += qty;
+    totalDeposit += amount;
+  });
+  lines.sort((a, b) => String(a.containerType).localeCompare(String(b.containerType)));
+  return { lines, totalQty, totalDeposit };
+}
+
 // A container balance is broken when netting the ledger leaves the customer
 // holding less than nothing — more containers returned, refunded or written off
 // than were ever charged to them. That is never a real-world state, so it always
@@ -697,42 +773,39 @@ export function describeDepositBalanceProblem(qty, amount) {
 
 // Proof that containers actually came back.
 //
-// A photo on its own is weak evidence — nothing stops someone photographing an
-// empty floor, a previous trip's crates, or the back of a van — so requiring a
-// photo and nothing else buys false confidence. The rule is therefore "a photo
-// OR a written account", with the note treated as a genuine alternative rather
-// than a lesser fallback: a specific sentence about what was collected and from
-// whom, saved against the delivery under the name of whoever closed it, is
-// harder to produce carelessly than a blank photo and far easier to challenge
-// later. Either way the point is the same — no deposit credit without someone
-// putting their name to an account of what physically changed hands.
+// The rule is: a PHOTO is required whenever containers physically change hands.
+// A written note may be added as extra context, but it cannot stand in for the
+// photo — a delivery must not close on a written account alone (owner policy,
+// 2026-07-25). No deposit credit without a photo of what came back.
 //
 // Both delivery dialogs call this, so the bar cannot drift between the owner's
 // order page and the dashboard.
 export const RETURN_NOTE_MIN_LENGTH = 15;
 
-export function containerReturnProofProblem({ hasPhoto = false, note = "" } = {}) {
+export function containerReturnProofProblem({ hasPhoto = false } = {}) {
   if (hasPhoto) return null;
-  const trimmed = String(note || "").trim();
-  if (!trimmed) {
-    return "Add a photo of the returned containers — or, if you can't, write what you collected.";
-  }
-  if (trimmed.length < RETURN_NOTE_MIN_LENGTH) {
-    return `Say what was actually collected, and from whom — at least ${RETURN_NOTE_MIN_LENGTH} characters.`;
-  }
-  return null;
+  return "Take a photo of the returned containers before saving.";
 }
 
-// "photo" | "note" | "photo_note" | null. Stored alongside the return events and
-// the deposit_credit payment so "which returns were closed without a photo?" is
-// one query, rather than inferring it from a null document id — which would also
-// match a return recorded before any of this existed.
+// "photo" | "photo_note" | null. A note is never proof on its own, so there is
+// no "note" type: without a photo the type is null. Stored alongside the return
+// events and the deposit_credit payment so "which returns were closed without a
+// photo?" is one query, rather than inferring it from a null document id.
 export function containerReturnProofType({ hasPhoto = false, note = "" } = {}) {
-  const hasNote = String(note || "").trim().length > 0;
-  if (hasPhoto && hasNote) return "photo_note";
-  if (hasPhoto) return "photo";
-  if (hasNote) return "note";
-  return null;
+  if (!hasPhoto) return null;
+  return String(note || "").trim().length > 0 ? "photo_note" : "photo";
+}
+
+// Thousand-separated display of a whole-number amount for a text input, and its
+// inverse. VND has no minor unit, so this is integer-only; every non-digit is
+// dropped. Used by the delivery dialogs so a collected amount reads "1,250,000".
+export function groupThousands(value) {
+  const digits = String(value ?? "").replace(/\D/g, "");
+  return digits ? Number(digits).toLocaleString("en-US") : "";
+}
+
+export function parseAmountValue(value) {
+  return Number(String(value ?? "").replace(/\D/g, "")) || 0;
 }
 
 // What a customer is still holding, per container type, from their deposit

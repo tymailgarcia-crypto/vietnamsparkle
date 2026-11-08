@@ -185,19 +185,16 @@ export function createEditOrderAddressController({ loadMaps, getElement = (id) =
     const detail = document.createElement("p");
     detail.style.margin = "6px 0 10px";
     detail.textContent = state.approximate
-      ? "Google found an approximate match. Drag the pin if needed, or confirm it here."
-      : "Drag the pin if it needs correcting, or confirm it here.";
+      ? "Google found an approximate match. Drag the pin if needed, then confirm it below."
+      : "Drag the pin if it needs correcting, then confirm it below.";
     const address = document.createElement("p");
-    address.style.margin = "0 0 10px";
+    address.style.margin = "0";
     address.style.overflowWrap = "anywhere";
     address.textContent = state.formattedAddress;
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "primary";
-    button.style.width = "100%";
-    button.textContent = "Use this address";
-    button.addEventListener("click", confirmCurrent);
-    content.append(title, detail, address, button);
+    // The confirm button lives in the page footer (see the wiring on
+    // `confirmButton` below), not inside this InfoWindow: Google clips tall
+    // InfoWindow content on desktop, which left an in-window button unreachable.
+    content.append(title, detail, address);
     state.infoWindow = state.infoWindow || new google.maps.InfoWindow({ maxWidth: 280 });
     state.infoWindow.setContent(content);
     state.infoWindow.open({ map: state.map, anchor: state.marker });

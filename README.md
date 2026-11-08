@@ -27,10 +27,18 @@ This repository remains private; this documentation grants no open-source licens
 
 ## Release status
 
-This is an evolving application, not a certified handover release. Newer local
-features await reconciliation into Git; a checkout is not yet guaranteed to
-reproduce the deployed site. See HANDOFF.md, ROADMAP.md and SHIP-READINESS.md for
-release evidence and outstanding checks.
+The 2026-11-08 review preparation reconciles the last verified live web release
+and the release-recorded staff/help/AI backend features. Older unfinished local
+variants are preserved separately. See [reconciliation and verification](docs/RECONCILIATION.md)
+for the exact scope, tests and remaining limits. This is not a production handover
+certification; HANDOFF.md and SHIP-READINESS.md retain the operational checklist.
+
+## Fictional-data screenshots
+
+![Dispatch dashboard with fictional orders](docs/screenshots/demo-dashboard-desktop.jpg)
+
+[Phone dashboard](docs/screenshots/demo-dashboard-mobile.jpg) ·
+[Customer catalogue and order](docs/screenshots/demo-customer-order.jpg)
 
 Read AGENTS.md before editing: agents share a working directory. Never commit
 credentials, business exports, emulator snapshots or real customer information.
