@@ -1,86 +1,37 @@
-# Water Delivery System v2
+# Delivery Management Template
 
-This deliverable now prioritizes **audit-ready customer and money records**.
+A reusable water-delivery application maintained by Ty. Vietnam Sparkle is its
+personalized implementation; Ty retains ownership of the reusable template.
+Current development uses fictional test data. Keep the business deployment and
+reusable code separate during handover.
 
-## Included
+## Features and architecture
 
-- `apps-script/`: Google Apps Script source for:
-  - public landing page
-  - internal admin console
-  - audit-focused ledger workflow
-- `site-preview/`: static preview of the customer-facing landing page
-- `water-delivery-template.xlsx`: starter workbook matching the audit data model
+Customer order intake and tracking; owner approval and dispatch; driver assignment
+and delivery; payment and customer-balance records; returnable-container deposits;
+cancellations, refunds, reports, staff access and business settings.
 
-## Sheets created by the Apps Script project
+The current application lives in `firebase/`: browser JavaScript/HTML, Firebase
+Authentication, Firestore, Storage, and Node.js Cloud Functions. Public order
+submission and important money operations use server callables, with security
+rules and server-side role checks. `apps-script/` and `site-preview/` are legacy.
 
-- `Customers`
-- `Orders`
-- `OrderItems`
-- `Products`
-- `Helpers`
-- `Payments`
-- `Deposits`
-- `Returns`
-- `Purchases`
-- `Expenses`
-- `Documents`
-- `DailySummary`
-- `Inquiries`
+## Start here
 
-## What changed from v1
+See [local setup and verification](firebase/README.md) for installation,
+fictional-data preview and test commands. No production credentials are required
+for the isolated preview or pure tests.
 
-- Orders are no longer treated as paid with a single checkbox.
-- Payment records now live in `Payments`.
-- Container liability now lives in `Deposits` and `Returns`.
-- Supplier buys and non-inventory costs now live in `Purchases` and `Expenses`.
-- Proof links now live in `Documents`.
-- `DailySummary` is derived from orders, payments, and deposits rather than acting as the primary audit source.
-- The public landing page is now form-first: every website order request lands in `Inquiries` as structured columns and creates or updates a linked customer stub.
+See [template boundaries and next tasks](docs/TEMPLATE.md) for development scope.
+This repository remains private; this documentation grants no open-source license.
 
-## Core server functions
+## Release status
 
-- `saveOrder`
-- `updateOrderDispatch`
-- `recordOrderPayment`
-- `recordDepositReturn`
-- `recordPurchase`
-- `recordExpense`
-- `recordDocumentEntry`
-- `submitPublicInquiry`
+This is an evolving application, not a certified handover release. Newer local
+features await reconciliation into Git; a checkout is not yet guaranteed to
+reproduce the deployed site. See HANDOFF.md, ROADMAP.md and SHIP-READINESS.md for
+release evidence and outstanding checks.
 
-## Admin workflow
-
-- `Orders`: audit-aware order board with balance and deposit summaries
-- `New Order`: create order, initial payment, and deposit charge together
-- `Customers`: review balances and deposit liabilities
-- `Products`: review product and default deposit settings
-- `Audit`: log payments, returns, purchases, expenses, and document links
-- `Public form`: capture name, phone, address, delivery date, time slot, requested items, and preferred follow-up channel into Sheets before chat follow-up
-
-## Deployment steps
-
-1. Create or open the Google Sheet that will act as the operational database.
-2. Open `Extensions -> Apps Script` from that sheet.
-3. Copy the files from `apps-script/` into the Apps Script project.
-4. Save the project and run `setupWaterDeliveryWorkbook` once.
-5. If you want sample data, run `seedWaterDeliveryDemoData`.
-6. Deploy as a web app.
-7. Use:
-   - `/exec` or `/dev` for the public page
-   - `/exec?view=admin` for the admin console
-
-## First things to customize
-
-- Replace placeholder WhatsApp, Facebook, and Zalo links in `00_Config.gs`.
-- Rename the business in `APP_CONFIG.businessName`.
-- Replace demo helper names, product pricing, and default deposit amounts.
-- Edit `apps-script/Public.html` to change homepage copy or form fields.
-- Decide who is allowed to use the admin console and restrict deployment accordingly.
-- Standardize how Google Drive proof files are named and shared.
-
-## Notes
-
-- This version is designed to survive accountant and tax review better than the v1 ops-only model.
-- The legal business type is still unknown, so no Vietnam-specific VAT or e-invoice logic is hardcoded yet.
-- Proof files are indexed by Drive link only; the system does not manage the files themselves.
-- Purchase tracking is basic ledger tracking, not full inventory control.
+Read AGENTS.md before editing: agents share a working directory. Never commit
+credentials, business exports, emulator snapshots or real customer information.
+Source control does not back up Firebase business records.
